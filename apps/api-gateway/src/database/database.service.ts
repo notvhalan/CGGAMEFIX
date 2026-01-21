@@ -1,0 +1,373 @@
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Pool } from 'pg';
+import { Logger } from '@betting-exchange/shared-config';
+
+export interface User {
+  id: string;
+  email: string;
+  googleSub: string;
+  name: string | null;
+  avatarUrl: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface WalletAccount {
+  id: string;
+  userId: string;
+  balance: number;
+  lockedBalance: number;
+  currency: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Order {
+  id: string;
+  userId: string;
+  marketId: string;
+  outcomeId: string | null;
+  side: 'BACK' | 'LAY';
+  odds: number;
+  stake: number;
+  status: 'PENDING' | 'OPEN' | 'MATCHED' | 'PARTIALLY_MATCHED' | 'CANCELLED' | 'EXPIRED';
+  filledAmount: number;
+  remainingAmount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+@Injectable()
+export class DatabaseService implements OnModuleInit, OnModuleDestroy {
+  private pool: Pool;
+  private logger = new Logger('DatabaseService');
+
+  async onModuleInit() {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL is not defined');
+    }
+
+    this.pool = new Pool({
+      connectionString: databaseUrl,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
+
+    this.logger.info('Database connection pool initialized');
+    
+    // Create tables if they don't exist
+    await this.createTables();
+  }
+
+  async onModuleDestroy() {
+    await this.pool.end();
+    this.logger.info('Database connection pool closed');
+  }
+
+  private async createTables() {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Create users table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          email VARCHAR(255) NOT NULL UNIQUE,
+          google_sub VARCHAR(255) NOT NULL UNIQUE,
+          name VARCHAR(255),
+          avatar_url VARCHAR(500),
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
+      `);
+
+      // Create wallet_accounts table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS wallet_accounts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          balance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+          locked_balance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+          currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          UNIQUE(user_id, currency)
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_wallet_accounts_user_id ON wallet_accounts(user_id);
+      `);
+
+      // Create orders table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS orders (
+          id UUID PRIMARY KEY,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          market_id UUID NOT NULL,
+          outcome_id UUID,
+          side VARCHAR(10) NOT NULL CHECK (side IN ('BACK', 'LAY')),
+          odds DECIMAL(10, 2) NOT NULL,
+          stake DECIMAL(15, 2) NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'OPEN', 'MATCHED', 'PARTIALLY_MATCHED', 'CANCELLED', 'EXPIRED')),
+          filled_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+          remaining_amount DECIMAL(15, 2) NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_market_id ON orders(market_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+        CREATE INDEX IF NOT EXISTS idx_orders_market_status ON orders(market_id, status);
+      `);
+
+      await client.query('COMMIT');
+      this.logger.info('Database tables created successfully');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      this.logger.error('Failed to create tables:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Find user by Google sub (profile.id)
+   */
+  async findUserByGoogleSub(googleSub: string): Promise<User | null> {
+    const result = await this.pool.query<User>(
+      'SELECT id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE google_sub = $1',
+      [googleSub]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Find user by email
+   */
+  async findUserByEmail(email: string): Promise<User | null> {
+    const result = await this.pool.query<User>(
+      'SELECT id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE email = $1',
+      [email]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Find user by ID
+   */
+  async findUserById(id: string): Promise<User | null> {
+    const result = await this.pool.query<User>(
+      'SELECT id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE id = $1',
+      [id]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Create new user
+   */
+  async createUser(data: {
+    email: string;
+    googleSub: string;
+    name?: string;
+    avatarUrl?: string;
+  }): Promise<User> {
+    const result = await this.pool.query<User>(
+      `INSERT INTO users (email, google_sub, name, avatar_url) 
+       VALUES ($1, $2, $3, $4) 
+       RETURNING id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt"`,
+      [data.email, data.googleSub, data.name || null, data.avatarUrl || null]
+    );
+    return result.rows[0];
+  }
+
+  /**
+   * Find wallet by user ID
+   */
+  async findWalletByUserId(userId: string, currency = 'USD'): Promise<WalletAccount | null> {
+    const result = await this.pool.query<WalletAccount>(
+      `SELECT id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt" 
+       FROM wallet_accounts 
+       WHERE user_id = $1 AND currency = $2`,
+      [userId, currency]
+    );
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Create wallet for user
+   */
+  async createWallet(userId: string, currency = 'USD'): Promise<WalletAccount> {
+    const result = await this.pool.query<WalletAccount>(
+      `INSERT INTO wallet_accounts (user_id, balance, locked_balance, currency) 
+       VALUES ($1, 0.00, 0.00, $2) 
+       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
+      [userId, currency]
+    );
+    return result.rows[0];
+  }
+
+  /**
+   * Ensure user has a wallet (create if not exists)
+   */
+  async ensureWallet(userId: string, currency = 'USD'): Promise<WalletAccount> {
+    let wallet = await this.findWalletByUserId(userId, currency);
+    if (!wallet) {
+      wallet = await this.createWallet(userId, currency);
+    }
+    return wallet;
+  }
+
+  /**
+   * Update wallet balance (for deposits/withdrawals)
+   */
+  async updateWalletBalance(
+    userId: string, 
+    amount: number, 
+    currency = 'USD'
+  ): Promise<WalletAccount> {
+    const result = await this.pool.query<WalletAccount>(
+      `UPDATE wallet_accounts 
+       SET balance = balance + $1, updated_at = NOW() 
+       WHERE user_id = $2 AND currency = $3 
+       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
+      [amount, userId, currency]
+    );
+    
+    if (result.rows.length === 0) {
+      throw new Error('Wallet not found');
+    }
+    
+    return result.rows[0];
+  }
+
+  /**
+   * Lock funds in wallet (for placing orders)
+   */
+  async lockWalletFunds(
+    userId: string, 
+    amount: number, 
+    currency = 'USD'
+  ): Promise<WalletAccount> {
+    const result = await this.pool.query<WalletAccount>(
+      `UPDATE wallet_accounts 
+       SET balance = balance - $1, locked_balance = locked_balance + $1, updated_at = NOW() 
+       WHERE user_id = $2 AND currency = $3 AND balance >= $1
+       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
+      [amount, userId, currency]
+    );
+    
+    if (result.rows.length === 0) {
+      throw new Error('Insufficient balance or wallet not found');
+    }
+    
+    return result.rows[0];
+  }
+
+  /**
+   * Unlock funds in wallet (for cancelled orders)
+   */
+  async unlockWalletFunds(
+    userId: string, 
+    amount: number, 
+    currency = 'USD'
+  ): Promise<WalletAccount> {
+    const result = await this.pool.query<WalletAccount>(
+      `UPDATE wallet_accounts 
+       SET balance = balance + $1, locked_balance = locked_balance - $1, updated_at = NOW() 
+       WHERE user_id = $2 AND currency = $3 AND locked_balance >= $1
+       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
+      [amount, userId, currency]
+    );
+    
+    if (result.rows.length === 0) {
+      throw new Error('Insufficient locked balance or wallet not found');
+    }
+    
+    return result.rows[0];
+  }
+  
+  /**
+   * Create order
+   */
+  async createOrder(data: {
+    id: string;
+    userId: string;
+    marketId: string;
+    outcomeId?: string;
+    side: 'BACK' | 'LAY';
+    odds: number;
+    stake: number;
+  }): Promise<Order> {
+    const result = await this.pool.query<Order>(
+      `INSERT INTO orders (id, user_id, market_id, outcome_id, side, odds, stake, status, remaining_amount) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'OPEN', $7) 
+       RETURNING id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
+                 side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+                 created_at as "createdAt", updated_at as "updatedAt"`,
+      [data.id, data.userId, data.marketId, data.outcomeId || null, data.side, data.odds, data.stake]
+    );
+    return result.rows[0];
+  }
+
+  /**
+   * Get orders by user ID
+   */
+  async getOrdersByUserId(userId: string, limit = 50): Promise<Order[]> {
+    const result = await this.pool.query<Order>(
+      `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
+              side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+              created_at as "createdAt", updated_at as "updatedAt"
+       FROM orders 
+       WHERE user_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT $2`,
+      [userId, limit]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Get orders by market ID (for order book)
+   */
+  async getOrdersByMarketId(marketId: string, status: string[] = ['OPEN', 'PARTIALLY_MATCHED']): Promise<Order[]> {
+    const result = await this.pool.query<Order>(
+      `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
+              side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+              created_at as "createdAt", updated_at as "updatedAt"
+       FROM orders 
+       WHERE market_id = $1 AND status = ANY($2)
+       ORDER BY created_at ASC`,
+      [marketId, status]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Update order status
+   */
+  async updateOrderStatus(orderId: string, status: Order['status']): Promise<Order> {
+    const result = await this.pool.query<Order>(
+      `UPDATE orders 
+       SET status = $1, updated_at = NOW() 
+       WHERE id = $2 
+       RETURNING id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
+                 side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+                 created_at as "createdAt", updated_at as "updatedAt"`,
+      [status, orderId]
+    );
+    
+    if (result.rows.length === 0) {
+      throw new Error('Order not found');
+    }
+    
+    return result.rows[0];
+  }
+}

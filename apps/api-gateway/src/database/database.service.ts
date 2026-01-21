@@ -27,12 +27,17 @@ export interface Order {
   userId: string;
   marketId: string;
   outcomeId: string | null;
-  side: 'BACK' | 'LAY';
-  odds: number;
-  stake: number;
+  side: 'FOR' | 'LAY';
+  pPts: number;
+  yesPts: number;
+  stakePence: number | null;
+  liabilityPence: number;
+  originalContracts: string;
+  remainingContracts: string;
   status: 'PENDING' | 'OPEN' | 'MATCHED' | 'PARTIALLY_MATCHED' | 'CANCELLED' | 'EXPIRED';
-  filledAmount: number;
-  remainingAmount: number;
+  filledAmount?: number;
+  remainingPence: number | null;
+  filledPence: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -110,12 +115,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           market_id UUID NOT NULL,
           outcome_id UUID,
-          side VARCHAR(10) NOT NULL CHECK (side IN ('BACK', 'LAY')),
-          odds DECIMAL(10, 2) NOT NULL,
-          stake DECIMAL(15, 2) NOT NULL,
+          side VARCHAR(10) NOT NULL CHECK (side IN ('FOR', 'LAY')),
+          p_pts INTEGER NOT NULL CHECK (p_pts >= 1 AND p_pts <= 9999999),
+          stake_pence INTEGER NOT NULL CHECK (stake_pence > 0),
           status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'OPEN', 'MATCHED', 'PARTIALLY_MATCHED', 'CANCELLED', 'EXPIRED')),
-          filled_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
-          remaining_amount DECIMAL(15, 2) NOT NULL,
+          filled_pence INTEGER NOT NULL DEFAULT 0,
+          remaining_pence INTEGER NOT NULL,
           created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
@@ -249,6 +254,60 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Lock balance for an order (move from balance to locked_balance)
+   */
+  async lockBalance(
+    userId: string,
+    amountPence: number,
+    currency = 'USD'
+  ): Promise<WalletAccount> {
+    const amountPounds = amountPence / 100;
+    
+    const result = await this.pool.query<WalletAccount>(
+      `UPDATE wallet_accounts 
+       SET balance = balance - $1, 
+           locked_balance = locked_balance + $1, 
+           updated_at = NOW() 
+       WHERE user_id = $2 AND currency = $3 AND balance >= $1
+       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
+      [amountPounds, userId, currency]
+    );
+    
+    if (result.rows.length === 0) {
+      throw new Error('Insufficient balance');
+    }
+    
+    return result.rows[0];
+  }
+
+  /**
+   * Unlock balance (move from locked_balance back to balance)
+   */
+  async unlockBalance(
+    userId: string,
+    amountPence: number,
+    currency = 'USD'
+  ): Promise<WalletAccount> {
+    const amountPounds = amountPence / 100;
+    
+    const result = await this.pool.query<WalletAccount>(
+      `UPDATE wallet_accounts 
+       SET balance = balance + $1, 
+           locked_balance = locked_balance - $1, 
+           updated_at = NOW() 
+       WHERE user_id = $2 AND currency = $3 AND locked_balance >= $1
+       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
+      [amountPounds, userId, currency]
+    );
+    
+    if (result.rows.length === 0) {
+      throw new Error('Insufficient locked balance');
+    }
+    
+    return result.rows[0];
+  }
+
+  /**
    * Lock funds in wallet (for placing orders)
    */
   async lockWalletFunds(
@@ -302,17 +361,36 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     marketId: string;
     outcomeId?: string;
-    side: 'BACK' | 'LAY';
-    odds: number;
-    stake: number;
+    side: 'FOR' | 'LAY';
+    pPts: number;
+    yesPts: number;
+    liabilityPence: number;
+    originalContractsMicros: string;
+    remainingContractsMicros: string;
   }): Promise<Order> {
     const result = await this.pool.query<Order>(
-      `INSERT INTO orders (id, user_id, market_id, outcome_id, side, odds, stake, status, remaining_amount) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'OPEN', $7) 
+      `INSERT INTO orders (id, user_id, market_id, outcome_id, side, p_pts, yes_pts, 
+                          liability_pence, status, 
+                          original_contracts, remaining_contracts) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9, $10) 
        RETURNING id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-                 side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+                 side, p_pts as "pPts", yes_pts as "yesPts",
+                 liability_pence as "liabilityPence", status, 
+                 original_contracts as "originalContractsMicros", 
+                 remaining_contracts as "remainingContractsMicros",
                  created_at as "createdAt", updated_at as "updatedAt"`,
-      [data.id, data.userId, data.marketId, data.outcomeId || null, data.side, data.odds, data.stake]
+      [
+        data.id, 
+        data.userId, 
+        data.marketId, 
+        data.outcomeId || null, 
+        data.side, 
+        data.pPts, 
+        data.yesPts,
+        data.liabilityPence,
+        data.originalContractsMicros,
+        data.remainingContractsMicros,
+      ]
     );
     return result.rows[0];
   }
@@ -323,7 +401,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async getOrdersByUserId(userId: string, limit = 50): Promise<Order[]> {
     const result = await this.pool.query<Order>(
       `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-              side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+              side, p_pts as "pPts", stake_pence as "stakePence", status, 
+              filled_pence as "filledPence", remaining_pence as "remainingPence",
               created_at as "createdAt", updated_at as "updatedAt"
        FROM orders 
        WHERE user_id = $1 
@@ -340,7 +419,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async getOrdersByMarketId(marketId: string, status: string[] = ['OPEN', 'PARTIALLY_MATCHED']): Promise<Order[]> {
     const result = await this.pool.query<Order>(
       `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-              side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+              side, p_pts as "pPts", yes_pts as "yesPts", 
+              stake_pence as "stakePence", liability_pence as "liabilityPence",
+              original_contracts as "originalContracts", remaining_contracts as "remainingContracts",
+              status, 
+              filled_pence as "filledPence", remaining_pence as "remainingPence",
               created_at as "createdAt", updated_at as "updatedAt"
        FROM orders 
        WHERE market_id = $1 AND status = ANY($2)
@@ -359,7 +442,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
        SET status = $1, updated_at = NOW() 
        WHERE id = $2 
        RETURNING id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-                 side, odds, stake, status, filled_amount as "filledAmount", remaining_amount as "remainingAmount",
+                 side, p_pts as "pPts", stake_pence as "stakePence", status, 
+                 filled_pence as "filledPence", remaining_pence as "remainingPence",
                  created_at as "createdAt", updated_at as "updatedAt"`,
       [status, orderId]
     );
@@ -369,5 +453,40 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
     
     return result.rows[0];
+  }
+
+  /**
+   * Get trades for a market
+   */
+  async getTradesByMarketId(marketId: string, limit = 50): Promise<any[]> {
+    const result = await this.pool.query(
+      `SELECT 
+        id, 
+        market_id, 
+        yes_pts,
+        cost_pence,
+        maker_order_id,
+        taker_order_id,
+        maker_id,
+        taker_id,
+        maker_fee_pence,
+        taker_fee_pence,
+        side,
+        executed_at,
+        created_at
+      FROM trades 
+      WHERE market_id = $1 
+      ORDER BY executed_at DESC 
+      LIMIT $2`,
+      [marketId, limit]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Execute a raw SQL query
+   */
+  async query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }> {
+    return this.pool.query<T>(sql, params);
   }
 }

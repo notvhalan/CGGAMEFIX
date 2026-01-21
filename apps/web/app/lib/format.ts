@@ -1,27 +1,61 @@
 /**
  * Format money amount with currency symbol
  */
-export function formatMoney(amount: number, currency = 'USD'): string {
+export function formatMoney(amount: number | string, currency = 'USD'): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(amount);
+  }).format(Number(amount));
 }
 
 /**
- * Format decimal odds (e.g., 2.5, 3.0)
+ * Format pence as money (divide by 100)
  */
-export function formatOdds(odds: number): string {
-  return odds.toFixed(2);
+export function formatPence(pence: number | string): string {
+  return formatMoney(Number(pence) / 100);
+}
+
+/**
+ * Format decimal odds (e.g., 2.5, 3.0) - DEPRECATED
+ */
+export function formatOdds(odds: number | string): string {
+  return Number(odds).toFixed(2);
+}
+
+/**
+ * Format probability points (1-9,999,999) as percentage (0-100%)
+ * PRICE_SCALE = 10,000,000, so divide by 100,000 to get percentage
+ * e.g., 5,000,000 pPts = 50.0000%
+ */
+export function formatProbability(pPts: number | string): string {
+  const probability = Number(pPts) / 100_000;
+  return `${probability.toFixed(4)}%`;
+}
+
+/**
+ * Convert probability percentage (0-100) to probability points (1-9,999,999)
+ * PRICE_SCALE = 10,000,000, so multiply by 100,000
+ * e.g., 50% = 5,000,000 pPts
+ */
+export function percentageToPPts(percentage: number): number {
+  return Math.round(percentage * 100_000);
+}
+
+/**
+ * Convert probability points to percentage (0-100)
+ * PRICE_SCALE = 10,000,000, so divide by 100,000
+ */
+export function pPtsToPercentage(pPts: number): number {
+  return pPts / 100_000;
 }
 
 /**
  * Format percentage
  */
-export function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
+export function formatPercent(value: number | string): string {
+  return `${(Number(value) * 100).toFixed(1)}%`;
 }
 
 /**

@@ -36,8 +36,8 @@ export interface OrderAcceptedEvent extends BaseEvent {
   orderId: string;
   userId: string;
   side: OrderSide;
-  price: number;
-  size: number;
+  pPts: number; // Probability points
+  stakePence: number; // Stake in pence
 }
 
 // Order Rejected Event
@@ -64,19 +64,19 @@ export interface TradeExecutedEvent extends BaseEvent {
   takerOrderId: string;
   makerId: string;
   takerId: string;
-  price: number;
-  size: number;
+  yesPricePts: number; // Canonical YES price in probability points
+  sizePence: number; // Trade size in pence (integer)
   side: OrderSide; // Side of the taker
-  makerFee: number;
-  takerFee: number;
+  makerFeePence: number; // Maker fee in pence
+  takerFeePence: number; // Taker fee in pence
 }
 
 // Book Delta Event (for incremental updates)
 export interface BookDeltaEvent extends BaseEvent {
   eventType: EventType.BOOK_DELTA;
   side: OrderSide;
-  price: number;
-  sizeDelta: number; // Positive = added, negative = removed
+  yesPricePts: number; // Canonical YES price in probability points
+  sizeDeltaPence: number; // Size delta in pence (positive = added, negative = removed)
 }
 
 // Book Snapshot Event (for initial load)

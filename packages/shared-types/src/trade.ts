@@ -8,7 +8,7 @@ export enum TradeStatus {
   VOIDED = 'VOIDED',
 }
 
-// Trade Schema
+// Trade Schema - Integer math with probability points
 export const TradeSchema = z.object({
   id: z.string().uuid(),
   marketId: z.string().uuid(),
@@ -16,11 +16,11 @@ export const TradeSchema = z.object({
   takerOrderId: z.string().uuid(),
   makerId: z.string().uuid(),
   takerId: z.string().uuid(),
-  price: z.number().positive(),
-  size: z.number().positive(),
-  side: z.nativeEnum(OrderSide),
-  makerFee: z.number().nonnegative(),
-  takerFee: z.number().nonnegative(),
+  yesPricePts: z.number().int().positive(), // Canonical YES price in probability points
+  sizePence: z.number().int().positive(), // Trade size in pence
+  side: z.nativeEnum(OrderSide), // Side of the taker
+  makerFeePence: z.number().int().nonnegative(), // Maker fee in pence
+  takerFeePence: z.number().int().nonnegative(), // Taker fee in pence (0.1%)
   status: z.nativeEnum(TradeStatus),
   executedAt: z.date(),
   settledAt: z.date().optional(),

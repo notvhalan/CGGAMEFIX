@@ -6,7 +6,9 @@ import { DatabaseService } from '../database/database.service';
 export class MarketsController {
   private readonly logger = new Logger('MarketsController');
 
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+  ) {}
 
   @Get()
   async listMarkets() {
@@ -44,30 +46,35 @@ export class MarketsController {
       // Fetch orders from database
       const orders = await this.databaseService.getOrdersByMarketId(marketId);
       
-      // Separate into bids (BACK) and asks (LAY)
-      const backOrders = orders.filter(o => o.side === 'BACK');
+      // Separate into bids (FOR) and asks (LAY)
+      const forOrders = orders.filter(o => o.side === 'FOR');
       const layOrders = orders.filter(o => o.side === 'LAY');
       
-      // Group by odds and sum remaining amounts
-      const groupByOdds = (orders: typeof backOrders) => {
-        const grouped = new Map<number, number>();
+      // Group by YES probability points and sum remaining contracts
+      const groupByYesPts = (orders: typeof forOrders) => {
+        const grouped = new Map<number, bigint>();
         orders.forEach(order => {
-          const odds = parseFloat(order.odds.toString());
-          const amount = parseFloat(order.remainingAmount.toString());
-          grouped.set(odds, (grouped.get(odds) || 0) + amount);
+          const yesPts = order.yesPts;
+          const remainingContracts = BigInt(order.remainingContracts || 0);
+          grouped.set(yesPts, (grouped.get(yesPts) || 0n) + remainingContracts);
         });
-        return Array.from(grouped.entries()).map(([odds, amount]) => ({ odds, amount }));
+        return Array.from(grouped.entries()).map(([yesPts, contractsMicros]) => ({ 
+          yesPts, 
+          contractsMicros: contractsMicros.toString() 
+        }));
       };
       
-      const bids = groupByOdds(backOrders).sort((a, b) => b.odds - a.odds); // Highest first
-      const asks = groupByOdds(layOrders).sort((a, b) => a.odds - b.odds); // Lowest first
+      const bids = groupByYesPts(forOrders).sort((a, b) => b.yesPts - a.yesPts); // Highest first
+      const asks = groupByYesPts(layOrders).sort((a, b) => a.yesPts - b.yesPts); // Lowest first
       
-      return {
+      const orderBookData = {
         marketId,
         bids,
         asks,
         lastUpdate: new Date().toISOString(),
       };
+      
+      return orderBookData;
     } catch (error) {
       this.logger.error(`Failed to fetch orderbook for ${marketId}`, error);
       throw error;
@@ -83,11 +90,12 @@ export class MarketsController {
       const limitNum = parseInt(limit, 10) || 50;
       this.logger.debug(`Fetching trades for market ${marketId}, limit: ${limitNum}`);
       
-      // TODO: Fetch from database
+      const trades = await this.databaseService.getTradesByMarketId(marketId, limitNum);
+      
       return {
         marketId,
-        trades: [],
-        count: 0,
+        trades,
+        count: trades.length,
       };
     } catch (error) {
       this.logger.error(`Failed to fetch trades for ${marketId}`, error);

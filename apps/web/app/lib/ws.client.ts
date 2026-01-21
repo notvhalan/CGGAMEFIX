@@ -120,16 +120,19 @@ export class WSClient {
 }
 
 // Singleton instance
-let wsClient: WSClient | null = null;
+let wsClientInstance: WSClient | null = null;
 
 export function getWSClient(): WSClient {
   if (typeof window === 'undefined') {
     throw new Error('WSClient can only be used in the browser');
   }
   
-  if (!wsClient) {
-    wsClient = new WSClient();
+  if (!wsClientInstance) {
+    wsClientInstance = new WSClient();
   }
   
-  return wsClient;
+  return wsClientInstance;
 }
+
+// Export singleton for convenience
+export const wsClient = typeof window !== 'undefined' ? getWSClient() : null as any;

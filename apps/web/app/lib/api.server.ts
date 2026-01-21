@@ -45,13 +45,32 @@ export async function getMarketTrades(marketId: string, limit = 50) {
   return fetchApi<any>(`/v1/markets/${marketId}/trades?limit=${limit}`);
 }
 
+// Position APIs
+export async function getPosition(request: Request, marketId: string) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{
+    netYesPence: number;
+    avgEntryYesPts: number;
+    markYesPts: number;
+    unrealizedPnlPence: number;
+    totalFeesPence: number;
+    canCashOut: boolean;
+  }>(`/v1/positions/markets/${marketId}/me`, {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+}
+
 // Order APIs
 export async function createOrder(request: Request, data: {
   marketId: string;
   outcomeId?: string;
-  side: 'BACK' | 'LAY';
-  odds: number;
-  stake: number;
+  side: 'FOR' | 'LAY';
+  pPts?: number;  // Probability points (new pricing model)
+  liabilityPence?: number;  // Liability in pence (max loss for both FOR and LAY)
+  stakePence?: number;  // Deprecated - backward compatibility only
+  odds?: number;  // Deprecated - for backwards compatibility
+  stake?: number;  // Deprecated - for backwards compatibility
+  timeInForce?: 'GTC' | 'IOC';  // Time in force (default GTC)
 }) {
   const cookie = request.headers.get('Cookie');
   

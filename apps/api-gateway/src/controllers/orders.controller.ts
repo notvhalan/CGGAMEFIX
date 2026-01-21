@@ -7,6 +7,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { ZodError } from 'zod';
 import { FastifyRequest } from 'fastify';
 import { DatabaseService } from '../database/database.service';
+import { OrderBookBroadcastService } from '../services/orderbook-broadcast.service';
+import { PRICE_SCALE, stakeToContracts, liabilityToContracts } from '@betting-exchange/shared-types';
 
 @Controller('v1/orders')
 export class OrdersController {
@@ -15,6 +17,7 @@ export class OrdersController {
   constructor(
     private readonly natsClient: NatsClient,
     private readonly databaseService: DatabaseService,
+    private readonly orderBookBroadcast: OrderBookBroadcastService,
   ) {}
 
   @Get()
@@ -52,32 +55,124 @@ export class OrdersController {
         throw new UnauthorizedException('User not authenticated');
       }
 
+      // Debug: log incoming request body
+      this.logger.info('Received order request body:', { body });
+      
       // Validate with Zod
       const orderData = CreateOrderDtoSchema.parse(body);
       
+      this.logger.info('Validated order data:', { orderData });
+      
       const orderId = uuidv4();
       
-      // Store order in database
+      // Convert old format to new format if needed
+      let pPts: number;
+      let liabilityPence: number;
+      let side: 'FOR' | 'LAY';
+      let timeInForce: 'GTC' | 'IOC' = orderData.timeInForce || 'GTC';
+      
+      if (orderData.pPts !== undefined && (orderData.liabilityPence !== undefined || orderData.stakePence !== undefined)) {
+        // New format - use liabilityPence for both sides (stakePence is backward compat)
+        pPts = orderData.pPts;
+        side = orderData.side as 'FOR' | 'LAY';
+        
+        // Use liabilityPence if provided, otherwise fall back to stakePence (for backward compat)
+        liabilityPence = orderData.liabilityPence ?? orderData.stakePence!;
+        
+        if (!liabilityPence || liabilityPence <= 0) {
+          throw new Error('liabilityPence must be positive');
+        }
+      } else if (orderData.odds !== undefined && orderData.stake !== undefined) {
+        // Old format - convert to new format
+        // Convert odds to probability: p = 1/odds
+        // Then to probability points: pPts = p * 10_000_000
+        const probability = 1 / orderData.odds;
+        pPts = Math.round(probability * PRICE_SCALE);
+        // Clamp to valid range
+        pPts = Math.max(1, Math.min(PRICE_SCALE - 1, pPts));
+        
+        // Convert stake from pounds to pence
+        liabilityPence = Math.round(orderData.stake * 100);
+        
+        // Convert BACK/LAY to FOR/LAY
+        // BACK = buying YES = FOR
+        // LAY = selling YES = LAY
+        side = orderData.side === 'BACK' ? 'FOR' : 'LAY';
+      } else {
+        throw new Error('Invalid order format');
+      }
+      
+      // Compute canonical YES price and contracts
+      // Both FOR and LAY use liabilityPence as max loss
+      let yesPts: number;
+      let contractsMicros: bigint;
+      
+      if (side === 'FOR') {
+        // FOR: user risks liabilityPence (their stake), buys at P(YES)
+        yesPts = pPts;
+        contractsMicros = stakeToContracts(liabilityPence, yesPts);
+      } else {
+        // LAY: user risks liabilityPence, sells YES at P(YES) = PRICE_SCALE - P(NO)
+        yesPts = PRICE_SCALE - pPts;
+        contractsMicros = liabilityToContracts(liabilityPence, yesPts);
+      }
+      
+      // Lock balance before creating order (same amount for both sides - their max loss)
+      const requiredBalancePence = liabilityPence;
+      
+      try {
+        await this.databaseService.lockBalance(userId, requiredBalancePence);
+        this.logger.info('Balance locked for order', { userId, orderId, requiredBalancePence });
+      } catch (error) {
+        this.logger.warn('Failed to lock balance', { userId, requiredBalancePence, error: error.message });
+        throw new Error('Insufficient balance to place order');
+      }
+      
+      // Store order in database with new format
       const order = await this.databaseService.createOrder({
         id: orderId,
         userId,
         marketId: orderData.marketId,
         outcomeId: orderData.outcomeId,
-        side: orderData.side,
-        odds: orderData.odds,
-        stake: orderData.stake,
+        side,
+        pPts,
+        yesPts,
+        liabilityPence,
+        originalContractsMicros: contractsMicros.toString(),
+        remainingContractsMicros: contractsMicros.toString(),
       });
       
       // Publish order submission command to NATS for matching engine
       const command = {
         orderId,
         userId,
-        ...orderData,
+        marketId: orderData.marketId,
+        outcomeId: orderData.outcomeId,
+        side,
+        pPts,
+        yesPts,
+        liabilityPence,
+        originalContractsMicros: contractsMicros.toString(),
+        remainingContractsMicros: contractsMicros.toString(),
+        timeInForce,
         timestamp: new Date().toISOString(),
       };
       
-      this.logger.info('Order created and published', { orderId, userId });
+      this.logger.info('Order created and published', { 
+        orderId, 
+        userId, 
+        side, 
+        pPts, 
+        yesPts,
+        liabilityPence,
+        contracts: contractsMicros.toString(),
+      });
       this.natsClient.publish(NATS_SUBJECTS.ORDERS_SUBMIT, command);
+      
+      // Broadcast order book update in real-time
+      setImmediate(() => {
+        this.orderBookBroadcast.broadcastOrderBookUpdate(orderData.marketId);
+      });
       
       // Return immediately (async processing)
       return {
@@ -111,6 +206,10 @@ export class OrdersController {
       // Update order status in database
       await this.databaseService.updateOrderStatus(orderId, 'CANCELLED');
       
+      // Get the order to find its marketId for broadcasting
+      const orders = await this.databaseService.getOrdersByUserId(userId, 1000);
+      const cancelledOrder = orders.find(o => o.id === orderId);
+      
       // Publish order cancellation command to NATS
       const command = {
         orderId,
@@ -120,6 +219,13 @@ export class OrdersController {
       
       this.logger.info('Order cancelled', { orderId, userId });
       this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, command);
+      
+      // Broadcast order book update if we found the market
+      if (cancelledOrder) {
+        setImmediate(() => {
+          this.orderBookBroadcast.broadcastOrderBookUpdate(cancelledOrder.marketId);
+        });
+      }
       
       return {
         orderId,

@@ -5,7 +5,9 @@ import { AuthModule } from './modules/auth/auth.module';
 import { MarketsController } from './controllers/markets.controller';
 import { OrdersController } from './controllers/orders.controller';
 import { WalletController } from './controllers/wallet.controller';
+import { PositionsController } from './controllers/positions.controller';
 import { EventsGateway } from './gateways/events.gateway';
+import { OrderBookBroadcastService } from './services/orderbook-broadcast.service';
 
 @Module({
   imports: [
@@ -17,7 +19,8 @@ import { EventsGateway } from './gateways/events.gateway';
     MarketsController,
     OrdersController,
     WalletController,
+    PositionsController,
   ],
-  providers: [EventsGateway],
+  providers: [EventsGateway, OrderBookBroadcastService],
 })
 export class AppModule {}

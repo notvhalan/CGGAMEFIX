@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getWSClient } from '~/lib/ws.client';
-import { formatOdds, formatRelativeTime } from '~/lib/format';
+import { formatProbability, formatPence, formatRelativeTime } from '~/lib/format';
 
 interface TradesTapeProps {
   trades: any[];
@@ -43,7 +43,7 @@ export function TradesTape({ trades: initialTrades, marketId }: TradesTapeProps)
         fontWeight: 600,
         color: '#4a5568'
       }}>
-        <div>Odds</div>
+        <div>Probability</div>
         <div style={{ textAlign: 'right' }}>Size</div>
         <div style={{ textAlign: 'right' }}>Time</div>
       </div>
@@ -56,7 +56,7 @@ export function TradesTape({ trades: initialTrades, marketId }: TradesTapeProps)
         ) : (
           trades.map((trade: any, i: number) => (
             <div 
-              key={i}
+              key={trade.id || i}
               style={{ 
                 display: 'grid', 
                 gridTemplateColumns: '1fr 1fr 1fr', 
@@ -67,13 +67,13 @@ export function TradesTape({ trades: initialTrades, marketId }: TradesTapeProps)
               }}
             >
               <div style={{ fontWeight: 600 }}>
-                {formatOdds(trade.price || trade.odds || 0)}
+                {formatProbability(trade.yes_pts || 0)}
               </div>
               <div style={{ textAlign: 'right' }}>
-                ${(trade.size || trade.stake || 0).toFixed(2)}
+                £{((trade.cost_pence || 0) / 100).toFixed(2)}
               </div>
               <div style={{ textAlign: 'right', color: '#718096', fontSize: '0.75rem' }}>
-                {trade.timestamp ? formatRelativeTime(trade.timestamp) : 'now'}
+                {trade.executed_at ? formatRelativeTime(trade.executed_at) : 'now'}
               </div>
             </div>
           ))

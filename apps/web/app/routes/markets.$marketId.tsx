@@ -212,47 +212,6 @@ export default function MarketDetail() {
     setSelectedPrice(pPts);
   };
 
-  useEffect(() => {
-    // Connect to WebSocket
-    wsClient.connect();
-
-    // Subscribe to market events
-    const bookTopic = `book:${marketId}`;
-    const tradeTopic = `trades:${marketId}`;
-    
-    wsClient.subscribe(bookTopic);
-    wsClient.subscribe(tradeTopic);
-
-    // Handle order book updates
-    const handleBookUpdate = (data: any) => {
-      console.log('[Market] Book update:', data);
-      if (data.orderBook) {
-        setOrderBook(data.orderBook);
-      }
-    };
-
-    // Handle trade events
-    const handleTrade = (data: any) => {
-      console.log('[Market] Trade:', data);
-      setTrades(prev => {
-        // Prepend new trade and limit to 500
-        const newTrades = [data, ...prev].slice(0, 500);
-        return newTrades;
-      });
-    };
-
-    wsClient.on('book_update', handleBookUpdate);
-    wsClient.on('trade', handleTrade);
-
-    // Cleanup
-    return () => {
-      wsClient.off('book_update', handleBookUpdate);
-      wsClient.off('trade', handleTrade);
-      wsClient.unsubscribe(bookTopic);
-      wsClient.unsubscribe(tradeTopic);
-    };
-  }, [marketId]);
-
   return (
     <div style={{ 
       minHeight: '100vh', 
@@ -463,7 +422,7 @@ export default function MarketDetail() {
           
           {/* Chart Component */}
           <div style={{ flex: 1, overflow: 'hidden', padding: '0.75rem' }}>
-            <PriceChart trades={trades} timeframe={timeframe} />
+            <PriceChart trades={trades} timeframe={timeframe} marketId={marketId} />
           </div>
         </div>
 

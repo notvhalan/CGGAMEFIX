@@ -8,8 +8,9 @@ export enum OrderSide {
 
 // Price constants for 7 decimal place precision
 export const PRICE_SCALE = 10_000_000; // 7 decimal places (1.0000000 = 100%)
-export const CONTRACT_SCALE = 1_000_000; // 6 decimal places (1 contract = 1e6 microcontracts)
-export const MIN_CONTRACT_MICROS = 1_000_000; // Minimum order size: 1 full contract (prevents dust)
+export const CONTRACT_SCALE = 1_000_000n; // 6 decimal places (1 contract = 1e6 microcontracts)
+export const CONTRACT_TICK_MICROS = 10_000n; // 0.01 contracts minimum tick size
+export const MIN_CONTRACT_MICROS = CONTRACT_TICK_MICROS; // Minimum order size: 0.01 contracts (prevents dust)
 export const FEE_BPS = 10; // 0.1% fee = 10 basis points
 export const FEE_DENOM = 10_000;
 
@@ -17,12 +18,21 @@ export const FEE_DENOM = 10_000;
 export const CONTRACT_PAYOUT_PENCE = 100;
 
 /**
+ * Snap down contractsMicros to nearest tick (0.01 contracts)
+ * This prevents dust by ensuring all contract amounts are multiples of CONTRACT_TICK_MICROS
+ */
+export function snapDownToTick(contractsMicros: bigint): bigint {
+  return (contractsMicros / CONTRACT_TICK_MICROS) * CONTRACT_TICK_MICROS;
+}
+
+/**
  * Convert FOR stake to contracts (micros)
  * contracts = stake / price
  * contracts_micros = (stakePence * CONTRACT_SCALE * PRICE_SCALE) / (yesPts * CONTRACT_PAYOUT_PENCE)
  */
 export function stakeToContracts(stakePence: number, yesPts: number): bigint {
-  return BigInt(Math.floor((stakePence * CONTRACT_SCALE * PRICE_SCALE) / (yesPts * CONTRACT_PAYOUT_PENCE)));
+  const raw = (BigInt(stakePence) * CONTRACT_SCALE * BigInt(PRICE_SCALE)) / (BigInt(yesPts) * BigInt(CONTRACT_PAYOUT_PENCE));
+  return snapDownToTick(raw);
 }
 
 /**
@@ -33,7 +43,8 @@ export function stakeToContracts(stakePence: number, yesPts: number): bigint {
  */
 export function liabilityToContracts(liabilityPence: number, yesPts: number): bigint {
   const qPts = PRICE_SCALE - yesPts;
-  return BigInt(Math.floor((liabilityPence * CONTRACT_SCALE * PRICE_SCALE) / (qPts * CONTRACT_PAYOUT_PENCE)));
+  const raw = (BigInt(liabilityPence) * CONTRACT_SCALE * BigInt(PRICE_SCALE)) / (BigInt(qPts) * BigInt(CONTRACT_PAYOUT_PENCE));
+  return snapDownToTick(raw);
 }
 
 /**
@@ -41,7 +52,7 @@ export function liabilityToContracts(liabilityPence: number, yesPts: number): bi
  * costPence = floor(contractsMicros * CONTRACT_PAYOUT_PENCE * yesPts / PRICE_SCALE / CONTRACT_SCALE)
  */
 export function contractsCost(contractsMicros: bigint, yesPts: number): number {
-  return Number((contractsMicros * BigInt(CONTRACT_PAYOUT_PENCE) * BigInt(yesPts)) / BigInt(PRICE_SCALE) / BigInt(CONTRACT_SCALE));
+  return Number((contractsMicros * BigInt(CONTRACT_PAYOUT_PENCE) * BigInt(yesPts)) / BigInt(PRICE_SCALE) / CONTRACT_SCALE);
 }
 
 /**

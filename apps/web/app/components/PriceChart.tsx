@@ -1,3 +1,5 @@
+import { useMemo } from 'react';
+
 interface Trade {
   id: string;
   market_id: string;
@@ -18,6 +20,7 @@ interface Candle {
 interface PriceChartProps {
   trades: Trade[];
   timeframe?: '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+  marketId: string;
 }
 
 function pPtsToPercent(pPts: number): number {
@@ -75,7 +78,8 @@ function buildCandles(trades: Trade[], timeframe: string): Candle[] {
   return candles;
 }
 
-export function PriceChart({ trades, timeframe = '15m' }: PriceChartProps) {
+export function PriceChart({ trades, timeframe = '15m', marketId }: PriceChartProps) {
+  
   if (!trades || trades.length === 0) {
     return (
       <div style={{ 
@@ -95,7 +99,9 @@ export function PriceChart({ trades, timeframe = '15m' }: PriceChartProps) {
     );
   }
 
-  const candles = buildCandles(trades, timeframe);
+  // Rebuild candles whenever trades or timeframe changes
+  const candles = useMemo(() => buildCandles(trades, timeframe), [trades, timeframe]);
+  
   const lastCandle = candles[candles.length - 1];
   const firstCandle = candles[0];
   
@@ -190,7 +196,7 @@ export function PriceChart({ trades, timeframe = '15m' }: PriceChartProps) {
 
           {/* Candlesticks */}
           {candles.map((candle, i) => {
-            const x = (i / (candles.length - 1)) * 1000;
+            const x = candles.length > 1 ? (i / (candles.length - 1)) * 1000 : 500;
             const candleWidth = Math.max(2, 800 / candles.length);
             
             const highY = ((maxPrice - candle.high) / priceRange) * 500;
@@ -201,7 +207,12 @@ export function PriceChart({ trades, timeframe = '15m' }: PriceChartProps) {
             const isBullish = candle.close >= candle.open;
             const color = isBullish ? '#10b981' : '#ef4444';
             const bodyTop = Math.min(openY, closeY);
-            const bodyHeight = Math.abs(closeY - openY) || 1;
+            const bodyHeight = Math.max(Math.abs(closeY - openY), 1);
+
+            // Guard against NaN or invalid values
+            if (isNaN(x) || isNaN(highY) || isNaN(lowY) || isNaN(bodyTop) || isNaN(bodyHeight)) {
+              return null;
+            }
 
             return (
               <g key={i}>
@@ -250,10 +261,15 @@ export function PriceChart({ trades, timeframe = '15m' }: PriceChartProps) {
       }}>
         <svg width="100%" height="100%" viewBox="0 0 1000 100" preserveAspectRatio="none">
           {candles.map((candle, i) => {
-            const x = (i / (candles.length - 1)) * 1000;
+            const x = candles.length > 1 ? (i / (candles.length - 1)) * 1000 : 500;
             const barWidth = Math.max(2, 800 / candles.length);
-            const height = (candle.volume / maxVolume) * 100;
+            const height = maxVolume > 0 ? (candle.volume / maxVolume) * 100 : 0;
             const isBullish = candle.close >= candle.open;
+
+            // Guard against NaN or invalid values
+            if (isNaN(x) || isNaN(height) || isNaN(barWidth)) {
+              return null;
+            }
 
             return (
               <rect

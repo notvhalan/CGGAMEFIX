@@ -88,7 +88,7 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
 
               return (
                 <div
-                  key={i}
+                  key={`ask-${yesPts}-${contractsMicros}-${i}`}
                   onClick={() => onPriceClick?.(yesPts)}
                   style={{
                     position: 'relative',
@@ -164,7 +164,7 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
 
               return (
                 <div
-                  key={i}
+                  key={`bid-${yesPts}-${contractsMicros}-${i}`}
                   onClick={() => onPriceClick?.(yesPts)}
                   style={{
                     position: 'relative',
@@ -282,7 +282,7 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
                 
                 return (
                   <div 
-                    key={i}
+                    key={`bid-full-${yesPts}-${contractsMicros}-${i}`}
                     style={{ 
                       display: 'grid', 
                       gridTemplateColumns: showNO ? '1.2fr 0.8fr 1fr' : '1fr 1fr', 
@@ -355,7 +355,7 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
                 
                 return (
                   <div 
-                    key={i}
+                    key={`ask-full-${yesPts}-${contractsMicros}-${i}`}
                     style={{ 
                       display: 'grid', 
                       gridTemplateColumns: showNO ? '1.2fr 0.8fr 1fr' : '1fr 1fr', 

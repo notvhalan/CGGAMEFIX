@@ -1,5 +1,4 @@
 import { useEffect, useState, useRef } from 'react';
-import { getWSClient } from '~/lib/ws.client';
 import { formatProbability, formatPence, formatRelativeTime } from '~/lib/format';
 
 interface TradesTapeProps {
@@ -9,39 +8,24 @@ interface TradesTapeProps {
 }
 
 export function TradesTape({ trades: initialTrades, marketId, compact = false }: TradesTapeProps) {
-  const [trades, setTrades] = useState(initialTrades);
   const [flashingTrades, setFlashingTrades] = useState<Set<string>>(new Set());
-  const prevPriceRef = useRef<number>(initialTrades[0]?.yes_pts || 0);
+  const prevTradesRef = useRef<any[]>([]);
 
+  // Flash animation for new trades
   useEffect(() => {
-    const ws = getWSClient();
-    ws.connect();
-    ws.subscribe(`trades:${marketId}`);
-
-    const handler = (data: any) => {
-      setTrades((prev) => {
-        // Flash the new trade
-        if (data.id) {
-          setFlashingTrades(new Set([data.id]));
-          setTimeout(() => {
-            setFlashingTrades(prev => {
-              const next = new Set(prev);
-              next.delete(data.id);
-              return next;
-            });
-          }, 300);
-        }
-        return [data, ...prev].slice(0, 100);
-      });
-    };
-
-    ws.on('trade', handler);
-
-    return () => {
-      ws.off('trade', handler);
-      ws.unsubscribe(`trades:${marketId}`);
-    };
-  }, [marketId]);
+    const newTradeIds = initialTrades
+      .filter(trade => !prevTradesRef.current.some(prev => prev.id === trade.id))
+      .map(trade => trade.id);
+    
+    if (newTradeIds.length > 0) {
+      setFlashingTrades(new Set(newTradeIds));
+      setTimeout(() => {
+        setFlashingTrades(new Set());
+      }, 300);
+    }
+    
+    prevTradesRef.current = initialTrades;
+  }, [initialTrades]);
 
   if (compact) {
     return (
@@ -57,15 +41,14 @@ export function TradesTape({ trades: initialTrades, marketId, compact = false }:
           fontSize: '0.75rem',
           fontFamily: 'monospace',
           gap: '2rem'
-        }}>
-          {trades.length === 0 ? (
+        }}>          {initialTrades.length === 0 ? (
             <div style={{ color: '#64748b', fontSize: '0.6875rem', padding: '1rem' }}>
               No trades yet
             </div>
           ) : (
-            trades.slice(0, 20).map((trade: any, i: number) => {
+            initialTrades.slice(0, 20).map((trade: any, i: number) => {
               const currentPrice = trade.yes_pts || 0;
-              const prevPrice = i < trades.length - 1 ? (trades[i + 1].yes_pts || 0) : currentPrice;
+              const prevPrice = i < initialTrades.length - 1 ? (initialTrades[i + 1].yes_pts || 0) : currentPrice;
               const isUp = currentPrice > prevPrice;
               const isDown = currentPrice < prevPrice;
               const isFlashing = flashingTrades.has(trade.id);
@@ -133,12 +116,12 @@ export function TradesTape({ trades: initialTrades, marketId, compact = false }:
       </div>
 
       <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-        {trades.length === 0 ? (
+        {initialTrades.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '2rem', color: '#a0aec0', fontSize: '0.875rem' }}>
             No trades yet
           </div>
         ) : (
-          trades.map((trade: any, i: number) => (
+          initialTrades.map((trade: any, i: number) => (
             <div 
               key={trade.id || i}
               style={{ 

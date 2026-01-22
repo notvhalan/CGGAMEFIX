@@ -136,7 +136,12 @@ export class Orderbook {
           order.remainingContractsMicros -= matchContractsMicros;
           bestAsk.remainingContractsMicros -= matchContractsMicros;
           
-          // Remove maker if fully filled
+          // Clean up dust: if maker has less than tick size remaining, set to 0
+          if (bestAsk.remainingContractsMicros < MIN_CONTRACT_MICROS) {
+            bestAsk.remainingContractsMicros = 0n;
+          }
+          
+          // Remove maker if fully filled or dust
           if (bestAsk.remainingContractsMicros === 0n) {
             this.asks.shift();
             this.orderMap.delete(bestAsk.id);
@@ -144,6 +149,11 @@ export class Orderbook {
         } else {
           break; // No more matches possible
         }
+      }
+      
+      // Clean up taker dust: if less than tick size remaining, set to 0 and don't rest
+      if (order.remainingContractsMicros < MIN_CONTRACT_MICROS) {
+        order.remainingContractsMicros = 0n;
       }
       
       // Add remaining to bids if any (must meet minimum size)
@@ -189,7 +199,12 @@ export class Orderbook {
           order.remainingContractsMicros -= matchContractsMicros;
           bestBid.remainingContractsMicros -= matchContractsMicros;
           
-          // Remove maker if fully filled
+          // Clean up dust: if maker has less than tick size remaining, set to 0
+          if (bestBid.remainingContractsMicros < MIN_CONTRACT_MICROS) {
+            bestBid.remainingContractsMicros = 0n;
+          }
+          
+          // Remove maker if fully filled or dust
           if (bestBid.remainingContractsMicros === 0n) {
             this.bids.shift();
             this.orderMap.delete(bestBid.id);
@@ -197,6 +212,11 @@ export class Orderbook {
         } else {
           break; // No more matches possible
         }
+      }
+      
+      // Clean up taker dust: if less than tick size remaining, set to 0 and don't rest
+      if (order.remainingContractsMicros < MIN_CONTRACT_MICROS) {
+        order.remainingContractsMicros = 0n;
       }
       
       // Add remaining to asks if any (must meet minimum size)

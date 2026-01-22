@@ -126,10 +126,19 @@ export class EventsGateway
     });
 
     // Subscribe to trade executions
-    this.natsClient.subscribe(NATS_SUBJECTS.MARKET_TRADE_EXECUTED, (data) => {
-      const { marketId, ...tradeData } = data;
+    this.natsClient.subscribe('events.trade.executed', (data) => {
+      const { marketId, yesPricePts, sizePence, executedAt, ...rest } = data;
+      
+      // Normalize field names to match DB schema (snake_case)
+      const normalizedTrade = {
+        ...rest,
+        yes_pts: yesPricePts,
+        cost_pence: sizePence,
+        executed_at: executedAt,
+      };
+      
       const topic = `trades:${marketId}`;
-      this.server.to(topic).emit('trade', tradeData);
+      this.server.to(topic).emit('trade', normalizedTrade);
     });
 
     // Subscribe to order updates

@@ -291,7 +291,9 @@ export class MatchingEngine {
 
       // Update maker order status in database
       const makerFinalStatus = makerOrder.remainingContractsMicros === 0n ? 'MATCHED' : 'PARTIALLY_MATCHED';
+      logger.info(`Updating maker order ${makerOrder.id}: status=${makerFinalStatus}, remaining=${makerOrder.remainingContractsMicros}`);
       await this.db.updateOrderStatus(makerOrder.id, makerFinalStatus, makerOrder.remainingContractsMicros);
+      logger.info(`Maker order ${makerOrder.id} updated successfully`);
 
       // Publish TRADE_EXECUTED event
       await this.publishTradeExecuted(
@@ -323,6 +325,7 @@ export class MatchingEngine {
       logger.info(`Rebuilding orderbook for market ${marketId}`);
       
       const dbOrders = await this.db.getOpenOrdersForMarket(marketId);
+      logger.info(`Found ${dbOrders.length} open orders in database`);
       
       for (const dbOrder of dbOrders) {
         // Convert BACK/LAY to FOR/LAY for backward compatibility during migration
@@ -336,7 +339,20 @@ export class MatchingEngine {
         
         // Get pPts and yesPts from DB
         const pPts = dbOrder.p_pts || Math.floor(PRICE_SCALE / parseFloat(dbOrder.odds || '2.0'));
-        const yesPts = dbOrder.yes_pts || pPts;
+        
+        // Correctly derive yesPts for both FOR and LAY
+        let yesPts: number;
+        if (dbOrder.yes_pts != null) {
+          yesPts = dbOrder.yes_pts;
+        } else {
+          // Fallback: canonicalize based on side
+          // FOR: yesPts = pPts (buying YES at pPts)
+          // LAY: yesPts = PRICE_SCALE - pPts (selling YES, so invert NO price to YES price)
+          yesPts = (side === OrderSide.FOR) ? pPts : (PRICE_SCALE - pPts);
+        }
+        
+        const remainingContracts = BigInt(dbOrder.remaining_contracts || '0');
+        logger.info(`Rebuilding order ${dbOrder.id.substring(0, 8)}: ${side} yesPts=${yesPts} remaining=${remainingContracts}`);
         
         const orderbookOrder: OrderbookOrder = {
           id: dbOrder.id,
@@ -344,7 +360,7 @@ export class MatchingEngine {
           side,
           pPts,
           yesPts,
-          remainingContractsMicros: BigInt(dbOrder.remaining_contracts || '0'),
+          remainingContractsMicros: remainingContracts,
           timestamp: dbOrder.created_at,
         };
         

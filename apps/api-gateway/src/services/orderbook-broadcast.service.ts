@@ -24,19 +24,22 @@ export class OrderBookBroadcastService {
       const forOrders = orders.filter(o => o.side === 'FOR');
       const layOrders = orders.filter(o => o.side === 'LAY');
       
-      // Group by probability points and sum remaining amounts in pence
-      const groupByPPts = (ordersList: typeof forOrders) => {
-        const grouped = new Map<number, number>();
+      // Group by yesPts and sum remaining contracts
+      const groupByYesPts = (ordersList: typeof forOrders) => {
+        const grouped = new Map<number, bigint>();
         ordersList.forEach(order => {
-          const pPts = order.pPts;
-          const remainingPence = order.remainingPence;
-          grouped.set(pPts, (grouped.get(pPts) || 0) + remainingPence);
+          const yesPts = order.yesPts;
+          const remainingContracts = BigInt(order.remainingContracts || 0);
+          grouped.set(yesPts, (grouped.get(yesPts) || 0n) + remainingContracts);
         });
-        return Array.from(grouped.entries()).map(([pPts, sizePence]) => ({ pPts, sizePence }));
+        return Array.from(grouped.entries()).map(([yesPts, contractsMicros]) => ({ 
+          yesPts, 
+          contractsMicros: contractsMicros.toString() 
+        }));
       };
       
-      const bids = groupByPPts(forOrders).sort((a, b) => b.pPts - a.pPts); // Highest first
-      const asks = groupByPPts(layOrders).sort((a, b) => a.pPts - b.pPts); // Lowest first
+      const bids = groupByYesPts(forOrders).sort((a, b) => b.yesPts - a.yesPts); // Highest first
+      const asks = groupByYesPts(layOrders).sort((a, b) => a.yesPts - b.yesPts); // Lowest first
       
       const orderBook = {
         marketId,

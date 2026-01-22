@@ -17,20 +17,22 @@ export const CONTRACT_PAYOUT_PENCE = 100;
 
 /**
  * Convert FOR stake to contracts (micros)
- * contracts = floor(stakePence * CONTRACT_SCALE * PRICE_SCALE / yesPts)
+ * contracts = stake / price
+ * contracts_micros = (stakePence * CONTRACT_SCALE * PRICE_SCALE) / (yesPts * CONTRACT_PAYOUT_PENCE)
  */
 export function stakeToContracts(stakePence: number, yesPts: number): bigint {
-  return BigInt(Math.floor((stakePence * CONTRACT_SCALE * PRICE_SCALE) / yesPts));
+  return BigInt(Math.floor((stakePence * CONTRACT_SCALE * PRICE_SCALE) / (yesPts * CONTRACT_PAYOUT_PENCE)));
 }
 
 /**
  * Convert LAY liability to contracts (micros)
- * contracts = floor(liabilityPence * CONTRACT_SCALE * PRICE_SCALE / qPts)
+ * contracts = liability / (1 - price)
+ * contracts_micros = (liabilityPence * CONTRACT_SCALE * PRICE_SCALE) / (qPts * CONTRACT_PAYOUT_PENCE)
  * where qPts = PRICE_SCALE - yesPts
  */
 export function liabilityToContracts(liabilityPence: number, yesPts: number): bigint {
   const qPts = PRICE_SCALE - yesPts;
-  return BigInt(Math.floor((liabilityPence * CONTRACT_SCALE * PRICE_SCALE) / qPts));
+  return BigInt(Math.floor((liabilityPence * CONTRACT_SCALE * PRICE_SCALE) / (qPts * CONTRACT_PAYOUT_PENCE)));
 }
 
 /**

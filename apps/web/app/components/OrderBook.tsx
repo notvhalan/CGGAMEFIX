@@ -8,8 +8,8 @@ const CONTRACT_SCALE = 1_000_000;
 // Format contracts from microcontracts
 function formatContracts(contractsMicros: bigint | string | number): string {
   const contracts = typeof contractsMicros === 'bigint' 
-    ? Number(contractsMicros) / CONTRACT_SCALE / 100
-    : Number(contractsMicros) / CONTRACT_SCALE / 100;
+    ? Number(contractsMicros) / CONTRACT_SCALE
+    : Number(contractsMicros) / CONTRACT_SCALE;
   return contracts.toFixed(2);
 }
 

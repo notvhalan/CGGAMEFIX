@@ -108,11 +108,14 @@ export class OrdersController {
       let contractsMicros: bigint;
       
       if (side === 'FOR') {
-        // FOR: user risks liabilityPence (their stake), buys at P(YES)
+        // FOR: user backs YES at pPts -> they buy YES at pPts
+        // yesPts = pPts (the probability they entered)
         yesPts = pPts;
         contractsMicros = stakeToContracts(liabilityPence, yesPts);
       } else {
-        // LAY: user risks liabilityPence, sells YES at P(YES) = PRICE_SCALE - P(NO)
+        // LAY: user backs NO at pPts -> they sell YES at (1 - pPts)
+        // If they back NO at 67%, they're selling YES at 33%
+        // yesPts = PRICE_SCALE - pPts (convert NO probability to YES space)
         yesPts = PRICE_SCALE - pPts;
         contractsMicros = liabilityToContracts(liabilityPence, yesPts);
       }

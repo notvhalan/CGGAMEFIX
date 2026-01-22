@@ -142,7 +142,7 @@ export class DatabaseService {
   async getOpenOrdersForMarket(marketId: string): Promise<DbOrder[]> {
     try {
       const result = await this.pool.query<DbOrder>(
-        `SELECT id, market_id, user_id, side, p_pts, stake_pence, remaining_pence, status, created_at, updated_at
+        `SELECT id, market_id, user_id, side, p_pts, yes_pts, remaining_contracts, status, created_at, updated_at
          FROM orders 
          WHERE market_id = $1 
            AND status IN ('OPEN', 'PARTIALLY_MATCHED')

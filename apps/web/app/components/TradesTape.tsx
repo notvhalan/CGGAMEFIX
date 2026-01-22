@@ -70,7 +70,7 @@ export function TradesTape({ trades: initialTrades, marketId }: TradesTapeProps)
                 {formatProbability(trade.yes_pts || 0)}
               </div>
               <div style={{ textAlign: 'right' }}>
-                £{((trade.cost_pence || 0) / 100).toFixed(2)}
+                {((trade.contracts || 0) / 1_000_000).toFixed(2)}
               </div>
               <div style={{ textAlign: 'right', color: '#718096', fontSize: '0.75rem' }}>
                 {trade.executed_at ? formatRelativeTime(trade.executed_at) : 'now'}

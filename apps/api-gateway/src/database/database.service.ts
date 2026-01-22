@@ -465,6 +465,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         market_id, 
         yes_pts,
         cost_pence,
+        contracts,
         maker_order_id,
         taker_order_id,
         maker_id,

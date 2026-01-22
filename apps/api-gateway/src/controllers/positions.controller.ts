@@ -34,14 +34,17 @@ export class PositionsController {
     @Param('marketId') marketId: string,
     @Req() req: any
   ): Promise<Position> {
-    // Get user ID from session/auth (for now using mock)
-    const userId = req.user?.id || 'f1f4f537-ba09-4e45-8a20-f0066fa7e84a';
+    // Get user ID from session
+    const userId = req.session?.userId;
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
 
     // Get all user's trades for this market
     const trades = await this.databaseService.query(
       `SELECT 
-        yes_price_pts,
-        size_pence,
+        yes_pts,
+        cost_pence,
         side,
         maker_id,
         taker_id,
@@ -56,15 +59,16 @@ export class PositionsController {
     );
 
     // Calculate net position with proper weighted average and track individual positions
-    let netYesPence = 0;
-    let totalCostPence = 0;
+    let netCostPence = 0; // Net cash flow (positive = spent, negative = received)
+    let totalWeightedCost = 0; // For weighted average calculation
+    let totalAbsCost = 0; // Sum of absolute costs for averaging
     let totalFeesPence = 0;
     const buyPositions: TradePosition[] = [];
     const sellPositions: TradePosition[] = [];
 
     for (const trade of trades.rows) {
-      const sizePence = parseInt(trade.size_pence);
-      const yesPricePts = parseInt(trade.yes_price_pts);
+      const costPence = parseInt(trade.cost_pence || '0');
+      const yesPts = parseInt(trade.yes_pts || '0');
       const isMaker = trade.maker_id === userId;
       const isTaker = trade.taker_id === userId;
       const executedAt = trade.executed_at;
@@ -73,8 +77,6 @@ export class PositionsController {
       // FOR side = buying YES, LAY side = selling YES (buying NO)
       const side = trade.side as string;
       
-      let positionDelta = 0;
-      let costDelta = 0;
       let feePence = 0;
       let userBought = false;
       
@@ -83,13 +85,17 @@ export class PositionsController {
         feePence = parseInt(trade.maker_fee_pence || '0');
         if (side === 'FOR' || side === 'BACK') {
           // Taker was FOR, so maker was LAY (sold YES)
-          positionDelta = -sizePence;
-          costDelta = -Math.floor((sizePence * yesPricePts) / PRICE_SCALE);
+          // User receives costPence
+          netCostPence -= costPence;
+          totalWeightedCost -= costPence * yesPts;
+          totalAbsCost += costPence;
           userBought = false;
         } else {
           // Taker was LAY, so maker was FOR (bought YES)
-          positionDelta = sizePence;
-          costDelta = Math.floor((sizePence * yesPricePts) / PRICE_SCALE);
+          // User pays costPence
+          netCostPence += costPence;
+          totalWeightedCost += costPence * yesPts;
+          totalAbsCost += costPence;
           userBought = true;
         }
         totalFeesPence += feePence;
@@ -100,43 +106,44 @@ export class PositionsController {
         feePence = parseInt(trade.taker_fee_pence || '0');
         if (side === 'FOR' || side === 'BACK') {
           // Taker FOR = bought YES
-          positionDelta = sizePence;
-          costDelta = Math.floor((sizePence * yesPricePts) / PRICE_SCALE);
+          // User pays costPence
+          netCostPence += costPence;
+          totalWeightedCost += costPence * yesPts;
+          totalAbsCost += costPence;
           userBought = true;
         } else {
           // Taker LAY = sold YES
-          positionDelta = -sizePence;
-          costDelta = -Math.floor((sizePence * yesPricePts) / PRICE_SCALE);
+          // User receives costPence
+          netCostPence -= costPence;
+          totalWeightedCost -= costPence * yesPts;
+          totalAbsCost += costPence;
           userBought = false;
         }
         totalFeesPence += feePence;
       }
       
-      netYesPence += positionDelta;
-      totalCostPence += costDelta;
-      
       // Track individual positions
       if (userBought) {
         buyPositions.push({
-          sizePence,
-          yesPricePts,
+          sizePence: costPence,
+          yesPricePts: yesPts,
           feePence,
           executedAt,
         });
       } else {
         sellPositions.push({
-          sizePence,
-          yesPricePts,
+          sizePence: costPence,
+          yesPricePts: yesPts,
           feePence,
           executedAt,
         });
       }
     }
 
-    // Calculate weighted average entry price from net position
-    // avgEntry = totalCost / netPosition
-    const avgEntryYesPts = Math.abs(netYesPence) > 0
-      ? Math.floor((Math.abs(totalCostPence) * PRICE_SCALE) / Math.abs(netYesPence))
+    // Calculate weighted average entry price
+    // avgEntry = sum(cost * price) / sum(cost)
+    const avgEntryYesPts = totalAbsCost > 0
+      ? Math.floor(Math.abs(totalWeightedCost) / totalAbsCost)
       : 0;
 
     // Get current mark price from orderbook
@@ -181,19 +188,25 @@ export class PositionsController {
       : avgEntryYesPts || Math.floor(PRICE_SCALE / 2);
 
     // Calculate unrealized P&L
-    const markValue = Math.floor((Math.abs(netYesPence) * lastMarkYesPts) / PRICE_SCALE);
-    const unrealizedPnlPence = netYesPence > 0
-      ? markValue - totalCostPence
-      : totalCostPence - markValue;
+    // If net cost > 0 (spent money = long position): PnL = currentValue - costPaid
+    // If net cost < 0 (received money = short position): PnL = cashReceived - currentValue
+    // Current value of position = |netCost| * markPrice / entryPrice
+    const currentValuePence = totalAbsCost > 0 && avgEntryYesPts > 0
+      ? Math.floor((totalAbsCost * lastMarkYesPts) / avgEntryYesPts)
+      : 0;
+    
+    const unrealizedPnlPence = netCostPence > 0
+      ? currentValuePence - netCostPence // Long: current value - what we paid
+      : netCostPence + currentValuePence; // Short: what we received - current value (negate because netCost is negative)
 
     return {
       marketId,
-      netYesPence,
+      netYesPence: Math.abs(netCostPence), // Display as absolute value
       avgEntryYesPts,
       markYesPts: lastMarkYesPts,
       unrealizedPnlPence: unrealizedPnlPence - totalFeesPence,
       totalFeesPence,
-      canCashOut: Math.abs(netYesPence) > 0 && (bestBidYesPts > 0 || bestAskYesPts < PRICE_SCALE),
+      canCashOut: Math.abs(netCostPence) > 0 && (bestBidYesPts > 0 || bestAskYesPts < PRICE_SCALE),
       buyPositions,
       sellPositions,
     };

@@ -136,10 +136,11 @@ export class Orderbook {
       }
     } else {
       // This order is an ASK (LAY): try to match with bids (FOR)
+      logger.debug(`LAY order: checking ${this.bids.length} bids for matches`);
       while (order.remainingContractsMicros > 0n && this.bids.length > 0) {
         const bestBid = this.bids[0];
         
-        logger.debug(`Checking ASK yesPts=${order.yesPts} with BID yesPts=${bestBid.yesPts}: ${bestBid.yesPts >= order.yesPts}`);
+        logger.debug(`Checking ASK yesPts=${order.yesPts} with BID yesPts=${bestBid.yesPts} remaining=${bestBid.remainingContractsMicros}: ${bestBid.yesPts >= order.yesPts}`);
         
         // Match when bid.yesPts >= ask.yesPts
         if (bestBid.yesPts >= order.yesPts) {

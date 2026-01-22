@@ -80,28 +80,33 @@ export class PositionsController {
       let feePence = 0;
       let userBought = false;
       
+      // Skip self-trading (should not happen but handle gracefully)
+      if (isMaker && isTaker) {
+        // Self-trading: user is both sides of the trade, skip to avoid double-counting
+        continue;
+      }
+      
       if (isMaker) {
         // User was maker
+        // The 'side' field is the TAKER's side, so maker is opposite
         feePence = parseInt(trade.maker_fee_pence || '0');
         if (side === 'FOR' || side === 'BACK') {
-          // Taker was FOR, so maker was LAY (sold YES)
-          // User receives costPence
+          // Taker was FOR (buying YES), so maker was LAY (selling YES)
+          // Maker receives costPence
           netCostPence -= costPence;
           totalWeightedCost -= costPence * yesPts;
           totalAbsCost += costPence;
           userBought = false;
         } else {
-          // Taker was LAY, so maker was FOR (bought YES)
-          // User pays costPence
+          // Taker was LAY (selling YES), so maker was FOR (buying YES)
+          // Maker pays costPence
           netCostPence += costPence;
           totalWeightedCost += costPence * yesPts;
           totalAbsCost += costPence;
           userBought = true;
         }
         totalFeesPence += feePence;
-      }
-      
-      if (isTaker) {
+      } else if (isTaker) {
         // User was taker
         feePence = parseInt(trade.taker_fee_pence || '0');
         if (side === 'FOR' || side === 'BACK') {

@@ -28,18 +28,19 @@ async function bootstrap() {
   await fastifyInstance.register(fastifySession.default, {
     secret: process.env.SESSION_SECRET || 'replace-with-secure-secret-in-production',
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // require https in production
+      secure: false, // Set to false for localhost development
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'lax',
+      sameSite: 'lax', // Allows cookies on same-site localhost navigation
+      domain: 'localhost', // Explicitly set domain for localhost
     },
     saveUninitialized: false,
     rolling: true,
   });
 
-  // Enable CORS with credentials
+  // Enable CORS with credentials - accept both ports
   app.enableCors({
-    origin: process.env.AUTH_SUCCESS_REDIRECT?.replace(/\/app$/, '') || 'http://localhost:3001',
+    origin: ['http://localhost:5173', 'http://localhost:3001', process.env.AUTH_SUCCESS_REDIRECT?.replace(/\/app$/, '') || 'http://localhost:3001'],
     credentials: true,
   });
 

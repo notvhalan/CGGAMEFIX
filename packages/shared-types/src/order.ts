@@ -9,6 +9,7 @@ export enum OrderSide {
 // Price constants for 7 decimal place precision
 export const PRICE_SCALE = 10_000_000; // 7 decimal places (1.0000000 = 100%)
 export const CONTRACT_SCALE = 1_000_000; // 6 decimal places (1 contract = 1e6 microcontracts)
+export const MIN_CONTRACT_MICROS = 1_000_000; // Minimum order size: 1 full contract (prevents dust)
 export const FEE_BPS = 10; // 0.1% fee = 10 basis points
 export const FEE_DENOM = 10_000;
 

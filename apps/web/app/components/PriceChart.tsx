@@ -1,169 +1,272 @@
 interface Trade {
   id: string;
   market_id: string;
-  yes_pts: number; // Probability points (1-9,999,999) - snake_case from database
+  yes_pts: number;
   cost_pence: number;
   executed_at: string | Date;
 }
 
-interface PriceChartProps {
-  trades: Trade[];
+interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
-// Convert probability points to percentage (0-100%)
-// PRICE_SCALE = 10,000,000, so divide by 100,000
-// e.g., 5,000,000 pPts = 50.0000%
+interface PriceChartProps {
+  trades: Trade[];
+  timeframe?: '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+}
+
 function pPtsToPercent(pPts: number): number {
   return pPts / 100_000;
 }
 
-export function PriceChart({ trades }: PriceChartProps) {
+// Build candles from trades based on timeframe
+function buildCandles(trades: Trade[], timeframe: string): Candle[] {
+  if (trades.length === 0) return [];
+
+  const intervalMs: Record<string, number> = {
+    '1m': 60_000,
+    '5m': 300_000,
+    '15m': 900_000,
+    '1h': 3_600_000,
+    '4h': 14_400_000,
+    '1d': 86_400_000,
+  };
+
+  const interval = intervalMs[timeframe] || intervalMs['15m'];
+  const sorted = [...trades].sort((a, b) => 
+    new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
+  );
+
+  const candles: Candle[] = [];
+  const buckets = new Map<number, Trade[]>();
+
+  // Group trades into time buckets
+  sorted.forEach(trade => {
+    const time = new Date(trade.executed_at).getTime();
+    const bucketTime = Math.floor(time / interval) * interval;
+    if (!buckets.has(bucketTime)) {
+      buckets.set(bucketTime, []);
+    }
+    buckets.get(bucketTime)!.push(trade);
+  });
+
+  // Convert buckets to candles
+  Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .forEach(([time, bucketTrades]) => {
+      const prices = bucketTrades.map(t => pPtsToPercent(t.yes_pts));
+      const volume = bucketTrades.reduce((sum, t) => sum + t.cost_pence, 0);
+      
+      candles.push({
+        time,
+        open: prices[0],
+        high: Math.max(...prices),
+        low: Math.min(...prices),
+        close: prices[prices.length - 1],
+        volume
+      });
+    });
+
+  return candles;
+}
+
+export function PriceChart({ trades, timeframe = '15m' }: PriceChartProps) {
   if (!trades || trades.length === 0) {
     return (
       <div style={{ 
-        background: 'white', 
-        padding: '1rem', 
-        borderRadius: '8px', 
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        height: '320px',
+        height: '100%',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        overflow: 'hidden'
+        flexDirection: 'column',
+        color: '#64748b'
       }}>
-        <div style={{ textAlign: 'center', color: '#a0aec0' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📈</div>
-          <div style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem' }}>No Trades Yet</div>
-          <div style={{ fontSize: '0.875rem' }}>
-            Price chart will appear once trading begins
-          </div>
+        <div style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>📈</div>
+        <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>No Trades Yet</div>
+        <div style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+          Chart will appear once trading begins
         </div>
       </div>
     );
   }
 
-  // Sort trades by time (oldest first for the chart)
-  const sortedTrades = [...trades].sort((a, b) => {
-    const timeA = new Date(a.executed_at).getTime();
-    const timeB = new Date(b.executed_at).getTime();
-    return timeA - timeB;
-  });
+  const candles = buildCandles(trades, timeframe);
+  const lastCandle = candles[candles.length - 1];
+  const firstCandle = candles[0];
+  
+  if (!lastCandle || !firstCandle) {
+    return <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b' }}>Building chart...</div>;
+  }
 
-  // Calculate probability percentages (convert from probability points)
-  const probabilities = sortedTrades.map(t => pPtsToPercent(t.yes_pts));
-  const lastProb = probabilities[probabilities.length - 1];
-  const firstProb = probabilities[0];
-  const probChange = lastProb - firstProb;
-  const probChangePercent = ((probChange / firstProb) * 100).toFixed(2);
-  const isPositive = probChange >= 0;
+  const priceChange = lastCandle.close - firstCandle.open;
+  const priceChangePercent = ((priceChange / firstCandle.open) * 100);
+  const isPositive = priceChange >= 0;
 
-  // Chart dimensions
-  const width = 100;
-  const height = 60;
-  const padding = { top: 5, right: 5, bottom: 5, left: 5 };
-  const chartWidth = width - padding.left - padding.right;
-  const chartHeight = height - padding.top - padding.bottom;
-
-  // Calculate min/max for scaling (use 0-100% range for probabilities)
-  const minProb = Math.min(...probabilities, 0);
-  const maxProb = Math.max(...probabilities, 100);
-  const probRange = maxProb - minProb || 1; // Avoid division by zero
-
-  // Generate path points
-  const points = sortedTrades.map((trade, index) => {
-    const prob = pPtsToPercent(trade.yes_pts);
-    const x = padding.left + (index / (sortedTrades.length - 1)) * chartWidth;
-    const y = padding.top + chartHeight - ((prob - minProb) / probRange) * chartHeight;
-    return `${x},${y}`;
-  });
-
-  const pathD = `M ${points.join(' L ')}`;
-
-  // Generate area path for gradient fill
-  const areaPath = `${pathD} L ${padding.left + chartWidth},${padding.top + chartHeight} L ${padding.left},${padding.top + chartHeight} Z`;
+  // Calculate chart bounds
+  const allPrices = candles.flatMap(c => [c.high, c.low]);
+  const minPrice = Math.min(...allPrices);
+  const maxPrice = Math.max(...allPrices);
+  const priceRange = maxPrice - minPrice || 1;
+  
+  const maxVolume = Math.max(...candles.map(c => c.volume), 1);
 
   return (
     <div style={{ 
-      background: 'white', 
-      padding: '1rem', 
-      borderRadius: '8px', 
-      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-      height: '320px',
+      height: '100%',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden'
     }}>
-      <div style={{ marginBottom: '1rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem' }}>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 600, color: '#1a202c', margin: 0 }}>Probability Chart</h3>
-          <div style={{ fontSize: '0.875rem', color: '#718096' }}>
-            {sortedTrades.length} trades
-          </div>
+      {/* Chart Stats Header */}
+      <div style={{ 
+        padding: '0.5rem 0.75rem',
+        borderBottom: '1px solid #2d3748',
+        display: 'flex',
+        gap: '1.5rem',
+        alignItems: 'center',
+        fontSize: '0.75rem',
+        flexShrink: 0
+      }}>
+        <div>
+          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>Last</span>
+          <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#e4e8eb' }}>
+            {lastCandle.close.toFixed(2)}%
+          </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-          <div style={{ fontSize: '2rem', fontWeight: 700, color: '#1a202c' }}>
-            {lastProb.toFixed(4)}%
-          </div>
-          <div style={{ 
-            fontSize: '1rem', 
-            fontWeight: 600,
-            color: isPositive ? '#38a169' : '#e53e3e'
-          }}>
-            {isPositive ? '+' : ''}{probChange.toFixed(4)}% ({isPositive ? '+' : ''}{probChangePercent}%)
-          </div>
+        <div style={{ 
+          fontWeight: 600, 
+          color: isPositive ? '#10b981' : '#ef4444' 
+        }}>
+          {isPositive ? '+' : ''}{priceChangePercent.toFixed(2)}%
+        </div>
+        <div>
+          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>H</span>
+          <span style={{ fontWeight: 600 }}>{maxPrice.toFixed(2)}%</span>
+        </div>
+        <div>
+          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>L</span>
+          <span style={{ fontWeight: 600 }}>{minPrice.toFixed(2)}%</span>
+        </div>
+        <div>
+          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>Candles</span>
+          <span style={{ fontWeight: 600 }}>{candles.length}</span>
         </div>
       </div>
 
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <svg 
-          viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
-          style={{ width: '100%', height: '100%', display: 'block' }}
-        >
-          <defs>
-            <linearGradient id="priceGradient" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor={isPositive ? '#38a169' : '#667eea'} stopOpacity="0.2" />
-              <stop offset="100%" stopColor={isPositive ? '#38a169' : '#667eea'} stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          
-          {/* Gradient area */}
-          <path
-            d={areaPath}
-            fill="url(#priceGradient)"
-          />
-          
-          {/* Price line */}
-          <path
-            d={pathD}
-            fill="none"
-            stroke={isPositive ? '#38a169' : '#667eea'}
-            strokeWidth="0.5"
-            vectorEffect="non-scaling-stroke"
-          />
+      {/* Chart Canvas */}
+      <div style={{ flex: 1, position: 'relative', padding: '0.75rem' }}>
+        <svg width="100%" height="100%" viewBox="0 0 1000 500" preserveAspectRatio="none" style={{ overflow: 'visible' }}>
+          {/* Grid lines */}
+          {[0, 0.25, 0.5, 0.75, 1].map(ratio => {
+            const y = ratio * 500;
+            return (
+              <g key={ratio}>
+                <line
+                  x1="0"
+                  y1={y}
+                  x2="1000"
+                  y2={y}
+                  stroke="#2d3748"
+                  strokeWidth="1"
+                  strokeDasharray="2,2"
+                />
+                <text
+                  x="8"
+                  y={y + 4}
+                  fill="#64748b"
+                  fontSize="12"
+                  fontFamily="monospace"
+                >
+                  {(maxPrice - (ratio * priceRange)).toFixed(1)}%
+                </text>
+              </g>
+            );
+          })}
 
-          {/* Latest point indicator */}
-          <circle
-            cx={points[points.length - 1].split(',')[0]}
-            cy={points[points.length - 1].split(',')[1]}
-            r="1"
-            fill={isPositive ? '#38a169' : '#667eea'}
-            vectorEffect="non-scaling-stroke"
+          {/* Candlesticks */}
+          {candles.map((candle, i) => {
+            const x = (i / (candles.length - 1)) * 1000;
+            const candleWidth = Math.max(2, 800 / candles.length);
+            
+            const highY = ((maxPrice - candle.high) / priceRange) * 500;
+            const lowY = ((maxPrice - candle.low) / priceRange) * 500;
+            const openY = ((maxPrice - candle.open) / priceRange) * 500;
+            const closeY = ((maxPrice - candle.close) / priceRange) * 500;
+            
+            const isBullish = candle.close >= candle.open;
+            const color = isBullish ? '#10b981' : '#ef4444';
+            const bodyTop = Math.min(openY, closeY);
+            const bodyHeight = Math.abs(closeY - openY) || 1;
+
+            return (
+              <g key={i}>
+                {/* Wick */}
+                <line
+                  x1={x}
+                  y1={highY}
+                  x2={x}
+                  y2={lowY}
+                  stroke={color}
+                  strokeWidth="1"
+                />
+                {/* Body */}
+                <rect
+                  x={x - candleWidth / 2}
+                  y={bodyTop}
+                  width={candleWidth}
+                  height={bodyHeight}
+                  fill={isBullish ? color : 'transparent'}
+                  stroke={color}
+                  strokeWidth="1.5"
+                />
+              </g>
+            );
+          })}
+
+          {/* Last price line */}
+          <line
+            x1="0"
+            y1={((maxPrice - lastCandle.close) / priceRange) * 500}
+            x2="1000"
+            y2={((maxPrice - lastCandle.close) / priceRange) * 500}
+            stroke={isPositive ? '#10b981' : '#ef4444'}
+            strokeWidth="1.5"
+            strokeDasharray="4,4"
           />
         </svg>
       </div>
 
+      {/* Volume Histogram */}
       <div style={{ 
-        marginTop: '0.5rem',
-        paddingTop: '0.5rem',
-        borderTop: '1px solid #e2e8f0',
-        display: 'flex',
-        justifyContent: 'space-between',
-        fontSize: '0.75rem',
-        color: '#718096'
+        height: '60px',
+        padding: '0 0.75rem 0.5rem',
+        borderTop: '1px solid #2d3748',
+        flexShrink: 0
       }}>
-        <div>Low: {minProb.toFixed(4)}%</div>
-        <div>High: {maxProb.toFixed(4)}%</div>
+        <svg width="100%" height="100%" viewBox="0 0 1000 100" preserveAspectRatio="none">
+          {candles.map((candle, i) => {
+            const x = (i / (candles.length - 1)) * 1000;
+            const barWidth = Math.max(2, 800 / candles.length);
+            const height = (candle.volume / maxVolume) * 100;
+            const isBullish = candle.close >= candle.open;
+
+            return (
+              <rect
+                key={i}
+                x={x - barWidth / 2}
+                y={100 - height}
+                width={barWidth}
+                height={height}
+                fill={isBullish ? '#10b98140' : '#ef444440'}
+              />
+            );
+          })}
+        </svg>
       </div>
     </div>
   );

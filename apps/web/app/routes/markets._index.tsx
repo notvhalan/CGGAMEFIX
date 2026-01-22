@@ -5,49 +5,15 @@ import { getAuthenticatedUser } from "~/lib/auth.server";
 import { MarketCard } from "~/components/MarketCard";
 import { useState, useEffect } from "react";
 
-// Mock markets for demo purposes (using proper UUIDs)
-const DEMO_MARKETS = [
-  {
-    id: '550e8400-e29b-41d4-a716-446655440001',
-    name: 'Will Trump Drink Orange Juice at Next Rally?',
-    description: 'Predict if Donald Trump will be seen drinking orange juice during his next public rally appearance',
-    backPrice: 2.45,
-    layPrice: 2.50,
-    volume: 12500,
-    category: 'Politics'
-  },
-  {
-    id: '550e8400-e29b-41d4-a716-446655440002',
-    name: 'Super Bowl LX Winner 2026',
-    description: 'Who will win the 2026 Super Bowl championship?',
-    backPrice: 3.20,
-    layPrice: 3.25,
-    volume: 250000,
-    category: 'Sports'
-  },
-  {
-    id: '550e8400-e29b-41d4-a716-446655440003',
-    name: 'Bitcoin Reaches $50k in Q1 2026',
-    description: 'Will Bitcoin price reach $50,000 before April 1, 2026?',
-    backPrice: 1.85,
-    layPrice: 1.90,
-    volume: 89000,
-    category: 'Crypto'
-  }
-];
-
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await getAuthenticatedUser(request);
   
   try {
     const data = await getMarkets();
-    // Combine API markets with demo markets
-    const allMarkets = [...DEMO_MARKETS, ...(data.markets || [])];
-    return json({ markets: allMarkets, user });
+    return json({ markets: data.markets || [], user });
   } catch (error) {
     console.error('Failed to load markets:', error);
-    // Return demo markets if API fails
-    return json({ markets: DEMO_MARKETS, user });
+    return json({ markets: [], user });
   }
 }
 
@@ -200,9 +166,8 @@ export default function MarketsIndex() {
                 marketId={market.id}
                 title={market.name}
                 description={market.description || ''}
-                backPrice={market.backPrice}
-                layPrice={market.layPrice}
-                volume={market.volume}
+                status={market.status || 'ACTIVE'}
+                type={market.type || 'BINARY'}
                 isWatched={watchlist.includes(market.id)}
                 onToggleWatch={handleToggleWatch}
               />

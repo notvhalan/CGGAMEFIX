@@ -28,12 +28,20 @@ function calculateTakerFee(costPence: number): number {
 interface OrderTicketProps {
   marketId: string;
   wallet: any;
+  selectedPrice?: number | null;
+  compact?: boolean;
 }
 
-export function OrderTicket({ marketId, wallet }: OrderTicketProps) {
+export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }: OrderTicketProps) {
   const [side, setSide] = useState<'FOR' | 'LAY'>('FOR');
   const [probability, setProbability] = useState('50.00'); // Percentage 0-100
   const [amount, setAmount] = useState('10.00'); // Pounds (stake for FOR, liability for LAY)
+
+  // Auto-fill price when clicked from orderbook
+  if (selectedPrice && selectedPrice !== percentageToPPts(parseFloat(probability))) {
+    const pricePercent = (selectedPrice / 100_000).toFixed(2);
+    setProbability(pricePercent);
+  }
 
   // Calculate contracts and outcomes
   const amountValue = parseFloat(amount);
@@ -74,18 +82,32 @@ export function OrderTicket({ marketId, wallet }: OrderTicketProps) {
 
   const contracts = (contractsMicros / CONTRACT_SCALE).toFixed(2);
 
+  const containerStyle = compact ? {
+    background: 'transparent',
+    padding: '0.875rem',
+    fontSize: '0.875rem'
+  } : {
+    background: 'white',
+    padding: '1rem',
+    borderRadius: '8px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+  };
+
+  const buttonSize = compact ? '0.5rem' : '0.75rem';
+  const inputPadding = compact ? '0.5rem' : '0.75rem';
+
   return (
-    <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-      <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1rem' }}>Place Order</h3>
+    <div style={containerStyle}>
+      {!compact && <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1rem' }}>Place Order</h3>}
 
       {!wallet && (
         <div style={{ 
-          padding: '1rem', 
-          background: '#fef5e7', 
-          color: '#b7791f', 
-          borderRadius: '6px', 
-          marginBottom: '1rem',
-          fontSize: '0.875rem'
+          padding: compact ? '0.5rem' : '1rem', 
+          background: compact ? '#b7791f40' : '#fef5e7', 
+          color: compact ? '#fcd34d' : '#b7791f', 
+          borderRadius: compact ? '4px' : '6px', 
+          marginBottom: compact ? '0.5rem' : '1rem',
+          fontSize: compact ? '0.75rem' : '0.875rem'
         }}>
           Please log in to place orders
         </div>
@@ -134,9 +156,9 @@ export function OrderTicket({ marketId, wallet }: OrderTicketProps) {
         </div>
 
         {/* Probability */}
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: 500 }}>
-            {side === 'FOR' ? 'Probability (YES %)' : 'Probability (NO %)'}
+        <div style={{ marginBottom: compact ? '0.75rem' : '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.375rem', fontSize: compact ? '0.6875rem' : '0.875rem', fontWeight: 500, color: compact ? '#94a3b8' : 'inherit' }}>
+            {side === 'FOR' ? (compact ? 'Price (YES %)' : 'Probability (YES %)') : (compact ? 'Price (NO %)' : 'Probability (NO %)')}
           </label>
           <input
             type="number"
@@ -148,21 +170,48 @@ export function OrderTicket({ marketId, wallet }: OrderTicketProps) {
             required
             style={{
               width: '100%',
-              padding: '0.75rem',
-              border: '1px solid #cbd5e0',
-              borderRadius: '6px',
-              fontSize: '1rem',
+              padding: inputPadding,
+              border: compact ? '1px solid #374151' : '1px solid #cbd5e0',
+              borderRadius: compact ? '4px' : '6px',
+              fontSize: compact ? '0.875rem' : '1rem',
               boxSizing: 'border-box',
+              background: compact ? '#0f1419' : 'white',
+              color: compact ? '#e4e8eb' : 'inherit'
             }}
           />
-          <div style={{ fontSize: '0.75rem', color: '#718096', marginTop: '0.25rem' }}>
-            {side === 'FOR' ? 'Probability that YES wins' : 'Probability that NO wins'}
-          </div>
+          {/* Price step buttons */}
+          {compact && (
+            <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.375rem' }}>
+              {[-1, -0.1, -0.01, 0.01, 0.1, 1].map(step => (
+                <button
+                  key={step}
+                  type="button"
+                  onClick={() => {
+                    const newProb = Math.max(0.01, Math.min(99.99, parseFloat(probability) + step));
+                    setProbability(newProb.toFixed(2));
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '0.25rem',
+                    fontSize: '0.625rem',
+                    fontWeight: 600,
+                    background: '#374151',
+                    color: step > 0 ? '#10b981' : '#ef4444',
+                    border: 'none',
+                    borderRadius: '3px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {step > 0 ? '+' : ''}{step}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Stake or Liability */}
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: 500 }}>
+        <div style={{ marginBottom: compact ? '0.75rem' : '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.375rem', fontSize: compact ? '0.6875rem' : '0.875rem', fontWeight: 500, color: compact ? '#94a3b8' : 'inherit' }}>
             {side === 'FOR' ? 'Stake (£)' : 'Liability (£)'}
           </label>
           <input
@@ -174,16 +223,60 @@ export function OrderTicket({ marketId, wallet }: OrderTicketProps) {
             required
             style={{
               width: '100%',
-              padding: '0.75rem',
-              border: '1px solid #cbd5e0',
-              borderRadius: '6px',
-              fontSize: '1rem',
+              padding: inputPadding,
+              border: compact ? '1px solid #374151' : '1px solid #cbd5e0',
+              borderRadius: compact ? '4px' : '6px',
+              fontSize: compact ? '0.875rem' : '1rem',
               boxSizing: 'border-box',
+              background: compact ? '#0f1419' : 'white',
+              color: compact ? '#e4e8eb' : 'inherit'
             }}
           />
-          <div style={{ fontSize: '0.75rem', color: '#718096', marginTop: '0.25rem' }}>
-            {side === 'FOR' ? 'Amount you risk if YES loses' : 'Maximum amount you could lose if YES wins'}
-          </div>
+          {/* Quick amount buttons */}
+          {compact && wallet && (
+            <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.375rem' }}>
+              {[5, 10, 25, 50].map(amt => (
+                <button
+                  key={amt}
+                  type="button"
+                  onClick={() => setAmount(amt.toFixed(2))}
+                  style={{
+                    flex: 1,
+                    padding: '0.25rem',
+                    fontSize: '0.625rem',
+                    fontWeight: 600,
+                    background: '#374151',
+                    color: '#94a3b8',
+                    border: 'none',
+                    borderRadius: '3px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  £{amt}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  const maxAmount = (wallet.balance / 100) * 0.95; // Use 95% of balance
+                  setAmount(maxAmount.toFixed(2));
+                }}
+                style={{
+                  flex: 1,
+                  padding: '0.25rem',
+                  fontSize: '0.625rem',
+                  fontWeight: 600,
+                  background: '#667eea',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '3px',
+                  cursor: 'pointer'
+                }}
+              >
+                MAX
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Contracts Preview */}

@@ -1,5 +1,5 @@
 import { Logger } from '@betting-exchange/shared-config';
-import { OrderSide, PRICE_SCALE, contractsCost } from '@betting-exchange/shared-types';
+import { OrderSide, PRICE_SCALE, contractsCost, MIN_CONTRACT_MICROS } from '@betting-exchange/shared-types';
 
 const logger = new Logger('Orderbook');
 
@@ -74,12 +74,30 @@ export class Orderbook {
    * 2. Determine if it's a bid (higher yesPts) or ask (lower yesPts)
    * 3. Try to match with opposite side
    * 4. Add remainder to appropriate side
+   * 
+   * @param order - Order to add
+   * @param skipMatching - If true, add order without matching (for rebuilds)
    */
-  addOrder(order: OrderbookOrder): Match[] {
+  addOrder(order: OrderbookOrder, skipMatching: boolean = false): Match[] {
     const matches: Match[] = [];
     
-    logger.debug(`Adding order ${order.id}: ${order.side} pPts=${order.pPts} yesPts=${order.yesPts} remaining=${order.remainingContractsMicros} contracts`);
+    logger.debug(`Adding order ${order.id}: ${order.side} pPts=${order.pPts} yesPts=${order.yesPts} remaining=${order.remainingContractsMicros} contracts (skipMatching=${skipMatching})`);
     logger.debug(`Book state before: ${this.bids.length} bids, ${this.asks.length} asks`);
+    
+    // If skipMatching is true (rebuild mode), add directly to book without matching
+    if (skipMatching) {
+      const isBid = this.isBid(order);
+      if (isBid) {
+        this.bids.push(order);
+        this.sortBids();
+      } else {
+        this.asks.push(order);
+        this.sortAsks();
+      }
+      this.orderMap.set(order.id, order);
+      logger.debug(`Order ${order.id} added to book without matching (rebuild mode)`);
+      return matches;
+    }
     
     // Determine if this is a bid or ask based on side
     const isBid = this.isBid(order);
@@ -128,11 +146,13 @@ export class Orderbook {
         }
       }
       
-      // Add remaining to bids if any
-      if (order.remainingContractsMicros > 0n) {
+      // Add remaining to bids if any (must meet minimum size)
+      if (order.remainingContractsMicros >= MIN_CONTRACT_MICROS) {
         this.bids.push(order);
         this.orderMap.set(order.id, order);
         this.sortBids();
+      } else if (order.remainingContractsMicros > 0n) {
+        logger.debug(`Order ${order.id} has ${order.remainingContractsMicros} microcontracts remaining (below minimum ${MIN_CONTRACT_MICROS}) - not adding to book`);
       }
     } else {
       // This order is an ASK (LAY): try to match with bids (FOR)
@@ -179,11 +199,13 @@ export class Orderbook {
         }
       }
       
-      // Add remaining to asks if any
-      if (order.remainingContractsMicros > 0n) {
+      // Add remaining to asks if any (must meet minimum size)
+      if (order.remainingContractsMicros >= MIN_CONTRACT_MICROS) {
         this.asks.push(order);
         this.orderMap.set(order.id, order);
         this.sortAsks();
+      } else if (order.remainingContractsMicros > 0n) {
+        logger.debug(`Order ${order.id} has ${order.remainingContractsMicros} microcontracts remaining (below minimum ${MIN_CONTRACT_MICROS}) - not adding to book`);
       }
     }
     
@@ -232,25 +254,33 @@ export class Orderbook {
 
   /**
    * Get top levels of the orderbook for snapshot.
-   * Returns aggregated levels by yesPts.
+   * Returns aggregated levels by yesPts, sorted by best price.
    */
   snapshotTopLevels(depth: number = 20): {
     bids: Array<{ yesPts: number; contractsMicros: bigint }>;
     asks: Array<{ yesPts: number; contractsMicros: bigint }>;
   } {
-    const aggregateLevels = (orders: OrderbookOrder[]) => {
+    const aggregateLevels = (orders: OrderbookOrder[], side: 'bids' | 'asks') => {
       const levels = new Map<number, bigint>();
       for (const order of orders) {
         levels.set(order.yesPts, (levels.get(order.yesPts) || 0n) + order.remainingContractsMicros);
       }
-      return Array.from(levels.entries())
-        .map(([yesPts, contractsMicros]) => ({ yesPts, contractsMicros }))
-        .slice(0, depth);
+      
+      const arr = Array.from(levels.entries())
+        .map(([yesPts, contractsMicros]) => ({ yesPts, contractsMicros }));
+      
+      // CRITICAL: Sort by price before slicing to show true top-of-book
+      arr.sort((a, b) => side === 'bids'
+        ? b.yesPts - a.yesPts   // bids: highest price first
+        : a.yesPts - b.yesPts   // asks: lowest price first
+      );
+      
+      return arr.slice(0, depth);
     };
     
     return {
-      bids: aggregateLevels(this.bids),
-      asks: aggregateLevels(this.asks),
+      bids: aggregateLevels(this.bids, 'bids'),
+      asks: aggregateLevels(this.asks, 'asks'),
     };
   }
 

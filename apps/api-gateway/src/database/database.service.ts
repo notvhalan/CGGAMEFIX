@@ -354,6 +354,40 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
   
   /**
+   * Get all markets
+   */
+  async getMarkets(): Promise<any[]> {
+    const result = await this.pool.query(
+      `SELECT id, name, description, type, status, event_id as "eventId", 
+              outcomes, start_time as "startTime", end_time as "endTime", 
+              settlement_time as "settlementTime",
+              min_stake as "minStake", max_stake as "maxStake",
+              created_at as "createdAt", updated_at as "updatedAt"
+       FROM markets 
+       WHERE status = 'ACTIVE'
+       ORDER BY created_at DESC`
+    );
+    return result.rows;
+  }
+  
+  /**
+   * Get market by ID
+   */
+  async getMarketById(marketId: string): Promise<any | null> {
+    const result = await this.pool.query(
+      `SELECT id, name, description, type, status, event_id as "eventId", 
+              outcomes, start_time as "startTime", end_time as "endTime", 
+              settlement_time as "settlementTime",
+              min_stake as "minStake", max_stake as "maxStake",
+              created_at as "createdAt", updated_at as "updatedAt"
+       FROM markets 
+       WHERE id = $1`,
+      [marketId]
+    );
+    return result.rows[0] || null;
+  }
+  
+  /**
    * Create order
    */
   async createOrder(data: {

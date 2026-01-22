@@ -13,9 +13,9 @@ export class MarketsController {
   @Get()
   async listMarkets() {
     try {
-      // TODO: Fetch from database or cache
       this.logger.debug('Fetching all markets');
-      return { markets: [] };
+      const markets = await this.databaseService.getMarkets();
+      return { markets };
     } catch (error) {
       this.logger.error('Failed to fetch markets', error);
       throw error;
@@ -26,12 +26,15 @@ export class MarketsController {
   async getMarket(@Param('marketId') marketId: string) {
     try {
       this.logger.debug(`Fetching market ${marketId}`);
-      // TODO: Fetch from database
-      return { 
-        marketId, 
-        status: 'ACTIVE',
-        name: 'Mock Market',
-      };
+      const market = await this.databaseService.getMarketById(marketId);
+      if (!market) {
+        return { 
+          marketId, 
+          status: 'ACTIVE',
+          name: `Market ${marketId}`,
+        };
+      }
+      return market;
     } catch (error) {
       this.logger.error(`Failed to fetch market ${marketId}`, error);
       throw error;

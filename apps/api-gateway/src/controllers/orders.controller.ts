@@ -8,7 +8,7 @@ import { ZodError } from 'zod';
 import { FastifyRequest } from 'fastify';
 import { DatabaseService } from '../database/database.service';
 import { OrderBookBroadcastService } from '../services/orderbook-broadcast.service';
-import { PRICE_SCALE, stakeToContracts, liabilityToContracts } from '@betting-exchange/shared-types';
+import { PRICE_SCALE, stakeToContracts, liabilityToContracts, MIN_CONTRACT_MICROS, CONTRACT_SCALE } from '@betting-exchange/shared-types';
 
 @Controller('v1/orders')
 export class OrdersController {
@@ -118,6 +118,12 @@ export class OrdersController {
         // yesPts = PRICE_SCALE - pPts (convert NO probability to YES space)
         yesPts = PRICE_SCALE - pPts;
         contractsMicros = liabilityToContracts(liabilityPence, yesPts);
+      }
+      
+      // Validate minimum contract size to prevent dust orders
+      if (contractsMicros < MIN_CONTRACT_MICROS) {
+        const minContracts = Number(MIN_CONTRACT_MICROS) / Number(CONTRACT_SCALE);
+        throw new Error(`Order size too small. Minimum: ${minContracts} contracts. Increase your stake/liability to at least £${Math.ceil(liabilityPence * minContracts / 100) / 100}.`);
       }
       
       // Lock balance before creating order (same amount for both sides - their max loss)

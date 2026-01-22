@@ -5,6 +5,8 @@ interface MarketCardProps {
   marketId: string;
   title: string;
   description?: string;
+  status?: string;
+  type?: string;
   backPrice?: number;
   layPrice?: number;
   volume?: number;
@@ -16,6 +18,8 @@ export function MarketCard({
   marketId, 
   title, 
   description, 
+  status = 'ACTIVE',
+  type = 'BINARY',
   backPrice, 
   layPrice, 
   volume,
@@ -74,34 +78,20 @@ export function MarketCard({
         </button>
       </div>
       
-      {description && (
-        <p style={{ fontSize: '0.875rem', color: '#64748b', margin: '0 0 1rem 0' }}>
-          {description}
-        </p>
-      )}
-      
-      {(backPrice || layPrice) && (
-        <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem' }}>
-          {backPrice && (
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem' }}>BACK</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#10b981' }}>{backPrice.toFixed(2)}</div>
-            </div>
-          )}
-          {layPrice && (
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem' }}>LAY</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#ef4444' }}>{layPrice.toFixed(2)}</div>
-            </div>
-          )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.875rem' }}>
+        <div>
+          <strong>Status:</strong> <span style={{ 
+            color: status === 'ACTIVE' ? '#48bb78' : '#718096',
+            fontWeight: 600
+          }}>{status}</span>
         </div>
-      )}
-      
-      {volume !== undefined && (
-        <div style={{ fontSize: '0.875rem', color: '#64748b' }}>
-          Volume: ${volume.toLocaleString()}
+        <div>
+          <strong>Type:</strong> {type}
         </div>
-      )}
+        <div style={{ fontSize: '0.75rem', color: '#a0aec0', marginTop: '0.25rem' }}>
+          ID: {marketId.substring(0, 8)}...
+        </div>
+      </div>
     </Link>
   );
 }

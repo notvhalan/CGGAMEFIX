@@ -139,8 +139,8 @@ export class MatchingEngine {
         orderbook = new Orderbook(marketId);
         this.orderbooks.set(marketId, orderbook);
         
-        // Rebuild orderbook from database
-        await this.rebuildOrderbook(marketId, orderbook);
+        // Rebuild orderbook from database (excluding current order)
+        await this.rebuildOrderbook(marketId, orderbook, orderId);
       }
 
       // Create orderbook order
@@ -205,7 +205,7 @@ export class MatchingEngine {
       await this.db.updateOrderStatus(orderId, finalStatus, finalRemainingContracts);
 
       // Publish ORDER_ACCEPTED event
-      await this.publishOrderAccepted(orderId, userId, marketId, side, pPts, command.stakePence || command.liabilityPence || 0);
+      await this.publishOrderAccepted(orderId, userId, marketId, side, yesPts, remainingContractsMicros);
 
       // Publish BOOK_DELTA event
       await this.publishBookDelta(marketId, orderbook);
@@ -320,7 +320,7 @@ export class MatchingEngine {
     }
   }
 
-  private async rebuildOrderbook(marketId: string, orderbook: Orderbook): Promise<void> {
+  private async rebuildOrderbook(marketId: string, orderbook: Orderbook, excludeOrderId?: string): Promise<void> {
     try {
       logger.info(`Rebuilding orderbook for market ${marketId}`);
       
@@ -328,6 +328,12 @@ export class MatchingEngine {
       logger.info(`Found ${dbOrders.length} open orders in database`);
       
       for (const dbOrder of dbOrders) {
+        // Skip the order being currently processed to prevent self-matching
+        if (excludeOrderId && dbOrder.id === excludeOrderId) {
+          logger.debug(`Skipping order ${dbOrder.id} (currently being processed)`);
+          continue;
+        }
+        
         // Convert BACK/LAY to FOR/LAY for backward compatibility during migration
         const rawSide = dbOrder.side as string;
         let side: OrderSide;
@@ -364,8 +370,8 @@ export class MatchingEngine {
           timestamp: dbOrder.created_at,
         };
         
-        // Add to orderbook without matching (already processed)
-        orderbook.addOrder(orderbookOrder);
+        // Add to orderbook without matching (already processed) - use skipMatching=true
+        orderbook.addOrder(orderbookOrder, true);
       }
       
       logger.info(`Orderbook rebuilt for market ${marketId}: ${dbOrders.length} orders`);
@@ -381,8 +387,8 @@ export class MatchingEngine {
     userId: string,
     marketId: string,
     side: OrderSide,
-    pPts: number,
-    stakePence: number
+    yesPts: number,
+    contractsMicros: string
   ): Promise<void> {
     const event = {
       eventId: uuidv4(),
@@ -392,8 +398,8 @@ export class MatchingEngine {
       orderId,
       userId,
       side,
-      pPts,
-      stakePence,
+      yesPts,
+      contractsMicros,
     };
     
     this.nc.publish(NATS_SUBJECTS.EVENTS_ORDER_ACCEPTED, sc.encode(JSON.stringify(event)));

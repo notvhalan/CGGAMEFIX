@@ -12,6 +12,7 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   
   const response = await fetch(url, {
     ...options,
+    credentials: 'include', // Send cookies with cross-origin requests
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -137,8 +138,11 @@ export async function withdrawFunds(
 }
 
 // User Orders API
-export async function getMyOrders(limit = 50) {
-  return fetchApi<{ orders: any[] }>(`/v1/orders?limit=${limit}`);
+export async function getMyOrders(request: Request, limit = 50) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{ orders: any[] }>(`/v1/orders?limit=${limit}`, {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
 }
 
 // User Preferences API

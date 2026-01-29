@@ -309,7 +309,7 @@ export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }
 
         {wallet && (
           <div style={{ fontSize: '0.875rem', color: '#718096', marginBottom: '1rem' }}>
-            Available: £{(wallet.balance / 100).toFixed(2)}
+            Available: £{wallet.balance.toFixed(2)}
           </div>
         )}
 

@@ -53,7 +53,7 @@ export interface OrderCancelledEvent extends BaseEvent {
   eventType: EventType.ORDER_CANCELLED;
   orderId: string;
   userId: string;
-  remainingSize: number;
+  remainingContractsMicros: string; // Remaining contracts as string (was remainingSize: number)
 }
 
 // Trade Executed Event
@@ -62,11 +62,12 @@ export interface TradeExecutedEvent extends BaseEvent {
   tradeId: string;
   makerOrderId: string;
   takerOrderId: string;
-  makerId: string;
-  takerId: string;
-  yesPricePts: number; // Canonical YES price in probability points
-  sizePence: number; // Trade size in pence (integer)
-  side: OrderSide; // Side of the taker
+  makerUserId: string; // Renamed from makerId
+  takerUserId: string; // Renamed from takerId
+  priceYesPts: number; // Renamed from yesPricePts for consistency
+  qtyMicros: string; // Renamed from contractsMicros - Quantity traded in microcontracts (BigInt as string)
+  notionalPence: number; // Renamed from sizePence - Notional value in pence
+  takerSide: OrderSide; // Renamed from side - Side of the taker (aggressor)
   makerFeePence: number; // Maker fee in pence
   takerFeePence: number; // Taker fee in pence
 }
@@ -77,6 +78,56 @@ export interface BookDeltaEvent extends BaseEvent {
   side: OrderSide;
   yesPricePts: number; // Canonical YES price in probability points
   sizeDeltaPence: number; // Size delta in pence (positive = added, negative = removed)
+}
+
+// Cashout Quote Request
+export interface CashoutQuoteRequest {
+  marketId: string;
+  userId: string;
+  netContractsMicros: bigint; // Signed: negative = short YES / long NO
+}
+
+// Cashout Quote Response
+export interface CashoutQuoteResponse {
+  success: boolean;
+  error?: string;
+  marketId: string;
+  userId: string;
+  netContractsMicros: bigint;
+  bookFillContractsMicros: bigint; // How much filled from orderbook
+  internalFillContractsMicros: bigint; // How much filled internally (LP)
+  avgYesPts: number; // Blended average YES price (weighted by fills)
+  cashoutValuePence: number; // Net cashout value (can be negative)
+  estimatedFeePence: number;
+  quoteTimestamp: number; // For validation on execute
+}
+
+// Cashout Execute Request
+export interface CashoutExecuteRequest {
+  marketId: string;
+  userId: string;
+  netContractsMicros: bigint;
+  expectedAvgYesPts: number; // From quote
+  maxSlippagePts: number; // Max allowed deviation from quote
+  quoteTimestamp: number; // Must match recent quote
+}
+
+// Cashout Execute Response
+export interface CashoutExecuteResponse {
+  success: boolean;
+  error?: string;
+  marketId: string;
+  userId: string;
+  actualAvgYesPts: number;
+  actualCashoutValuePence: number;
+  actualFeePence: number;
+  trades: Array<{
+    tradeId: string;
+    isSynthetic: boolean;
+    contractsMicros: bigint;
+    yesPricePts: number;
+    premiumPence: number;
+  }>;
 }
 
 // Book Snapshot Event (for initial load)
@@ -99,6 +150,9 @@ export type DomainEvent =
 export const NATS_SUBJECTS = {
   ORDERS_SUBMIT: 'orders.submit',
   ORDERS_CANCEL: 'orders.cancel',
+  
+  CASHOUT_QUOTE: 'cashout.quote',
+  CASHOUT_EXECUTE: 'cashout.execute',
   
   EVENTS_ORDER_ACCEPTED: 'events.order.accepted',
   EVENTS_ORDER_REJECTED: 'events.order.rejected',

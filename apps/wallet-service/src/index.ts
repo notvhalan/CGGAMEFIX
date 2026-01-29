@@ -1,17 +1,32 @@
-import { validateEnv, WalletServiceEnvSchema, createLogger } from '@betting-exchange/shared-config';
 import { connect } from 'nats';
 import { NATS_SUBJECTS } from '@betting-exchange/shared-types';
 import { WalletService } from './ledger';
 
-const env = validateEnv(WalletServiceEnvSchema);
-const logger = createLogger('wallet-service', env.LOG_LEVEL);
+// Environment variables with defaults for development
+const NATS_URL = process.env.NATS_URL || 'nats://localhost:4222';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/betting_exchange';
+const LOG_LEVEL = (process.env.LOG_LEVEL || 'info') as 'debug' | 'info' | 'warn' | 'error';
+
+// Simple logger
+const logger = {
+  info: (message: string, ...args: any[]) => console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'info', service: 'WalletService', message, ...args })),
+  warn: (message: string, ...args: any[]) => console.warn(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', service: 'WalletService', message, ...args })),
+  error: (message: string, ...args: any[]) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', service: 'WalletService', message, ...args })),
+  debug: (message: string, ...args: any[]) => { if (LOG_LEVEL === 'debug') console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'debug', service: 'WalletService', message, ...args })); },
+};
+
+const env = {
+  NATS_URL,
+  DATABASE_URL,
+  LOG_LEVEL,
+};
 
 async function main() {
   try {
     logger.info('Starting Wallet Service...');
     
     // Connect to NATS
-    const nats = await connect({ servers: env.NATS_URL });
+    const nats = await connect({ servers: NATS_URL });
     logger.info('Connected to NATS');
     
     // Initialize wallet service

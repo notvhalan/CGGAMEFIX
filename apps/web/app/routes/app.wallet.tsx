@@ -87,10 +87,10 @@ export default function Wallet() {
       <div style={{ background: 'white', padding: '2rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '2rem' }}>
         <div style={{ fontSize: '0.875rem', color: '#718096', marginBottom: '0.5rem' }}>Available Balance</div>
         <div style={{ fontSize: '2.5rem', fontWeight: 700, color: '#1a202c', marginBottom: '1rem' }}>
-          ${wallet ? wallet.balance.toFixed(2) : '0.00'}
+          £{wallet?.balance?.toFixed(2) ?? '0.00'}
         </div>
         <div style={{ fontSize: '0.875rem', color: '#718096' }}>
-          Locked: ${wallet ? wallet.lockedBalance.toFixed(2) : '0.00'}
+          Locked: £{wallet?.lockedBalance?.toFixed(2) ?? '0.00'}
         </div>
       </div>
 

@@ -12,6 +12,7 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@betting-exchange/shared-config';
 import { NatsClient } from '../nats/nats.client';
 import { NATS_SUBJECTS } from '../nats/subjects';
+import { PositionLotsService } from '../services/position-lots.service';
 
 interface WebSocketMessage {
   type: 'subscribe' | 'unsubscribe';
@@ -39,7 +40,10 @@ export class EventsGateway
   private readonly logger = new Logger('EventsGateway');
   private clients: Map<string, ExtendedSocket> = new Map();
 
-  constructor(private readonly natsClient: NatsClient) {}
+  constructor(
+    private readonly natsClient: NatsClient,
+    private readonly positionLotsService: PositionLotsService,
+  ) {}
 
   afterInit() {
     this.logger.info('WebSocket Gateway initialized');
@@ -126,8 +130,15 @@ export class EventsGateway
     });
 
     // Subscribe to trade executions
-    this.natsClient.subscribe('events.trade.executed', (data) => {
+    this.natsClient.subscribe('events.trade.executed', async (data) => {
       const { marketId, yesPricePts, sizePence, executedAt, ...rest } = data;
+      
+      // Process position lots (FIFO consumption)
+      try {
+        await this.positionLotsService.processTrade(data);
+      } catch (error) {
+        this.logger.error('Failed to process position lots', error);
+      }
       
       // Normalize field names to match DB schema (snake_case)
       const normalizedTrade = {

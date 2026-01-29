@@ -1,13 +1,35 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useActionData, Link, Form } from "@remix-run/react";
-import { getMarket, getMarketOrderBook, getMarketTrades, createOrder, getWallet, getPosition } from "~/lib/api.server";
+import { useLoaderData, useActionData, Link, Form, useRevalidator } from "@remix-run/react";
+import { getMarket, getMarketOrderBook, getMarketTrades, createOrder, getWallet, getPosition, cashOutPosition } from "~/lib/api.server";
 import { OrderBook } from "~/components/OrderBook";
 import { OrderTicket } from "~/components/OrderTicket";
 import { TradesTape } from "~/components/TradesTape";
 import { PriceChart } from "~/components/PriceChart";
 import { PositionPanel } from "~/components/PositionPanel";
+import { PositionsModal } from "~/components/PositionsModal";
 import { useEffect, useState, useMemo } from "react";
 import { wsClient } from "~/lib/ws.client";
+
+// Add CSS animation for toast
+const toastStyle = `
+  @keyframes slideIn {
+    from {
+      transform: translateX(400px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+`;
+
+if (typeof document !== 'undefined' && !document.getElementById('toast-style')) {
+  const style = document.createElement('style');
+  style.id = 'toast-style';
+  style.textContent = toastStyle;
+  document.head.appendChild(style);
+}
 
 // Timeframe options for chart
 type Timeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
@@ -17,8 +39,11 @@ const formatPrice = (pPts: number) => {
   return (pPts / 100_000).toFixed(2) + '%';
 };
 
-const formatMoney = (pence: number) => {
-  return '£' + (pence / 100).toFixed(2);
+const formatMoney = (amount: number | null | undefined) => {
+  if (amount === null || amount === undefined) return '£0.00';
+  const num = Number(amount);
+  if (isNaN(num)) return '£0.00';
+  return '£' + num.toFixed(2);
 };
 
 export async function loader({ params, request }: LoaderFunctionArgs) {
@@ -55,66 +80,28 @@ export async function action({ request, params }: ActionFunctionArgs) {
   try {
     // Handle cash out
     if (intent === "cashout") {
-      // Get current position and orderbook
-      const position = await getPosition(request, marketId);
-      const orderBook = await getMarketOrderBook(marketId);
+      const percentage = parseInt(formData.get("percentage") as string) || 100;
+      const result = await cashOutPosition(request, marketId, percentage);
       
-      if (!position || position.netYesPence === 0) {
-        return json({ success: false, error: 'No position to cash out' }, { status: 400 });
-      }
-      
-      // Determine opposite side and aggressive price
-      const isLong = position.netYesPence > 0;
-      const liabilityPence = Math.abs(position.netYesPence);
-      
-      // For cash out, place IOC order on opposite side
-      // If long (positive net), we need to LAY (sell YES)
-      // If short (negative net), we need to FOR (buy YES)
-      const side = isLong ? 'LAY' : 'FOR';
-      
-      // Get aggressive price to cross the spread
-      // For LAY: take best bid (buy YES at their price)
-      // For FOR: take best ask (sell YES at their price)
-      let pPts: number;
-      
-      if (isLong && orderBook.bids?.length > 0) {
-        // LAY at best bid price (canonical YES price)
-        const bestBid = orderBook.bids[0];
-        pPts = bestBid.side === 'FOR' 
-          ? bestBid.pPts 
-          : (10_000_000 - bestBid.pPts); // Convert LAY to FOR equivalent
-      } else if (!isLong && orderBook.asks?.length > 0) {
-        // FOR at best ask price
-        const bestAsk = orderBook.asks[0];
-        pPts = bestAsk.side === 'FOR'
-          ? bestAsk.pPts
-          : (10_000_000 - bestAsk.pPts);
-      } else {
-        return json({ success: false, error: 'Insufficient liquidity to cash out' }, { status: 400 });
-      }
-      
-      // Place IOC order
-      const result = await createOrder(request, {
-        marketId,
-        side: side as 'FOR' | 'LAY',
-        pPts,
-        liabilityPence,
-        timeInForce: 'IOC',
+      return json({ 
+        success: true, 
+        message: result.message,
+        orderId: result.orderId
       });
-
-      return json({ success: true, result, message: 'Position closed' });
     }
     
     // Handle regular order placement
     const side = formData.get("side") as 'FOR' | 'LAY';
     const pPts = parseInt(formData.get("pPts") as string);
     const liabilityPence = parseInt(formData.get("liabilityPence") as string);
+    const timeInForce = (formData.get("timeInForce") as 'GTC' | 'IOC') || 'GTC';
 
     const result = await createOrder(request, {
       marketId,
       side,
       pPts,
       liabilityPence,
+      timeInForce,
     });
 
     return json({ success: true, result });
@@ -128,12 +115,41 @@ export default function MarketDetail() {
   const loaderData = useLoaderData<typeof loader>();
   const { market, wallet, position, marketId } = loaderData;
   const actionData = useActionData<typeof action>();
+  const revalidator = useRevalidator();
 
   // Real-time state
   const [trades, setTrades] = useState(loaderData.trades?.trades || []);
   const [orderBook, setOrderBook] = useState(loaderData.orderBook);
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
   const [selectedPrice, setSelectedPrice] = useState<number | null>(null);
+  const [isPositionsModalOpen, setIsPositionsModalOpen] = useState(false);
+  const [orderFeedback, setOrderFeedback] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  
+  // Callback to refetch data after cashout
+  const handleCashoutSuccess = () => {
+    revalidator.revalidate();
+  };
+
+  // Show feedback from action results
+  useEffect(() => {
+    if (actionData) {
+      if (actionData.success) {
+        setOrderFeedback({
+          type: 'success',
+          message: actionData.message || 'Order placed successfully'
+        });
+        // Auto-dismiss after 5 seconds
+        setTimeout(() => setOrderFeedback(null), 5000);
+      } else {
+        setOrderFeedback({
+          type: 'error',
+          message: actionData.error || 'Order failed'
+        });
+        // Auto-dismiss after 7 seconds
+        setTimeout(() => setOrderFeedback(null), 7000);
+      }
+    }
+  }, [actionData]);
 
   // Calculate market stats from trades
   const marketStats = useMemo(() => {
@@ -492,7 +508,11 @@ export default function MarketDetail() {
               display: 'flex',
               flexDirection: 'column'
             }}>
-              <PositionPanel position={position} compact={true} />
+              <PositionPanel 
+                position={position} 
+                compact={true} 
+                onOpenDetails={() => setIsPositionsModalOpen(true)}
+              />
             </div>
           )}
 
@@ -561,13 +581,77 @@ export default function MarketDetail() {
               Recent Trades
             </span>
             <span style={{ cursor: 'pointer' }}>Open Orders</span>
-            <span style={{ cursor: 'pointer' }}>Positions</span>
+            <span 
+              style={{ cursor: 'pointer' }}
+              onClick={() => position && setIsPositionsModalOpen(true)}
+            >
+              Positions
+            </span>
           </div>
           <div style={{ flex: 1, overflow: 'auto' }}>
             <TradesTape trades={trades} marketId={marketId} compact={true} />
           </div>
         </div>
       </div>
+
+      {/* Positions Modal */}
+      {position && position.netContractsMicros !== '0' && (
+        <PositionsModal
+          position={position}
+          isOpen={isPositionsModalOpen}
+          onClose={() => setIsPositionsModalOpen(false)}
+          onCashoutSuccess={handleCashoutSuccess}
+          marketId={marketId}
+        />
+      )}
+
+      {/* Order Feedback Toast */}
+      {orderFeedback && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          right: '20px',
+          zIndex: 9999,
+          background: orderFeedback.type === 'success' ? '#10b981' : '#ef4444',
+          color: 'white',
+          padding: '1rem 1.5rem',
+          borderRadius: '8px',
+          boxShadow: '0 10px 40px rgba(0, 0, 0, 0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          minWidth: '300px',
+          maxWidth: '500px',
+          animation: 'slideIn 0.3s ease-out'
+        }}>
+          <div style={{ fontSize: '1.5rem' }}>
+            {orderFeedback.type === 'success' ? '✓' : '⚠️'}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
+              {orderFeedback.type === 'success' ? 'Success' : 'Failed'}
+            </div>
+            <div style={{ fontSize: '0.875rem', opacity: 0.95 }}>
+              {orderFeedback.message}
+            </div>
+          </div>
+          <button
+            onClick={() => setOrderFeedback(null)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'white',
+              fontSize: '1.5rem',
+              cursor: 'pointer',
+              padding: '0',
+              lineHeight: 1,
+              opacity: 0.8
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }

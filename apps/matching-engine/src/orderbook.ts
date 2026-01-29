@@ -11,6 +11,7 @@ export interface OrderbookOrder {
   yesPts: number; // Canonical YES price in probability points
   remainingContractsMicros: bigint; // Remaining contracts in microcontracts
   timestamp: Date;
+  isSynthetic?: boolean; // True for internal LP fills (don't persist to DB)
 }
 
 export interface Match {
@@ -105,7 +106,15 @@ export class Orderbook {
     if (isBid) {
       // This order is a BID (FOR): try to match with asks (LAY)
       while (order.remainingContractsMicros > 0n && this.asks.length > 0) {
-        const bestAsk = this.asks[0];
+        // SELF-MATCH PREVENTION: Find first non-self order (don't delete user's own orders)
+        const idx = this.asks.findIndex(a => a.userId !== order.userId);
+        if (idx === -1) {
+          // Only self liquidity available - stop matching
+          logger.debug(`No non-self liquidity available on ask side`);
+          break;
+        }
+        
+        const bestAsk = this.asks[idx];
         
         logger.debug(`Checking BID yesPts=${order.yesPts} >= ASK yesPts=${bestAsk.yesPts}: ${order.yesPts >= bestAsk.yesPts}`);
         
@@ -143,7 +152,7 @@ export class Orderbook {
           
           // Remove maker if fully filled or dust
           if (bestAsk.remainingContractsMicros === 0n) {
-            this.asks.shift();
+            this.asks.splice(idx, 1); // Remove at idx, not shift()
             this.orderMap.delete(bestAsk.id);
           }
         } else {
@@ -168,7 +177,15 @@ export class Orderbook {
       // This order is an ASK (LAY): try to match with bids (FOR)
       logger.debug(`LAY order: checking ${this.bids.length} bids for matches`);
       while (order.remainingContractsMicros > 0n && this.bids.length > 0) {
-        const bestBid = this.bids[0];
+        // SELF-MATCH PREVENTION: Find first non-self order (don't delete user's own orders)
+        const idx = this.bids.findIndex(b => b.userId !== order.userId);
+        if (idx === -1) {
+          // Only self liquidity available - stop matching
+          logger.debug(`No non-self liquidity available on bid side`);
+          break;
+        }
+        
+        const bestBid = this.bids[idx];
         
         logger.debug(`Checking ASK yesPts=${order.yesPts} with BID yesPts=${bestBid.yesPts} remaining=${bestBid.remainingContractsMicros}: ${bestBid.yesPts >= order.yesPts}`);
         
@@ -206,7 +223,7 @@ export class Orderbook {
           
           // Remove maker if fully filled or dust
           if (bestBid.remainingContractsMicros === 0n) {
-            this.bids.shift();
+            this.bids.splice(idx, 1); // Remove at idx, not shift()
             this.orderMap.delete(bestBid.id);
           }
         } else {

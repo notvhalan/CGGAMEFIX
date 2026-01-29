@@ -74,6 +74,15 @@ export class OrdersController {
       if (orderData.pPts !== undefined && (orderData.liabilityPence !== undefined || orderData.stakePence !== undefined)) {
         // New format - use liabilityPence for both sides (stakePence is backward compat)
         pPts = orderData.pPts;
+        
+        // Reject orders at extreme probabilities (< 0.1% or > 99.9%)
+        const MIN_ALLOWED_PPTS = 10000; // 0.1%
+        const MAX_ALLOWED_PPTS = 9990000; // 99.9%
+        
+        if (pPts < MIN_ALLOWED_PPTS || pPts > MAX_ALLOWED_PPTS) {
+          throw new Error(`Invalid probability: ${(pPts / 100000).toFixed(2)}%. Must be between 0.1% and 99.9%`);
+        }
+        
         side = orderData.side as 'FOR' | 'LAY';
         
         // Use liabilityPence if provided, otherwise fall back to stakePence (for backward compat)

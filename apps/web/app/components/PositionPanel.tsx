@@ -11,6 +11,7 @@ interface TradePosition {
 
 export interface Position {
   netYesPence: number;
+  netContractsMicros: string | bigint; // Can be string from API or BigInt in local state
   avgEntryYesPts: number;
   markYesPts: number;
   unrealizedPnlPence: number;
@@ -24,9 +25,10 @@ interface PositionPanelProps {
   position: Position | null;
   isLoading?: boolean;
   compact?: boolean;
+  onOpenDetails?: () => void;
 }
 
-export function PositionPanel({ position, isLoading, compact = false }: PositionPanelProps) {
+export function PositionPanel({ position, isLoading, compact = false, onOpenDetails }: PositionPanelProps) {
   const [showDetails, setShowDetails] = useState(false);
   
   if (isLoading) {
@@ -38,7 +40,14 @@ export function PositionPanel({ position, isLoading, compact = false }: Position
     );
   }
 
-  if (!position || position.netYesPence === 0) {
+  // Position exists if netContractsMicros !== 0 (not based on cashflow!)
+  const netContractsMicros = position 
+    ? (typeof position.netContractsMicros === 'string' 
+        ? BigInt(position.netContractsMicros) 
+        : position.netContractsMicros)
+    : 0n;
+
+  if (!position || netContractsMicros === 0n) {
     return (
       <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
         <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1rem' }}>Your Position</h3>
@@ -48,7 +57,9 @@ export function PositionPanel({ position, isLoading, compact = false }: Position
   }
 
   const { netYesPence, avgEntryYesPts, markYesPts, unrealizedPnlPence, totalFeesPence, canCashOut, buyPositions, sellPositions } = position;
-  const isLong = netYesPence > 0;
+  
+  // Direction is based on contracts, not cashflow!
+  const isLong = netContractsMicros > 0n;
   const positionSize = Math.abs(netYesPence);
   
   // Format as probability percentage (divide by 100,000)
@@ -86,7 +97,7 @@ export function PositionPanel({ position, isLoading, compact = false }: Position
           </div>
           <button
             type="button"
-            onClick={() => setShowDetails(!showDetails)}
+            onClick={() => onOpenDetails ? onOpenDetails() : setShowDetails(!showDetails)}
             style={{
               padding: '0.25rem 0.5rem',
               fontSize: '0.625rem',
@@ -118,7 +129,7 @@ export function PositionPanel({ position, isLoading, compact = false }: Position
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: '#94a3b8' }}>Direction:</span>
             <span style={{ fontWeight: 700, color: isLong ? '#10b981' : '#ef4444', fontSize: '0.875rem' }}>
-              {isLong ? '▲ LONG (YES)' : '▼ SHORT (YES)'}
+              {isLong ? '▲ FOR (YES)' : '▼ LAY (YES)'}
             </span>
           </div>
           
@@ -308,7 +319,7 @@ export function PositionPanel({ position, isLoading, compact = false }: Position
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
           <span style={{ color: '#a0aec0' }}>Direction:</span>
           <span style={{ fontWeight: 600, color: isLong ? '#38a169' : '#e53e3e' }}>
-            {isLong ? 'Long (YES)' : 'Short (YES)'}
+            {isLong ? 'FOR (YES)' : 'LAY (YES)'}
           </span>
         </div>
         

@@ -47,7 +47,11 @@ export class NatsClient implements OnModuleInit, OnModuleDestroy {
       throw new Error('NATS connection not established');
     }
     
-    const payload = JSON.stringify(data);
+    // Custom JSON serializer to handle BigInt
+    const payload = JSON.stringify(data, (key, value) => 
+      typeof value === 'bigint' ? value.toString() : value
+    );
+    
     const response = await this.connection.request(
       subject,
       this.codec.encode(payload),

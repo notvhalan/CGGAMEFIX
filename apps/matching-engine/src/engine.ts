@@ -1,6 +1,13 @@
 import { connect, NatsConnection, StringCodec } from 'nats';
 import { Logger } from '@betting-exchange/shared-config';
-import { NATS_SUBJECTS, EventType, OrderSide, PRICE_SCALE, calculateTakerFee, TimeInForce } from '@betting-exchange/shared-types';
+import { 
+  NATS_SUBJECTS, 
+  EventType, 
+  OrderSide, 
+  PRICE_SCALE, 
+  calculateTakerFee, 
+  TimeInForce,
+} from '@betting-exchange/shared-types';
 import { DatabaseService } from './db/pg';
 import { Orderbook, OrderbookOrder, Match } from './orderbook';
 import { v4 as uuidv4 } from 'uuid';
@@ -182,7 +189,7 @@ export class MatchingEngine {
         await this.db.updateOrderStatus(orderId, finalStatus, 0n); // remaining set to 0
         
         // Publish cancel event
-        await this.publishOrderCancelled(orderId, userId, marketId, Number(finalRemainingContracts));
+        await this.publishOrderCancelled(orderId, userId, marketId, finalRemainingContracts.toString());
         
         // Publish book delta
         await this.publishBookDelta(marketId, orderbook);
@@ -250,7 +257,7 @@ export class MatchingEngine {
       await this.db.updateOrderStatus(orderId, 'CANCELLED');
 
       // Publish ORDER_CANCELLED event
-      await this.publishOrderCancelled(orderId, userId, marketId, parseFloat(dbOrder.remaining_amount || '0'));
+      await this.publishOrderCancelled(orderId, userId, marketId, dbOrder.remaining_contracts || '0');
 
       // Publish BOOK_DELTA event if orderbook exists
       if (orderbook) {
@@ -272,28 +279,32 @@ export class MatchingEngine {
       const takerFeePence = calculateTakerFee(costPence);
       const makerFeePence = 0; // Maker fees are 0
 
-      logger.info(`Processing match: ${contractsMicros} contracts @ yesPts=${yesPricePts}, cost=${costPence}p, takerFee=${takerFeePence}p`);
+      logger.info(`Processing match: ${contractsMicros} contracts @ yesPts=${yesPricePts}, cost=${costPence}p, takerFee=${takerFeePence}p, makerSynthetic=${makerOrder.isSynthetic}, takerSynthetic=${takerOrder.isSynthetic}`);
 
       // Create trade in database
       const tradeId = await this.db.createTrade({
         marketId,
-        yesPricePts,
-        contractsMicros: contractsMicros.toString(),
-        costPence,
+        priceYesPts: yesPricePts,
+        qtyMicros: contractsMicros.toString(),
+        notionalPence: costPence,
         takerOrderId: takerOrder.id,
         makerOrderId: makerOrder.id,
         takerUserId: takerOrder.userId,
         makerUserId: makerOrder.userId,
-        side: takerOrder.side,
+        takerSide: takerOrder.side,
         takerFeePence,
         makerFeePence,
       });
 
-      // Update maker order status in database
-      const makerFinalStatus = makerOrder.remainingContractsMicros === 0n ? 'MATCHED' : 'PARTIALLY_MATCHED';
-      logger.info(`Updating maker order ${makerOrder.id}: status=${makerFinalStatus}, remaining=${makerOrder.remainingContractsMicros}`);
-      await this.db.updateOrderStatus(makerOrder.id, makerFinalStatus, makerOrder.remainingContractsMicros);
-      logger.info(`Maker order ${makerOrder.id} updated successfully`);
+      // Update maker order status in database (skip for synthetic LP fills)
+      if (!makerOrder.isSynthetic) {
+        const makerFinalStatus = makerOrder.remainingContractsMicros === 0n ? 'MATCHED' : 'PARTIALLY_MATCHED';
+        logger.info(`Updating maker order ${makerOrder.id}: status=${makerFinalStatus}, remaining=${makerOrder.remainingContractsMicros}`);
+        await this.db.updateOrderStatus(makerOrder.id, makerFinalStatus, makerOrder.remainingContractsMicros);
+        logger.info(`Maker order ${makerOrder.id} updated successfully`);
+      } else {
+        logger.info(`Skipping DB update for synthetic maker order ${makerOrder.id}`);
+      }
 
       // Publish TRADE_EXECUTED event
       await this.publishTradeExecuted(
@@ -302,6 +313,7 @@ export class MatchingEngine {
         makerOrder,
         takerOrder,
         yesPricePts,
+        contractsMicros, // Include contracts for position tracking
         costPence,
         makerFeePence,
         takerFeePence
@@ -428,7 +440,7 @@ export class MatchingEngine {
     orderId: string,
     userId: string,
     marketId: string,
-    remainingSize: number
+    remainingContractsMicros: string
   ): Promise<void> {
     const event = {
       eventId: uuidv4(),
@@ -437,7 +449,7 @@ export class MatchingEngine {
       marketId,
       orderId,
       userId,
-      remainingSize,
+      remainingContractsMicros,
     };
     
     this.nc.publish(NATS_SUBJECTS.EVENTS_ORDER_CANCELLED, sc.encode(JSON.stringify(event)));
@@ -465,8 +477,9 @@ export class MatchingEngine {
     marketId: string,
     makerOrder: OrderbookOrder,
     takerOrder: OrderbookOrder,
-    yesPricePts: number,
-    sizePence: number,
+    priceYesPts: number,
+    qtyMicros: bigint,
+    notionalPence: number,
     makerFeePence: number,
     takerFeePence: number
   ): Promise<void> {
@@ -480,17 +493,22 @@ export class MatchingEngine {
       tradeId,
       makerOrderId: makerOrder.id,
       takerOrderId: takerOrder.id,
-      makerId: makerOrder.userId,
-      takerId: takerOrder.userId,
-      yesPricePts,
-      sizePence,
-      side: takerOrder.side,
+      makerUserId: makerOrder.userId,
+      takerUserId: takerOrder.userId,
+      priceYesPts,
+      qtyMicros: qtyMicros.toString(), // Convert BigInt to string for JSON
+      notionalPence,
+      takerSide: takerOrder.side,
       makerFeePence,
       takerFeePence,
     };
     
     this.nc.publish(NATS_SUBJECTS.EVENTS_TRADE_EXECUTED, sc.encode(JSON.stringify(event)));
   }
+
+  // REMOVED: handleCashoutQuote() and handleCashoutExecute()
+  // Cashout is now implemented in API layer as normal IOC orders
+  // No more multi-leg unwind, synthetic LP fills, or order cancellation in matching engine
 
   private async publishBookDelta(marketId: string, orderbook: Orderbook): Promise<void> {
     // Get current snapshot

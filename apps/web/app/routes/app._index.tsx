@@ -9,7 +9,7 @@ import { useState, useEffect, useMemo } from "react";
 // Helper functions
 const formatMoney = (value: number | null | undefined): string => {
   if (value === null || value === undefined || isNaN(value)) return "—";
-  return `$${value.toFixed(2)}`;
+  return `£${value.toFixed(2)}`;
 };
 
 const formatPercent = (value: number | null | undefined): string => {

@@ -6,8 +6,12 @@ import { MarketsController } from './controllers/markets.controller';
 import { OrdersController } from './controllers/orders.controller';
 import { WalletController } from './controllers/wallet.controller';
 import { PositionsController } from './controllers/positions.controller';
+import { CashoutController } from './controllers/cashout.controller';
+import { AdminController } from './controllers/admin.controller';
 import { EventsGateway } from './gateways/events.gateway';
 import { OrderBookBroadcastService } from './services/orderbook-broadcast.service';
+import { LiquidityBotsService } from './services/liquidity-bots.service';
+import { PositionLotsService } from './services/position-lots.service';
 
 @Module({
   imports: [
@@ -20,7 +24,9 @@ import { OrderBookBroadcastService } from './services/orderbook-broadcast.servic
     OrdersController,
     WalletController,
     PositionsController,
+    CashoutController,
+    AdminController,
   ],
-  providers: [EventsGateway, OrderBookBroadcastService],
+  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService],
 })
 export class AppModule {}

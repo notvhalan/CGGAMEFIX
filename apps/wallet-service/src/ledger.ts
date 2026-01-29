@@ -1,5 +1,6 @@
 import { NatsConnection } from 'nats';
-import { WalletServiceEnv, Logger } from '@betting-exchange/shared-config';
+import { Pool } from 'pg';
+import { OrderSide } from '@betting-exchange/shared-types';
 
 /**
  * Wallet Service - Manages user funds and ledger entries
@@ -11,14 +12,27 @@ import { WalletServiceEnv, Logger } from '@betting-exchange/shared-config';
  * 4. Maintain double-entry ledger for audit trail
  */
 export class WalletService {
+  private pool: Pool;
+  
   constructor(
-    private nats: NatsConnection,
-    private env: WalletServiceEnv,
-    private logger: Logger
-  ) {}
+    private nats: NatsConnection, // eslint-disable-line @typescript-eslint/no-unused-vars
+    private env: { NATS_URL: string; DATABASE_URL: string; LOG_LEVEL: string }, // eslint-disable-line @typescript-eslint/no-unused-vars
+    private logger: any
+  ) {
+    this.pool = new Pool({
+      connectionString: env.DATABASE_URL,
+    });
+  }
   
   async initialize() {
-    // TODO: Initialize database connection pool
+    // Test database connection
+    try {
+      await this.pool.query('SELECT NOW()');
+      this.logger.info('Database connection established');
+    } catch (error) {
+      this.logger.error('Failed to connect to database', error);
+      throw error;
+    }
     this.logger.info('Wallet Service initialized');
   }
   
@@ -53,30 +67,116 @@ export class WalletService {
    * Handle trade executed event - capture/settle funds
    */
   async handleTradeExecuted(event: any) {
-    const { tradeId, makerId, takerId, price, size, makerFee, takerFee } = event;
+    console.log('Received TRADE_EXECUTED event:', JSON.stringify(event, null, 2));
+    const { tradeId, makerUserId, takerUserId, notionalPence, takerSide, makerFeePence, takerFeePence } = event;
     
-    this.logger.info('Settling trade', { tradeId });
+    // Skip system/placeholder trades (zero UUID or zero notionalPence)
+    const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
+    if (makerUserId === ZERO_UUID || takerUserId === ZERO_UUID || notionalPence === 0) {
+      this.logger.info('Skipping system trade settlement', {
+        tradeId,
+        makerUserId,
+        takerUserId,
+        notionalPence,
+      });
+      return;
+    }
+    
+    this.logger.info('Settling trade', { tradeId, makerUserId, takerUserId, notionalPence });
     
     try {
-      // TODO: Settlement logic
-      // 1. Move funds from reserved to settled
-      // 2. Transfer between maker and taker based on outcome
-      // 3. Collect fees
-      // 4. Create ledger entries for full audit trail
+      // For cashout/position closing:
+      // - Taker is closing position (buying back or selling out)
+      // - Maker is providing liquidity (could be LP or another user)
+      // 
+      // Trade settlement:
+      // - FOR side: Taker pays notionalPence, Maker receives notionalPence
+      // - LAY side: Maker pays notionalPence, Taker receives notionalPence
+      // - Both pay their respective fees
       
-      this.logger.info('Trade settled', { tradeId });
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        
+        if (takerSide === OrderSide.FOR) {
+          // Taker is buying YES (paying premium)
+          await this.updateBalance(client, takerUserId, -notionalPence - takerFeePence, `Trade ${tradeId} - Taker buy`);
+          await this.updateBalance(client, makerUserId, notionalPence - makerFeePence, `Trade ${tradeId} - Maker sell`);
+        } else {
+          // Taker is selling YES (receiving premium)
+          await this.updateBalance(client, takerUserId, notionalPence - takerFeePence, `Trade ${tradeId} - Taker sell`);
+          await this.updateBalance(client, makerUserId, -notionalPence - makerFeePence, `Trade ${tradeId} - Maker buy`);
+        }
+        
+        await client.query('COMMIT');
+        this.logger.info('Trade settled', { tradeId });
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
       
     } catch (error) {
-      this.logger.error('Failed to settle trade', error, { tradeId });
-      // TODO: Publish settlement failed event for retry
+      console.error('Failed to settle trade:', error);
+      this.logger.error('Failed to settle trade', { tradeId, error: error instanceof Error ? error.message : String(error) });
     }
+  }
+  
+  /**
+   * Update user's wallet balance
+   */
+  private async updateBalance(client: any, userId: string, amountPence: number, description: string) {
+    // Get wallet_account id and current balance
+    const { rows } = await client.query(
+      `SELECT id, balance FROM wallets WHERE user_id = $1 FOR UPDATE`,
+      [userId]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error(`Wallet account not found for user ${userId}`);
+    }
+    
+    const walletId = rows[0].id;
+    const balanceBefore = parseFloat(rows[0].balance);
+    const amountDecimal = amountPence / 100;
+    const balanceAfter = balanceBefore + amountDecimal;
+    
+    // Update wallets balance
+    await client.query(
+      `UPDATE wallets 
+       SET balance = $1,
+           updated_at = NOW()
+       WHERE user_id = $2`,
+      [balanceAfter, userId]
+    );
+    
+    // Log balance change to ledger_entries using double-entry bookkeeping
+    const debit = amountDecimal < 0 ? Math.abs(amountDecimal) : 0;
+    const credit = amountDecimal > 0 ? amountDecimal : 0;
+    
+    await client.query(
+      `INSERT INTO ledger_entries (
+        user_id, 
+        wallet_id,
+        entry_type, 
+        debit,
+        credit,
+        balance, 
+        description, 
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+      [userId, walletId, 'TRADE_SETTLEMENT', debit, credit, balanceAfter, description]
+    );
+    
+    this.logger.debug(`Updated balance for user ${userId}: ${balanceBefore.toFixed(2)} -> ${balanceAfter.toFixed(2)} (${amountDecimal > 0 ? '+' : ''}${amountDecimal.toFixed(2)})`);
   }
   
   /**
    * Handle order cancelled event - release reserved funds
    */
   async handleOrderCancelled(event: any) {
-    const { orderId, userId, remainingSize } = event;
+    const { orderId, userId } = event;
     
     this.logger.info('Releasing reserved funds', { orderId, userId });
     
@@ -91,19 +191,5 @@ export class WalletService {
     } catch (error) {
       this.logger.error('Failed to release funds', error, { orderId, userId });
     }
-  }
-  
-  /**
-   * Create a ledger entry (double-entry bookkeeping)
-   */
-  private async createLedgerEntry(
-    userId: string,
-    type: 'RESERVE' | 'RELEASE' | 'SETTLEMENT' | 'FEE',
-    amount: number,
-    referenceId: string,
-    description: string
-  ) {
-    // TODO: Insert into ledger table with proper debit/credit entries
-    this.logger.debug('Ledger entry created', { userId, type, amount, referenceId });
   }
 }

@@ -54,76 +54,25 @@ export class DatabaseService {
     logger.info('Database pool initialized');
   }
 
+  getPool(): Pool {
+    return this.pool;
+  }
+
   async connect(): Promise<void> {
     try {
       await this.pool.query('SELECT NOW()');
       logger.info('Database connection verified');
-      await this.ensureTradesTable();
+      // ensureTradesTable() removed - rely on SQL migrations instead to avoid schema mismatch
     } catch (error) {
       logger.error('Failed to connect to database', error);
       throw error;
     }
   }
 
-  private async ensureTradesTable(): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      // Check if trades table exists
-      const tableExists = await client.query(`
-        SELECT EXISTS (
-          SELECT FROM information_schema.tables 
-          WHERE table_name = 'trades'
-        );
-      `);
-      
-      if (!tableExists.rows[0].exists) {
-        // Create trades table if it doesn't exist
-        await client.query(`
-          CREATE TABLE trades (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            market_id UUID NOT NULL,
-            price DECIMAL(10, 2) NOT NULL,
-            size DECIMAL(15, 2) NOT NULL,
-            taker_order_id UUID NOT NULL,
-            maker_order_id UUID NOT NULL,
-            taker_user_id UUID NOT NULL,
-            maker_user_id UUID NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-          );
-          
-          CREATE INDEX idx_trades_market_id ON trades(market_id);
-          CREATE INDEX idx_trades_taker_order ON trades(taker_order_id);
-          CREATE INDEX idx_trades_maker_order ON trades(maker_order_id);
-          CREATE INDEX idx_trades_created_at ON trades(created_at DESC);
-        `);
-        logger.info('Trades table created');
-      } else {
-        // Check if created_at column exists
-        const columnExists = await client.query(`
-          SELECT EXISTS (
-            SELECT FROM information_schema.columns 
-            WHERE table_name = 'trades' AND column_name = 'created_at'
-          );
-        `);
-        
-        if (!columnExists.rows[0].exists) {
-          // Add created_at column if it doesn't exist
-          await client.query(`
-            ALTER TABLE trades ADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
-            CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
-          `);
-          logger.info('Added created_at column to trades table');
-        } else {
-          logger.info('Trades table already exists with correct schema');
-        }
-      }
-    } catch (error) {
-      logger.error('Failed to ensure trades table', error);
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
+  // ensureTradesTable() REMOVED due to schema mismatch
+  // createTrade() uses columns: yes_pts, contracts, cost_pence, taker_id, maker_id
+  // old ensureTradesTable() created: price, size, taker_user_id, maker_user_id
+  // Rely on SQL migrations to create trades table with correct schema
 
   async getOrderById(orderId: string): Promise<DbOrder | null> {
     try {
@@ -142,7 +91,7 @@ export class DatabaseService {
   async getOpenOrdersForMarket(marketId: string): Promise<DbOrder[]> {
     try {
       const result = await this.pool.query<DbOrder>(
-        `SELECT id, market_id, user_id, side, p_pts, yes_pts, remaining_contracts, status, created_at, updated_at
+        `SELECT id, market_id, user_id, side, p_pts, limit_price_yes_pts as yes_pts, qty_remaining_micros as remaining_contracts, status, created_at, updated_at
          FROM orders 
          WHERE market_id = $1 
            AND status IN ('OPEN', 'PARTIALLY_MATCHED')
@@ -166,7 +115,7 @@ export class DatabaseService {
         await this.pool.query(
           `UPDATE orders 
            SET status = $1, 
-               remaining_contracts = $2,
+               qty_remaining_micros = $2,
                updated_at = NOW()
            WHERE id = $3`,
           [status, remainingContracts.toString(), orderId]
@@ -188,39 +137,39 @@ export class DatabaseService {
 
   async createTrade(trade: {
     marketId: string;
-    yesPricePts: number;
-    contractsMicros: string; // bigint as string
-    costPence: number;
+    priceYesPts: number; // Renamed from yesPricePts
+    qtyMicros: string; // Renamed from contractsMicros
+    notionalPence: number; // Renamed from costPence
     takerOrderId: string;
     makerOrderId: string;
     takerUserId: string;
     makerUserId: string;
-    side: OrderSide;
+    takerSide: OrderSide; // Renamed from side
     takerFeePence: number;
     makerFeePence: number;
   }): Promise<string> {
     try {
       const result = await this.pool.query<{ id: string }>(
         `INSERT INTO trades 
-         (market_id, yes_pts, contracts, cost_pence, taker_order_id, maker_order_id, taker_id, maker_id, side, taker_fee_pence, maker_fee_pence, executed_at)
+         (market_id, price_yes_pts, qty_micros, notional_pence, taker_order_id, maker_order_id, taker_user_id, maker_user_id, side, taker_fee_pence, maker_fee_pence, executed_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
          RETURNING id`,
         [
           trade.marketId,
-          trade.yesPricePts,
-          trade.contractsMicros,
-          trade.costPence,
+          trade.priceYesPts,
+          trade.qtyMicros,
+          trade.notionalPence,
           trade.takerOrderId,
           trade.makerOrderId,
           trade.takerUserId,
           trade.makerUserId,
-          trade.side,
+          trade.takerSide,
           trade.takerFeePence,
           trade.makerFeePence,
         ]
       );
       const tradeId = result.rows[0].id;
-      logger.debug(`Trade ${tradeId} created: ${trade.contractsMicros} contracts @ yesPts=${trade.yesPricePts}, cost=${trade.costPence}p`);
+      logger.debug(`Trade ${tradeId} created: ${trade.qtyMicros} micros @ priceYesPts=${trade.priceYesPts}, notional=${trade.notionalPence}p`);
       return tradeId;
     } catch (error) {
       logger.error('Failed to create trade', error);

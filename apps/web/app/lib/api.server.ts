@@ -51,6 +51,7 @@ export async function getPosition(request: Request, marketId: string) {
   const cookie = request.headers.get('Cookie');
   return fetchApi<{
     netYesPence: number;
+    netContractsMicros: string;
     avgEntryYesPts: number;
     markYesPts: number;
     unrealizedPnlPence: number;
@@ -58,6 +59,19 @@ export async function getPosition(request: Request, marketId: string) {
     canCashOut: boolean;
   }>(`/v1/positions/markets/${marketId}/me`, {
     headers: cookie ? { Cookie: cookie } : {},
+  });
+}
+
+export async function cashOutPosition(request: Request, marketId: string, percentage = 100) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{
+    success: boolean;
+    message: string;
+    orderId?: string;
+  }>(`/v1/positions/markets/${marketId}/cashout`, {
+    method: 'POST',
+    headers: cookie ? { Cookie: cookie } : {},
+    body: JSON.stringify({ percentage }),
   });
 }
 

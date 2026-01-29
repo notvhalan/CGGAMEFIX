@@ -92,9 +92,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
       `);
 
-      // Create wallet_accounts table
+      // Create wallets table
       await client.query(`
-        CREATE TABLE IF NOT EXISTS wallet_accounts (
+        CREATE TABLE IF NOT EXISTS wallets (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           balance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
@@ -105,7 +105,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
           UNIQUE(user_id, currency)
         );
         
-        CREATE INDEX IF NOT EXISTS idx_wallet_accounts_user_id ON wallet_accounts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_wallets_user_id ON wallets(user_id);
       `);
 
       // Create orders table
@@ -199,7 +199,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async findWalletByUserId(userId: string, currency = 'USD'): Promise<WalletAccount | null> {
     const result = await this.pool.query<WalletAccount>(
       `SELECT id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt" 
-       FROM wallet_accounts 
+       FROM wallets 
        WHERE user_id = $1 AND currency = $2`,
       [userId, currency]
     );
@@ -210,11 +210,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * Create wallet for user
    */
   async createWallet(userId: string, currency = 'USD'): Promise<WalletAccount> {
+    // Give new users £10,000 starting balance
+    const startingBalance = 10000.00;
     const result = await this.pool.query<WalletAccount>(
-      `INSERT INTO wallet_accounts (user_id, balance, locked_balance, currency) 
-       VALUES ($1, 0.00, 0.00, $2) 
+      `INSERT INTO wallets (user_id, balance, locked_balance, currency) 
+       VALUES ($1, $2, 0.00, $3) 
        RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
-      [userId, currency]
+      [userId, startingBalance, currency]
     );
     return result.rows[0];
   }
@@ -238,8 +240,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     amount: number, 
     currency = 'USD'
   ): Promise<WalletAccount> {
-    const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallet_accounts 
+    const result = await this.pool.query(
+      `UPDATE wallets 
        SET balance = balance + $1, updated_at = NOW() 
        WHERE user_id = $2 AND currency = $3 
        RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
@@ -250,7 +252,17 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Wallet not found');
     }
     
-    return result.rows[0];
+    const row = result.rows[0];
+    // Convert string decimals to numbers
+    return {
+      id: row.id,
+      userId: row.userId,
+      balance: parseFloat(row.balance || '0'),
+      lockedBalance: parseFloat(row.lockedBalance || '0'),
+      currency: row.currency,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    };
   }
 
   /**
@@ -264,7 +276,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     const amountPounds = amountPence / 100;
     
     const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallet_accounts 
+      `UPDATE wallets 
        SET balance = balance - $1, 
            locked_balance = locked_balance + $1, 
            updated_at = NOW() 
@@ -291,7 +303,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     const amountPounds = amountPence / 100;
     
     const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallet_accounts 
+      `UPDATE wallets 
        SET balance = balance + $1, 
            locked_balance = locked_balance - $1, 
            updated_at = NOW() 
@@ -316,7 +328,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     currency = 'USD'
   ): Promise<WalletAccount> {
     const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallet_accounts 
+      `UPDATE wallets 
        SET balance = balance - $1, locked_balance = locked_balance + $1, updated_at = NOW() 
        WHERE user_id = $2 AND currency = $3 AND balance >= $1
        RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
@@ -339,7 +351,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     currency = 'USD'
   ): Promise<WalletAccount> {
     const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallet_accounts 
+      `UPDATE wallets 
        SET balance = balance + $1, locked_balance = locked_balance - $1, updated_at = NOW() 
        WHERE user_id = $2 AND currency = $3 AND locked_balance >= $1
        RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
@@ -403,15 +415,15 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     remainingContractsMicros: string;
   }): Promise<Order> {
     const result = await this.pool.query<Order>(
-      `INSERT INTO orders (id, user_id, market_id, outcome_id, side, p_pts, yes_pts, 
+      `INSERT INTO orders (id, user_id, market_id, outcome_id, side, p_pts, limit_price_yes_pts, 
                           liability_pence, status, 
-                          original_contracts, remaining_contracts) 
+                          qty_original_micros, qty_remaining_micros) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9, $10) 
        RETURNING id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-                 side, p_pts as "pPts", yes_pts as "yesPts",
+                 side, p_pts as "pPts", limit_price_yes_pts as "yesPts",
                  liability_pence as "liabilityPence", status, 
-                 original_contracts as "originalContractsMicros", 
-                 remaining_contracts as "remainingContractsMicros",
+                 qty_original_micros as "originalContractsMicros", 
+                 qty_remaining_micros as "remainingContractsMicros",
                  created_at as "createdAt", updated_at as "updatedAt"`,
       [
         data.id, 
@@ -453,9 +465,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async getOrdersByMarketId(marketId: string, status: string[] = ['OPEN', 'PARTIALLY_MATCHED']): Promise<Order[]> {
     const result = await this.pool.query<Order>(
       `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-              side, p_pts as "pPts", yes_pts as "yesPts", 
+              side, p_pts as "pPts", limit_price_yes_pts as "yesPts", 
               stake_pence as "stakePence", liability_pence as "liabilityPence",
-              original_contracts as "originalContracts", remaining_contracts as "remainingContracts",
+              qty_original_micros as "originalContracts", qty_remaining_micros as "remainingContracts",
               status, 
               filled_pence as "filledPence", remaining_pence as "remainingPence",
               created_at as "createdAt", updated_at as "updatedAt"
@@ -497,13 +509,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       `SELECT 
         id, 
         market_id, 
-        yes_pts,
-        cost_pence,
-        contracts,
+        price_yes_pts as yes_pts,
+        notional_pence as cost_pence,
+        qty_micros as contracts,
         maker_order_id,
         taker_order_id,
-        maker_id,
-        taker_id,
+        maker_user_id as maker_id,
+        taker_user_id as taker_id,
         maker_fee_pence,
         taker_fee_pence,
         side,

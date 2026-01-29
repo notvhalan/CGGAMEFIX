@@ -209,6 +209,11 @@ export default function MarketDetail() {
         const newTrades = [data, ...prev].slice(0, 500);
         return newTrades;
       });
+      
+      // Auto-refresh position after trade (if user is involved)
+      if (wallet && (data.maker_id === wallet.userId || data.taker_id === wallet.userId)) {
+        revalidator.revalidate();
+      }
     };
 
     wsClient.on('book_update', handleBookUpdate);
@@ -595,7 +600,7 @@ export default function MarketDetail() {
       </div>
 
       {/* Positions Modal */}
-      {position && position.netContractsMicros !== '0' && (
+      {position && BigInt(position.netContractsMicros || '0') !== 0n && (
         <PositionsModal
           position={position}
           isOpen={isPositionsModalOpen}

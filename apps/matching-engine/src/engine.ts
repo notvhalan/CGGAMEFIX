@@ -291,7 +291,7 @@ export class MatchingEngine {
         makerOrderId: makerOrder.id,
         takerUserId: takerOrder.userId,
         makerUserId: makerOrder.userId,
-        takerSide: takerOrder.side,
+        side: takerOrder.side,
         takerFeePence,
         makerFeePence,
       });

@@ -472,7 +472,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
               filled_pence as "filledPence", remaining_pence as "remainingPence",
               created_at as "createdAt", updated_at as "updatedAt"
        FROM orders 
-       WHERE market_id = $1 AND status = ANY($2)
+       WHERE market_id = $1 
+         AND status = ANY($2)
+         AND limit_price_yes_pts >= 1000
+         AND limit_price_yes_pts <= 9999000
        ORDER BY created_at ASC`,
       [marketId, status]
     );

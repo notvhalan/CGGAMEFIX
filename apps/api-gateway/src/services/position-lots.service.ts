@@ -23,6 +23,8 @@ export class PositionLotsService {
    * Called when TRADE_EXECUTED event is received
    */
   async processTrade(event: TradeExecutedEvent): Promise<void> {
+    this.logger.info('Processing TRADE_EXECUTED event', { tradeId: event.tradeId, takerSide: event.takerSide });
+    
     const { 
       tradeId,
       marketId, 
@@ -42,6 +44,7 @@ export class PositionLotsService {
     const executedAt = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp);
 
     // Process lots for both participants
+    this.logger.info('Processing taker trade', { userId: takerUserId, side: takerSide, qtyMicros: qtyMicros.toString() });
     await this.processUserTrade(
       takerUserId,
       marketId,
@@ -55,6 +58,7 @@ export class PositionLotsService {
 
     // Maker is opposite side
     const makerSide = takerSide === 'FOR' ? 'LAY' : 'FOR';
+    this.logger.info('Processing maker trade', { userId: makerUserId, side: makerSide, qtyMicros: qtyMicros.toString() });
     await this.processUserTrade(
       makerUserId,
       marketId,
@@ -65,6 +69,8 @@ export class PositionLotsService {
       makerFeePence,
       executedAt // Already an ISO string
     );
+    
+    this.logger.info('Completed processing TRADE_EXECUTED event', { tradeId });
   }
 
   /**
@@ -82,9 +88,9 @@ export class PositionLotsService {
   ): Promise<void> {
     // Get current position to determine if opening or closing
     const currentLots = await this.databaseService.query(
-      `SELECT side, SUM(remaining_contracts_micros)::bigint as total_remaining
+      `SELECT side, SUM(qty_remaining_micros)::bigint as total_remaining
        FROM position_lots
-       WHERE user_id = $1 AND market_id = $2 AND remaining_contracts_micros > 0
+       WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0
        GROUP BY side`,
       [userId, marketId]
     );
@@ -119,9 +125,9 @@ export class PositionLotsService {
     // Case 2: Opposite direction (closing/reducing position)
     const oppositeSide = side === 'FOR' ? 'LAY' : 'FOR';
     const lotsToClose = await this.databaseService.query(
-      `SELECT lot_id, side, entry_yes_pts, remaining_contracts_micros, opened_at
+      `SELECT lot_id, side, entry_price_yes_pts, qty_remaining_micros, opened_at
        FROM position_lots
-       WHERE user_id = $1 AND market_id = $2 AND side = $3 AND remaining_contracts_micros > 0
+       WHERE user_id = $1 AND market_id = $2 AND side = $3 AND qty_remaining_micros > 0
        ORDER BY opened_at ASC`, // FIFO
       [userId, marketId, oppositeSide]
     );
@@ -132,8 +138,8 @@ export class PositionLotsService {
       if (remainingToClose <= 0n) break;
 
       const lotId = lot.lot_id;
-      const lotRemaining = BigInt(lot.remaining_contracts_micros);
-      const lotEntryYesPts = parseInt(lot.entry_yes_pts);
+      const lotRemaining = BigInt(lot.qty_remaining_micros);
+      const lotEntryYesPts = parseInt(lot.entry_price_yes_pts);
       const closeQty = remainingToClose < lotRemaining ? remainingToClose : lotRemaining;
 
       // Calculate realized P&L for this partial close
@@ -153,7 +159,7 @@ export class PositionLotsService {
       // Update the lot
       await this.databaseService.query(
         `UPDATE position_lots
-         SET remaining_contracts_micros = remaining_contracts_micros - $1,
+         SET qty_remaining_micros = qty_remaining_micros - $1,
              realized_pnl_pence = realized_pnl_pence + $2,
              updated_at = NOW()
          WHERE lot_id = $3`,
@@ -188,8 +194,8 @@ export class PositionLotsService {
   ): Promise<void> {
     await this.databaseService.query(
       `INSERT INTO position_lots 
-        (user_id, market_id, side, entry_yes_pts, opened_from_trade_id, opened_at,
-         opened_contracts_micros, remaining_contracts_micros, realized_pnl_pence)
+        (user_id, market_id, side, entry_price_yes_pts, opened_from_trade_id, opened_at,
+         qty_opened_micros, qty_remaining_micros, realized_pnl_pence)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)`,
       [userId, marketId, side, entryYesPts, tradeId, executedAt, contractsMicros.toString(), contractsMicros.toString()]
     );
@@ -207,9 +213,9 @@ export class PositionLotsService {
   ): Promise<void> {
     // Recalculate from lots
     const lotsResult = await this.databaseService.query(
-      `SELECT side, entry_yes_pts, remaining_contracts_micros, realized_pnl_pence
+      `SELECT side, entry_price_yes_pts, qty_remaining_micros, realized_pnl_pence
        FROM position_lots
-       WHERE user_id = $1 AND market_id = $2 AND remaining_contracts_micros > 0`,
+       WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0`,
       [userId, marketId]
     );
 
@@ -219,8 +225,8 @@ export class PositionLotsService {
     let totalRealizedPnl = 0;
 
     for (const lot of lotsResult.rows) {
-      const remaining = BigInt(lot.remaining_contracts_micros);
-      const entryYesPts = BigInt(lot.entry_yes_pts);
+      const remaining = BigInt(lot.qty_remaining_micros);
+      const entryYesPts = BigInt(lot.entry_price_yes_pts);
       
       if (lot.side === 'FOR') {
         netContractsMicros += remaining;
@@ -240,12 +246,12 @@ export class PositionLotsService {
     // Upsert snapshot
     await this.databaseService.query(
       `INSERT INTO positions 
-        (user_id, market_id, net_contracts_micros, avg_entry_yes_pts, realized_pnl_pence, fees_paid_pence, updated_at)
+        (user_id, market_id, net_qty_micros, avg_open_price_yes_pts, realized_pnl_pence, fees_paid_pence, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())
        ON CONFLICT (user_id, market_id)
        DO UPDATE SET
-         net_contracts_micros = $3,
-         avg_entry_yes_pts = $4,
+         net_qty_micros = $3,
+         avg_open_price_yes_pts = $4,
          realized_pnl_pence = $5,
          fees_paid_pence = positions.fees_paid_pence + $6,
          updated_at = NOW()`,
@@ -261,13 +267,13 @@ export class PositionLotsService {
       `SELECT 
         lot_id,
         side,
-        entry_yes_pts,
-        remaining_contracts_micros,
-        opened_contracts_micros,
+        entry_price_yes_pts,
+        qty_remaining_micros,
+        qty_opened_micros,
         opened_at,
         realized_pnl_pence
        FROM position_lots
-       WHERE user_id = $1 AND market_id = $2 AND remaining_contracts_micros > 0
+       WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0
        ORDER BY opened_at ASC`,
       [userId, marketId]
     );
@@ -275,9 +281,9 @@ export class PositionLotsService {
     return result.rows.map(row => ({
       lotId: row.lot_id,
       side: row.side,
-      entryYesPts: parseInt(row.entry_yes_pts),
-      remainingContractsMicros: row.remaining_contracts_micros,
-      openedContractsMicros: row.opened_contracts_micros,
+      entryYesPts: parseInt(row.entry_price_yes_pts),
+      remainingContractsMicros: row.qty_remaining_micros,
+      openedContractsMicros: row.qty_opened_micros,
       openedAt: row.opened_at,
       realizedPnlPence: parseInt(row.realized_pnl_pence || '0'),
     }));
@@ -290,20 +296,20 @@ export class PositionLotsService {
     const result = await this.databaseService.query(
       `SELECT 
         side,
-        entry_yes_pts,
-        SUM(remaining_contracts_micros)::bigint as total_remaining,
+        entry_price_yes_pts,
+        SUM(qty_remaining_micros)::bigint as total_remaining,
         COUNT(*)::int as lot_count,
         MIN(opened_at) as first_opened
        FROM position_lots
-       WHERE user_id = $1 AND market_id = $2 AND remaining_contracts_micros > 0
-       GROUP BY side, entry_yes_pts
+       WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0
+       GROUP BY side, entry_price_yes_pts
        ORDER BY first_opened ASC`,
       [userId, marketId]
     );
 
     return result.rows.map(row => ({
       side: row.side,
-      entryYesPts: parseInt(row.entry_yes_pts),
+      entryYesPts: parseInt(row.entry_price_yes_pts),
       totalRemainingContractsMicros: row.total_remaining,
       lotCount: parseInt(row.lot_count),
       firstOpened: row.first_opened,

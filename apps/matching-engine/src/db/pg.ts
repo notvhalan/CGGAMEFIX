@@ -27,13 +27,14 @@ export interface DbOrder {
 export interface DbTrade {
   id: string;
   market_id: string;
-  yes_price_pts: number; // Canonical YES price in probability points
-  size_pence: number; // Size in pence (integer)
+  price_yes_pts: number; // Canonical YES price in probability points
+  qty_micros: string; // Quantity in micros (bigint string)
+  notional_pence: number; // Notional value in pence (integer)
   taker_order_id: string;
   maker_order_id: string;
-  taker_id: string; // Note: column name is taker_id, not taker_user_id
-  maker_id: string; // Note: column name is maker_id, not maker_user_id
-  side: OrderSide;
+  taker_user_id: string; // Actual column name
+  maker_user_id: string; // Actual column name
+  side: OrderSide; // Taker side
   maker_fee_pence: number;
   taker_fee_pence: number;
   executed_at: Date;
@@ -137,14 +138,14 @@ export class DatabaseService {
 
   async createTrade(trade: {
     marketId: string;
-    priceYesPts: number; // Renamed from yesPricePts
-    qtyMicros: string; // Renamed from contractsMicros
-    notionalPence: number; // Renamed from costPence
+    priceYesPts: number;
+    qtyMicros: string;
+    notionalPence: number;
     takerOrderId: string;
     makerOrderId: string;
     takerUserId: string;
     makerUserId: string;
-    takerSide: OrderSide; // Renamed from side
+    side: OrderSide; // Taker side - matches DB column
     takerFeePence: number;
     makerFeePence: number;
   }): Promise<string> {
@@ -163,7 +164,7 @@ export class DatabaseService {
           trade.makerOrderId,
           trade.takerUserId,
           trade.makerUserId,
-          trade.takerSide,
+          trade.side,
           trade.takerFeePence,
           trade.makerFeePence,
         ]

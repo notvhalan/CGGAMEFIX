@@ -75,12 +75,12 @@ export class OrdersController {
         // New format - use liabilityPence for both sides (stakePence is backward compat)
         pPts = orderData.pPts;
         
-        // Reject orders at extreme probabilities (< 0.1% or > 99.9%)
-        const MIN_ALLOWED_PPTS = 10000; // 0.1%
-        const MAX_ALLOWED_PPTS = 9990000; // 99.9%
+        // Reject orders at extreme probabilities (< 0.01% or > 99.99%)
+        const MIN_ALLOWED_PPTS = 1000; // 0.01%
+        const MAX_ALLOWED_PPTS = 9999000; // 99.99%
         
         if (pPts < MIN_ALLOWED_PPTS || pPts > MAX_ALLOWED_PPTS) {
-          throw new Error(`Invalid probability: ${(pPts / 100000).toFixed(2)}%. Must be between 0.1% and 99.9%`);
+          throw new Error(`Invalid probability: ${(pPts / 100000).toFixed(4)}%. Must be between 0.01% and 99.99%`);
         }
         
         side = orderData.side as 'FOR' | 'LAY';

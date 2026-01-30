@@ -74,14 +74,14 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontSize: '0.75rem', fontFamily: 'monospace' }}>
-        {/* Asks (Sell YES / Buy NO) - Top, reversed order */}
+        {/* Asks (Sell YES / Buy NO) - Top, highest % first */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column-reverse', padding: '0.5rem', overflowY: 'auto' }}>
           {asks.length === 0 ? (
             <div style={{ textAlign: 'center', color: '#64748b', padding: '1rem', fontSize: '0.6875rem' }}>
               No asks
             </div>
           ) : (
-            asks.slice(0, 10).reverse().map((ask: any, i: number) => {
+            asks.slice(0, 10).map((ask: any, i: number) => {
               const yesPts = ask.yesPts || 0;
               const contractsMicros = Number(ask.contractsMicros || 0);
               const depth = maxDepth > 0 ? (contractsMicros / maxDepth) * 100 : 0;
@@ -349,7 +349,7 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
                 No asks
               </div>
             ) : (
-              asks.slice(0, 15).map((ask: any, i: number) => {
+              asks.slice(0, 15).reverse().map((ask: any, i: number) => {
                 const yesPts = ask.yesPts || 0;
                 const contractsMicros = ask.contractsMicros || ask.sizePence || 0;
                 

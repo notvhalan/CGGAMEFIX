@@ -1,25 +1,20 @@
-import { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 interface Trade {
   id: string;
   market_id: string;
   yes_pts: number;
+  contracts: number;
   cost_pence: number;
   executed_at: string | Date;
 }
 
-interface Candle {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+type Timeframe = "tick" | "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 
 interface PriceChartProps {
   trades: Trade[];
-  timeframe?: '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+  lastTrade?: Trade | null;
+  timeframe?: Timeframe;
   marketId: string;
 }
 
@@ -27,262 +22,426 @@ function pPtsToPercent(pPts: number): number {
   return pPts / 100_000;
 }
 
-// Build candles from trades based on timeframe
-function buildCandles(trades: Trade[], timeframe: string): Candle[] {
-  if (trades.length === 0) return [];
-
-  const intervalMs: Record<string, number> = {
-    '1m': 60_000,
-    '5m': 300_000,
-    '15m': 900_000,
-    '1h': 3_600_000,
-    '4h': 14_400_000,
-    '1d': 86_400_000,
-  };
-
-  const interval = intervalMs[timeframe] || intervalMs['15m'];
-  const sorted = [...trades].sort((a, b) => 
-    new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
-  );
-
-  const candles: Candle[] = [];
-  const buckets = new Map<number, Trade[]>();
-
-  // Group trades into time buckets
-  sorted.forEach(trade => {
-    const time = new Date(trade.executed_at).getTime();
-    const bucketTime = Math.floor(time / interval) * interval;
-    if (!buckets.has(bucketTime)) {
-      buckets.set(bucketTime, []);
-    }
-    buckets.get(bucketTime)!.push(trade);
-  });
-
-  // Convert buckets to candles
-  Array.from(buckets.entries())
-    .sort(([a], [b]) => a - b)
-    .forEach(([time, bucketTrades]) => {
-      const prices = bucketTrades.map(t => pPtsToPercent(t.yes_pts));
-      const volume = bucketTrades.reduce((sum, t) => sum + t.cost_pence, 0);
-      
-      candles.push({
-        time,
-        open: prices[0],
-        high: Math.max(...prices),
-        low: Math.min(...prices),
-        close: prices[prices.length - 1],
-        volume
-      });
-    });
-
-  return candles;
+function toSec(t: string | Date): number {
+  return Math.floor(new Date(t).getTime() / 1000);
 }
 
-export function PriceChart({ trades, timeframe = '15m', marketId }: PriceChartProps) {
+function intervalSec(tf: Timeframe): number {
+  switch (tf) {
+    case "1m": return 60;
+    case "5m": return 300;
+    case "15m": return 900;
+    case "1h": return 3600;
+    case "4h": return 14400;
+    case "1d": return 86400;
+    case "tick": return 0; // special mode
+  }
+}
+
+type Candle = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+class CandleAgg {
+  private tf: Timeframe;
+  private tfSec: number;
+
+  private currentBucketStart: number | null = null;
+  private current: Candle | null = null;
+
+  // for tick mode, ensure strictly increasing timestamps (seconds)
+  private lastEmittedTime: number | null = null;
+
+  constructor(tf: Timeframe) {
+    this.tf = tf;
+    this.tfSec = intervalSec(tf);
+  }
+
+  reset(tf: Timeframe) {
+    this.tf = tf;
+    this.tfSec = intervalSec(tf);
+    this.currentBucketStart = null;
+    this.current = null;
+    this.lastEmittedTime = null;
+  }
+
+  // Build initial candles from history (ascending)
+  seedFromTrades(sortedAscTrades: Trade[]): Candle[] {
+    this.currentBucketStart = null;
+    this.current = null;
+    this.lastEmittedTime = null;
+
+    const out: Candle[] = [];
+    for (const tr of sortedAscTrades) {
+      const updates = this.ingest(tr, /*emitGapFills*/ true);
+      for (const c of updates) out.push(c);
+    }
+    return out;
+  }
+
+  // ingest trade, return candles that should be appended/updated in order:
+  // - in normal tf: might return multiple (gap fills) + last updated candle
+  // - in tick: always returns one new bar
+  ingest(tr: Trade, emitGapFills: boolean): Candle[] {
+    const yesPts = Number(tr.yes_pts);
+    const contracts = Number(tr.contracts);
+    
+    if (isNaN(yesPts) || isNaN(contracts)) {
+      console.error('[CandleAgg] Invalid trade data:', { 
+        yes_pts: tr.yes_pts, 
+        contracts: tr.contracts,
+        availableKeys: Object.keys(tr),
+        trade: tr 
+      });
+      return [];
+    }
+    
+    const price = pPtsToPercent(yesPts);
+    const vol = contracts; // contracts is the volume
+
+    const tSecRaw = toSec(tr.executed_at);
+
+    // TICK MODE: each trade is its own bar
+    if (this.tf === "tick") {
+      let tSec = tSecRaw;
+      // Ensure strictly increasing timestamps - increment if duplicate or earlier
+      if (this.lastEmittedTime !== null) {
+        if (tSec <= this.lastEmittedTime) {
+          tSec = this.lastEmittedTime + 1;
+        }
+      }
+      this.lastEmittedTime = tSec;
+
+      const c: Candle = {
+        time: tSec,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: vol,
+      };
+      // current is irrelevant in tick mode
+      return [c];
+    }
+
+    // TIME BUCKET MODE
+    const bucket = Math.floor(tSecRaw / this.tfSec) * this.tfSec;
+
+    // if first candle
+    if (this.currentBucketStart === null || this.current === null) {
+      this.currentBucketStart = bucket;
+      this.current = {
+        time: bucket,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: vol,
+      };
+      return [this.current];
+    }
+
+    const updates: Candle[] = [];
+
+    // same bucket -> update current candle
+    if (bucket === this.currentBucketStart) {
+      this.current.high = Math.max(this.current.high, price);
+      this.current.low = Math.min(this.current.low, price);
+      this.current.close = price;
+      this.current.volume += vol;
+      updates.push(this.current);
+      return updates;
+    }
+
+    // future bucket -> optionally fill gaps
+    if (bucket > this.currentBucketStart) {
+      const prevClose = this.current.close;
+      const prevBucket = this.currentBucketStart;
+
+      if (emitGapFills) {
+        // fill missing buckets between prevBucket and bucket
+        for (let b = prevBucket + this.tfSec; b < bucket; b += this.tfSec) {
+          const flat: Candle = {
+            time: b,
+            open: prevClose,
+            high: prevClose,
+            low: prevClose,
+            close: prevClose,
+            volume: 0,
+          };
+          updates.push(flat);
+        }
+      }
+
+      // start new candle at bucket
+      this.currentBucketStart = bucket;
+      this.current = {
+        time: bucket,
+        open: prevClose, // common exchange style: open at previous close
+        high: Math.max(prevClose, price),
+        low: Math.min(prevClose, price),
+        close: price,
+        volume: vol,
+      };
+      updates.push(this.current);
+      return updates;
+    }
+
+    // older trade (out of order) — ignore for realtime incremental mode
+    return [];
+  }
+}
+
+export function PriceChart({
+  trades,
+  lastTrade,
+  timeframe = "15m",
+}: PriceChartProps) {
+  console.log('[PriceChart] Render - trades count:', trades?.length, 'timeframe:', timeframe, 'isLoading:', 'initializing');
+  
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const chartRef = useRef<any>(null);
+  const candleRef = useRef<any>(null);
+  const volRef = useRef<any>(null);
+
+  const aggRef = useRef<CandleAgg | null>(null);
+
+  // Create chart once with dynamic import
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    let mounted = true;
+
+    const initChart = async () => {
+      try {
+        console.log('[PriceChart] Starting chart initialization...');
+        const imported = await import("lightweight-charts");
+        console.log('[PriceChart] lightweight-charts imported, keys:', Object.keys(imported));
+        console.log('[PriceChart] createChart:', typeof imported.createChart);
+        console.log('[PriceChart] ColorType:', typeof imported.ColorType);
+        
+        const { createChart, ColorType } = imported;
+        
+        if (!mounted || !containerRef.current) {
+          console.log('[PriceChart] Component unmounted before chart creation');
+          return;
+        }
+
+        console.log('[PriceChart] Creating chart...');
+        const chart = createChart(containerRef.current, {
+          autoSize: true,
+          layout: {
+            background: { type: ColorType.Solid, color: "transparent" },
+            textColor: "#94a3b8",
+          },
+          grid: {
+            vertLines: { color: "#1f2937" },
+            horzLines: { color: "#1f2937" },
+          },
+          rightPriceScale: { borderColor: "#1f2937" },
+          timeScale: { borderColor: "#1f2937", rightOffset: 2 },
+          crosshair: { mode: 1 },
+        });
+        console.log('[PriceChart] Chart created successfully, type:', typeof chart, 'methods:', Object.keys(chart).slice(0, 10));
+
+        console.log('[PriceChart] Adding candlestick series...');
+        console.log('[PriceChart] chart.addCandlestickSeries:', typeof chart.addCandlestickSeries);
+        
+        // v5 API: use addSeries with type
+        const candles = chart.addSeries(imported.CandlestickSeries, {
+          priceFormat: {
+            type: "custom",
+            formatter: (p: number) => `${p.toFixed(2)}%`,
+          },
+        });
+        console.log('[PriceChart] Candlestick series added');
+
+        console.log('[PriceChart] Adding volume histogram...');
+        const volume = chart.addSeries(imported.HistogramSeries, {
+          priceFormat: { type: "volume" },
+          priceScaleId: "",
+          scaleMargins: { top: 0.8, bottom: 0.0 },
+        });
+        console.log('[PriceChart] Volume histogram added');
+
+        chartRef.current = chart;
+        candleRef.current = candles;
+        volRef.current = volume;
+        console.log('[PriceChart] Chart initialization complete, setting isLoading to false');
+        setIsLoading(false);
+      } catch (error) {
+        console.error("[PriceChart] Failed to initialize chart:", error);
+        setIsLoading(false);
+      }
+    };
+
+    initChart();
+
+    return () => {
+      mounted = false;
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+        candleRef.current = null;
+        volRef.current = null;
+      }
+    };
+  }, []);
+
+  // Re-seed chart when timeframe changes OR initial trades change materially
+  // (for exchange UIs, you normally re-seed on tf change; and keep incremental updates after)
+  const seedKey = useMemo(() => {
+    // cheap key; if you pull history via loader, it changes rarely
+    const first = trades[trades.length - 1]?.id ?? "";
+    const last = trades[0]?.id ?? "";
+    return `${timeframe}:${first}:${last}:${trades.length}`;
+  }, [timeframe, trades]);
+
+  useEffect(() => {
+    // Don't try to seed data while chart is still loading
+    console.log('[PriceChart] Data seeding effect - isLoading:', isLoading, 'trades:', trades.length);
+    if (isLoading) {
+      console.log('[PriceChart] Skipping seed - chart still loading');
+      return;
+    }
+    
+    const chart = chartRef.current;
+    const candleSeries = candleRef.current;
+    const volSeries = volRef.current;
+    console.log('[PriceChart] Refs - chart:', !!chart, 'candleSeries:', !!candleSeries, 'volSeries:', !!volSeries);
+    if (!chart || !candleSeries || !volSeries) return;
+
+    const sortedAsc = [...trades].sort(
+      (a, b) => new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
+    );
+    console.log('[PriceChart] Sorted trades:', sortedAsc.length, 'first:', sortedAsc[0]?.executed_at, 'last:', sortedAsc[sortedAsc.length-1]?.executed_at);
+
+    if (!aggRef.current) aggRef.current = new CandleAgg(timeframe);
+    aggRef.current.reset(timeframe);
+
+    const seeded = aggRef.current.seedFromTrades(sortedAsc);
+    console.log('[PriceChart] Seeded candles:', seeded.length);
+
+    if (seeded.length === 0) {
+      console.log('[PriceChart] No candles generated, exiting');
+      return;
+    }
+
+    // Deduplicate by time (keep last occurrence) and ensure ascending order
+    const dedupedMap = new Map<number, Candle>();
+    for (const c of seeded) {
+      dedupedMap.set(c.time, c);
+    }
+    const deduped = Array.from(dedupedMap.values()).sort((a, b) => a.time - b.time);
+    console.log('[PriceChart] After dedup:', deduped.length, 'first:', deduped[0], 'last:', deduped[deduped.length-1]);
+
+    console.log('[PriceChart] Setting candle data, first:', deduped[0], 'last:', deduped[deduped.length-1]);
+    candleSeries.setData(
+      deduped.map(c => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }))
+    );
+
+    volSeries.setData(
+      deduped.map(c => ({
+        time: c.time,
+        value: Number(c.volume) || 0,
+        color: c.close >= c.open ? "rgba(16,185,129,0.30)" : "rgba(239,68,68,0.30)",
+      }))
+    );
+
+    chart.timeScale().fitContent();
+  }, [seedKey, isLoading, timeframe, trades]);
+
+  // Incremental live update when a trade arrives
+  useEffect(() => {
+    if (!lastTrade) return;
+
+    const candleSeries = candleRef.current;
+    const volSeries = volRef.current;
+    const agg = aggRef.current;
+    if (!candleSeries || !volSeries || !agg) return;
+
+    const updates = agg.ingest(lastTrade, /*emitGapFills*/ true);
+    if (updates.length === 0) return;
+
+    for (const c of updates) {
+      candleSeries.update({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      });
+
+      volSeries.update({
+        time: c.time,
+        value: c.volume,
+        color: c.close >= c.open ? "rgba(16,185,129,0.30)" : "rgba(239,68,68,0.30)",
+      });
+    }
+  }, [lastTrade]);
   
   if (!trades || trades.length === 0) {
     return (
-      <div style={{ 
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexDirection: 'column',
-        color: '#64748b'
-      }}>
-        <div style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>📈</div>
-        <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>No Trades Yet</div>
-        <div style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
-          Chart will appear once trading begins
+      <div style={{ height: "100%", display: "grid", placeItems: "center", color: "#64748b" }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: "2.5rem", marginBottom: "1rem" }}>📈</div>
+          <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>No Trades Yet</div>
+          <div style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
+            Chart will appear once trading begins
+          </div>
         </div>
       </div>
     );
   }
 
-  // Rebuild candles whenever trades or timeframe changes
-  const candles = useMemo(() => buildCandles(trades, timeframe), [trades, timeframe]);
-  
-  const lastCandle = candles[candles.length - 1];
-  const firstCandle = candles[0];
-  
-  if (!lastCandle || !firstCandle) {
-    return <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b' }}>Building chart...</div>;
-  }
-
-  const priceChange = lastCandle.close - firstCandle.open;
-  const priceChangePercent = ((priceChange / firstCandle.open) * 100);
-  const isPositive = priceChange >= 0;
-
-  // Calculate chart bounds
-  const allPrices = candles.flatMap(c => [c.high, c.low]);
-  const minPrice = Math.min(...allPrices);
-  const maxPrice = Math.max(...allPrices);
-  const priceRange = maxPrice - minPrice || 1;
-  
-  const maxVolume = Math.max(...candles.map(c => c.volume), 1);
-
   return (
-    <div style={{ 
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      overflow: 'hidden'
-    }}>
-      {/* Chart Stats Header */}
-      <div style={{ 
-        padding: '0.5rem 0.75rem',
-        borderBottom: '1px solid #2d3748',
-        display: 'flex',
-        gap: '1.5rem',
-        alignItems: 'center',
-        fontSize: '0.75rem',
-        flexShrink: 0
-      }}>
-        <div>
-          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>Last</span>
-          <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#e4e8eb' }}>
-            {lastCandle.close.toFixed(2)}%
-          </span>
-        </div>
+    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+      {/* Always render the container so ref attaches and useEffect can run */}
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      
+      {/* Show loading overlay while chart initializes */}
+      {isLoading && (
         <div style={{ 
-          fontWeight: 600, 
-          color: isPositive ? '#10b981' : '#ef4444' 
+          position: "absolute", 
+          top: 0, 
+          left: 0, 
+          right: 0, 
+          bottom: 0, 
+          display: "grid", 
+          placeItems: "center", 
+          background: "#1a1f26",
+          color: "#64748b",
+          zIndex: 10
         }}>
-          {isPositive ? '+' : ''}{priceChangePercent.toFixed(2)}%
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Loading chart...</div>
+          </div>
         </div>
-        <div>
-          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>H</span>
-          <span style={{ fontWeight: 600 }}>{maxPrice.toFixed(2)}%</span>
-        </div>
-        <div>
-          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>L</span>
-          <span style={{ fontWeight: 600 }}>{minPrice.toFixed(2)}%</span>
-        </div>
-        <div>
-          <span style={{ color: '#64748b', marginRight: '0.375rem' }}>Candles</span>
-          <span style={{ fontWeight: 600 }}>{candles.length}</span>
-        </div>
-      </div>
-
-      {/* Chart Canvas */}
-      <div style={{ flex: 1, position: 'relative', padding: '0.75rem' }}>
-        <svg width="100%" height="100%" viewBox="0 0 1000 500" preserveAspectRatio="none" style={{ overflow: 'visible' }}>
-          {/* Grid lines */}
-          {[0, 0.25, 0.5, 0.75, 1].map(ratio => {
-            const y = ratio * 500;
-            return (
-              <g key={ratio}>
-                <line
-                  x1="0"
-                  y1={y}
-                  x2="1000"
-                  y2={y}
-                  stroke="#2d3748"
-                  strokeWidth="1"
-                  strokeDasharray="2,2"
-                />
-                <text
-                  x="8"
-                  y={y + 4}
-                  fill="#64748b"
-                  fontSize="12"
-                  fontFamily="monospace"
-                >
-                  {(maxPrice - (ratio * priceRange)).toFixed(1)}%
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Candlesticks */}
-          {candles.map((candle, i) => {
-            const x = candles.length > 1 ? (i / (candles.length - 1)) * 1000 : 500;
-            const candleWidth = Math.max(2, 800 / candles.length);
-            
-            const highY = ((maxPrice - candle.high) / priceRange) * 500;
-            const lowY = ((maxPrice - candle.low) / priceRange) * 500;
-            const openY = ((maxPrice - candle.open) / priceRange) * 500;
-            const closeY = ((maxPrice - candle.close) / priceRange) * 500;
-            
-            const isBullish = candle.close >= candle.open;
-            const color = isBullish ? '#10b981' : '#ef4444';
-            const bodyTop = Math.min(openY, closeY);
-            const bodyHeight = Math.max(Math.abs(closeY - openY), 1);
-
-            // Guard against NaN or invalid values
-            if (isNaN(x) || isNaN(highY) || isNaN(lowY) || isNaN(bodyTop) || isNaN(bodyHeight)) {
-              return null;
-            }
-
-            return (
-              <g key={i}>
-                {/* Wick */}
-                <line
-                  x1={x}
-                  y1={highY}
-                  x2={x}
-                  y2={lowY}
-                  stroke={color}
-                  strokeWidth="1"
-                />
-                {/* Body */}
-                <rect
-                  x={x - candleWidth / 2}
-                  y={bodyTop}
-                  width={candleWidth}
-                  height={bodyHeight}
-                  fill={isBullish ? color : 'transparent'}
-                  stroke={color}
-                  strokeWidth="1.5"
-                />
-              </g>
-            );
-          })}
-
-          {/* Last price line */}
-          <line
-            x1="0"
-            y1={((maxPrice - lastCandle.close) / priceRange) * 500}
-            x2="1000"
-            y2={((maxPrice - lastCandle.close) / priceRange) * 500}
-            stroke={isPositive ? '#10b981' : '#ef4444'}
-            strokeWidth="1.5"
-            strokeDasharray="4,4"
-          />
-        </svg>
-      </div>
-
-      {/* Volume Histogram */}
-      <div style={{ 
-        height: '60px',
-        padding: '0 0.75rem 0.5rem',
-        borderTop: '1px solid #2d3748',
-        flexShrink: 0
+      )}
+      
+      {/* TradingView Attribution */}
+      <div style={{
+        position: "absolute",
+        bottom: "4px",
+        left: "4px",
+        fontSize: "10px",
+        color: "#64748b",
+        pointerEvents: "none"
       }}>
-        <svg width="100%" height="100%" viewBox="0 0 1000 100" preserveAspectRatio="none">
-          {candles.map((candle, i) => {
-            const x = candles.length > 1 ? (i / (candles.length - 1)) * 1000 : 500;
-            const barWidth = Math.max(2, 800 / candles.length);
-            const height = maxVolume > 0 ? (candle.volume / maxVolume) * 100 : 0;
-            const isBullish = candle.close >= candle.open;
-
-            // Guard against NaN or invalid values
-            if (isNaN(x) || isNaN(height) || isNaN(barWidth)) {
-              return null;
-            }
-
-            return (
-              <rect
-                key={i}
-                x={x - barWidth / 2}
-                y={100 - height}
-                width={barWidth}
-                height={height}
-                fill={isBullish ? '#10b98140' : '#ef444440'}
-              />
-            );
-          })}
-        </svg>
+        Chart by TradingView
       </div>
     </div>
   );

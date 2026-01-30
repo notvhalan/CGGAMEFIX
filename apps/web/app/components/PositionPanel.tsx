@@ -11,7 +11,7 @@ interface TradePosition {
 
 export interface Position {
   netYesPence: number;
-  netContractsMicros: string | bigint; // Can be string from API or BigInt in local state
+  netContractsMicros: string | bigint; // Can be string from API or BigInt in local stsate
   avgEntryYesPts: number;
   markYesPts: number;
   unrealizedPnlPence: number;

@@ -16,6 +16,9 @@ interface BotConfig {
   sizeContracts: number;
   refreshMs: number;
   takerChance: number;
+  delayVarianceMs: number; // Random delay variance (±ms)
+  sizeVariance: number; // Contract size variance (0-1, e.g., 0.2 = ±20%)
+  priceVariance: number; // Price variance in pts (±pts)
 }
 
 interface BotState {
@@ -27,7 +30,6 @@ interface BotState {
 export class LiquidityBotsService {
   private readonly logger = new Logger('LiquidityBotsService');
   private bots: BotState[] = [];
-  private intervals: NodeJS.Timeout[] = [];
   private config: BotConfig | null = null;
   private stopping = false;
 
@@ -45,6 +47,9 @@ export class LiquidityBotsService {
     sizeContracts: number;
     refreshMs: number;
     takerChance: number;
+    delayVarianceMs?: number;
+    sizeVariance?: number;
+    priceVariance?: number;
   }) {
     // Stop any existing bots first
     this.stopBots();
@@ -73,6 +78,9 @@ export class LiquidityBotsService {
       sizeContracts: params.sizeContracts,
       refreshMs: params.refreshMs,
       takerChance: params.takerChance,
+      delayVarianceMs: params.delayVarianceMs || 0,
+      sizeVariance: params.sizeVariance || 0,
+      priceVariance: params.priceVariance || 0,
     };
 
     this.logger.info(`Creating ${params.userCount} bot users...`);
@@ -135,6 +143,9 @@ export class LiquidityBotsService {
       sizeContracts: this.config.sizeContracts,
       refreshMs: this.config.refreshMs,
       takerChance: this.config.takerChance,
+      delayVarianceMs: this.config.delayVarianceMs,
+      sizeVariance: this.config.sizeVariance,
+      priceVariance: this.config.priceVariance,
     });
 
     // Start each bot
@@ -145,15 +156,10 @@ export class LiquidityBotsService {
   }
 
   stopBots() {
-    this.logger.info(`Stopping ${this.intervals.length} bot intervals...`);
+    this.logger.info('Stopping all bots...');
     
     this.stopping = true;
     
-    for (const interval of this.intervals) {
-      clearInterval(interval);
-    }
-    
-    this.intervals = [];
     this.bots = [];
     this.config = null;
     
@@ -170,9 +176,8 @@ export class LiquidityBotsService {
       this.logger.error(`Bot ${bot.userId} initial quote failed:`, err)
     );
 
-    // Set up periodic quoting and taking
-    const interval = setInterval(async () => {
-      // Check if we're stopping
+    // Set up periodic quoting and taking with random delay variance
+    const runBotCycle = async () => {
       if (this.stopping) return;
       
       try {
@@ -184,9 +189,19 @@ export class LiquidityBotsService {
       } catch (error) {
         this.logger.error(`Bot ${bot.userId} iteration failed:`, error);
       }
-    }, config.refreshMs);
-
-    this.intervals.push(interval);
+      
+      // Schedule next run with variance
+      if (!this.stopping) {
+        const variance = config.delayVarianceMs > 0 
+          ? Math.random() * config.delayVarianceMs * 2 - config.delayVarianceMs
+          : 0;
+        const nextDelay = Math.max(100, config.refreshMs + variance);
+        setTimeout(runBotCycle, nextDelay);
+      }
+    };
+    
+    // Start first cycle
+    setTimeout(runBotCycle, config.refreshMs);
   }
 
   private async quoteOnce(bot: BotState, config: BotConfig) {
@@ -216,15 +231,25 @@ export class LiquidityBotsService {
     bot.liveOrders = [];
 
     // Place new ladder
-    const contractsMicros = BigInt(Math.round(config.sizeContracts * 1_000_000));
-
     for (let i = 0; i < config.levels; i++) {
       const offset = config.levels > 1
         ? (config.halfSpreadPts * BigInt(i)) / BigInt(config.levels - 1)
         : config.halfSpreadPts;
 
-      const bidYes = this.clampYesPts(config.midYesPts - offset);
-      const askYes = this.clampYesPts(config.midYesPts + offset);
+      // Apply price variance
+      const priceVariance = config.priceVariance > 0
+        ? Math.floor(Math.random() * config.priceVariance * 2 - config.priceVariance)
+        : 0;
+      
+      const bidYes = this.clampYesPts(config.midYesPts - offset + BigInt(priceVariance));
+      const askYes = this.clampYesPts(config.midYesPts + offset + BigInt(priceVariance));
+
+      // Apply size variance
+      const sizeVariance = config.sizeVariance > 0
+        ? 1 + (Math.random() * config.sizeVariance * 2 - config.sizeVariance)
+        : 1;
+      const variedSize = config.sizeContracts * sizeVariance;
+      const contractsMicros = BigInt(Math.round(variedSize * 1_000_000));
 
       // Place FOR (bid)
       await this.placeOrder(bot, config.marketId, 'FOR', bidYes, contractsMicros);
@@ -259,6 +284,11 @@ export class LiquidityBotsService {
   ) {
     const orderId = uuidv4();
     const pPts = side === 'FOR' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
+
+    // Log the prices being used
+    if (yesPts < 10000n || yesPts > 9990000n) {
+      this.logger.warn(`Bot ${bot.userId} placing ${side} order with extreme yesPts: ${yesPts} (${(Number(yesPts) / PRICE_SCALE * 100).toFixed(4)}%)`);
+    }
 
     // Calculate liability
     const maxLossPerContract = side === 'FOR' ? yesPts : BigInt(PRICE_SCALE) - yesPts;

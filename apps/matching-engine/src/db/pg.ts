@@ -145,7 +145,7 @@ export class DatabaseService {
     makerOrderId: string;
     takerUserId: string;
     makerUserId: string;
-    side: OrderSide; // Taker side - matches DB column
+    side: OrderSide; // Taker side - matches  DB column
     takerFeePence: number;
     makerFeePence: number;
   }): Promise<string> {

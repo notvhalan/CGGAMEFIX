@@ -53,7 +53,7 @@ export class MarketsController {
       const forOrders = orders.filter(o => o.side === 'FOR');
       const layOrders = orders.filter(o => o.side === 'LAY');
       
-      // Group by YES probability points and sum remaining contracts
+      // Group by YES probability points and sum remaining contracts 
       const groupByYesPts = (orders: typeof forOrders) => {
         const grouped = new Map<number, bigint>();
         orders.forEach(order => {

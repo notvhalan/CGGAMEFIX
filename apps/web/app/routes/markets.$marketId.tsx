@@ -32,7 +32,7 @@ if (typeof document !== 'undefined' && !document.getElementById('toast-style')) 
 }
 
 // Timeframe options for chart
-type Timeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+type Timeframe = 'tick' | '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 
 // Helper to format prices
 const formatPrice = (pPts: number) => {
@@ -119,6 +119,7 @@ export default function MarketDetail() {
 
   // Real-time state
   const [trades, setTrades] = useState(loaderData.trades?.trades || []);
+  const [lastTrade, setLastTrade] = useState<any | null>(null);
   const [orderBook, setOrderBook] = useState(loaderData.orderBook);
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
   const [selectedPrice, setSelectedPrice] = useState<number | null>(null);
@@ -204,6 +205,8 @@ export default function MarketDetail() {
     // Handle trade events
     const handleTrade = (data: any) => {
       console.log('[Market] Trade:', data);
+      setLastTrade(data);
+      
       setTrades(prev => {
         // Prepend new trade and limit to 500
         const newTrades = [data, ...prev].slice(0, 500);
@@ -419,7 +422,7 @@ export default function MarketDetail() {
             gap: '0.5rem',
             flexShrink: 0
           }}>
-            {(['1m', '5m', '15m', '1h', '4h', '1d'] as Timeframe[]).map(tf => (
+            {(['tick', '1m', '5m', '15m', '1h', '4h', '1d'] as Timeframe[]).map(tf => (
               <button
                 key={tf}
                 onClick={() => setTimeframe(tf)}
@@ -443,7 +446,7 @@ export default function MarketDetail() {
           
           {/* Chart Component */}
           <div style={{ flex: 1, overflow: 'hidden', padding: '0.75rem' }}>
-            <PriceChart trades={trades} timeframe={timeframe} marketId={marketId} />
+            <PriceChart trades={trades} lastTrade={lastTrade} timeframe={timeframe} marketId={marketId} />
           </div>
         </div>
 

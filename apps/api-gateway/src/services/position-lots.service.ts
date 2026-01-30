@@ -156,15 +156,22 @@ export class PositionLotsService {
         : (lotEntryYesPts - exitYesPts) * CONTRACT_PAYOUT_PENCE_NUM / PRICE_SCALE_NUM;
       const realizedPnl = Math.floor(pnlPerContract * contractsDecimal);
 
-      // Update the lot
-      await this.databaseService.query(
+      // Update the lot (with race condition protection)
+      const updateResult = await this.databaseService.query(
         `UPDATE position_lots
          SET qty_remaining_micros = qty_remaining_micros - $1,
              realized_pnl_pence = realized_pnl_pence + $2,
              updated_at = NOW()
-         WHERE lot_id = $3`,
+         WHERE lot_id = $3 AND qty_remaining_micros >= $1
+         RETURNING qty_remaining_micros`,
         [closeQty.toString(), realizedPnl, lotId]
       );
+
+      // If update failed (lot already consumed by another trade), skip this lot
+      if (updateResult.rows.length === 0) {
+        this.logger.warn(`Lot ${lotId} already consumed, skipping (race condition)`);
+        continue;
+      }
 
       this.logger.info(`Closed ${closeQty} from lot ${lotId}, realized PnL: ${realizedPnl}p`);
 

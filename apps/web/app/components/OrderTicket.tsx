@@ -1,5 +1,5 @@
 import { Form } from "@remix-run/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { percentageToPPts } from "~/lib/format";
 
 // Constants from shared-types
@@ -34,22 +34,24 @@ interface OrderTicketProps {
 
 export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }: OrderTicketProps) {
   const [side, setSide] = useState<'FOR' | 'LAY'>('FOR');
-  const [probability, setProbability] = useState('50.00'); // Percentage 0-100
+  const [probability, setProbability] = useState('50.00'); // Always YES percentage 0-100
   const [amount, setAmount] = useState('10.00'); // Pounds (stake for FOR, liability for LAY)
 
-  // Auto-fill price when clicked from orderbook
-  if (selectedPrice && selectedPrice !== percentageToPPts(parseFloat(probability))) {
-    const pricePercent = (selectedPrice / 100_000).toFixed(2);
-    setProbability(pricePercent);
-  }
+  // Auto-fill price when clicked from orderbook (using useEffect to avoid render-time state updates)
+  useEffect(() => {
+    if (selectedPrice && selectedPrice !== percentageToPPts(parseFloat(probability))) {
+      const pricePercent = (selectedPrice / 100_000).toFixed(2);
+      setProbability(pricePercent);
+    }
+  }, [selectedPrice]);
 
   // Calculate contracts and outcomes
   const amountValue = parseFloat(amount);
-  const probValue = parseFloat(probability) / 100; // Convert to 0-1
-  const pPts = percentageToPPts(parseFloat(probability));
+  const yesInputPPts = percentageToPPts(parseFloat(probability)); // User always inputs YES%
   const amountPence = Math.round(amountValue * 100);
   
-  let yesPts: number;
+  let pPtsSubmitted: number; // Price submitted to API (YES for FOR, NO for LAY)
+  let yesPts: number; // For preview calculations
   let contractsMicros: number;
   let costPence: number;
   let feePence: number;
@@ -57,8 +59,9 @@ export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }
   let maxLoss: number;
   
   if (side === 'FOR') {
-    // FOR: user inputs YES probability and stake
-    yesPts = pPts;
+    // FOR (Buy YES): submit YES price as-is
+    pPtsSubmitted = yesInputPPts;
+    yesPts = yesInputPPts;
     contractsMicros = stakeToContracts(amountPence, yesPts);
     costPence = amountPence; // Cost is the stake
     feePence = calculateTakerFee(costPence);
@@ -68,9 +71,9 @@ export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }
     potentialProfit = (payoutPence / 100) - amountValue - (feePence / 100);
     maxLoss = amountValue; // Lose the stake
   } else {
-    // LAY: user inputs NO probability and liability
-    const qPts = pPts; // User enters NO probability
-    yesPts = PRICE_SCALE - qPts;
+    // LAY (Buy NO): submit NO price (inverted from YES input)
+    pPtsSubmitted = PRICE_SCALE - yesInputPPts;
+    yesPts = yesInputPPts; // Use YES price for preview calculations
     contractsMicros = liabilityToContracts(amountPence, yesPts);
     costPence = contractsCost(contractsMicros, yesPts);
     feePence = calculateTakerFee(costPence);
@@ -116,10 +119,10 @@ export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }
       <Form method="post">
         <input type="hidden" name="marketId" value={marketId} />
         <input type="hidden" name="side" value={side} />
-        <input type="hidden" name="pPts" value={pPts} />
+        <input type="hidden" name="pPts" value={pPtsSubmitted} />
         <input type="hidden" name="liabilityPence" value={amountPence} />
 
-        {/* Side Selection */}
+        {/* Side Selection - Kalshi style: Buy YES / Buy NO */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '1rem' }}>
           <button
             type="button"
@@ -135,7 +138,7 @@ export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }
               transition: 'all 0.2s',
             }}
           >
-            FOR (Back YES)
+            Buy YES
           </button>
           <button
             type="button"
@@ -151,14 +154,14 @@ export function OrderTicket({ marketId, wallet, selectedPrice, compact = false }
               transition: 'all 0.2s',
             }}
           >
-            LAY (Back NO)
+            Buy NO
           </button>
         </div>
 
-        {/* Probability */}
+        {/* Probability - Always YES % */}
         <div style={{ marginBottom: compact ? '0.75rem' : '1rem' }}>
           <label style={{ display: 'block', marginBottom: '0.375rem', fontSize: compact ? '0.6875rem' : '0.875rem', fontWeight: 500, color: compact ? '#94a3b8' : 'inherit' }}>
-            {side === 'FOR' ? (compact ? 'Price (YES %)' : 'Probability (YES %)') : (compact ? 'Price (NO %)' : 'Probability (NO %)')}
+            {compact ? 'Price (YES %)' : 'Probability (YES %)'}
           </label>
           <input
             type="number"

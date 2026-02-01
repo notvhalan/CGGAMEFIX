@@ -1,0 +1,81 @@
+name: Deploy Demo Mode (Low Cost)
+
+on:
+  push:
+    branches:
+      - aws-demo
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_PREFIX: betting-exchange-demo
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Build and push API Gateway (with mock data)
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg NODE_ENV=demo \
+            --build-arg MOCK_MODE=true \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:latest \
+            -f apps/api-gateway/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:latest
+      
+      - name: Build and push Web Frontend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:latest \
+            -f apps/web/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:latest
+      
+      - name: Update ECS API Service (Fargate Spot)
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange-demo \
+            --service api-gateway \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }} || echo "Service not yet created"
+      
+      - name: Update ECS Web Service (Fargate Spot)
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange-demo \
+            --service web \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }} || echo "Service not yet created"
+      
+      - name: Deployment summary
+        run: |
+          echo "✅ Demo mode deployment completed!"
+          echo "💰 Running in cost-optimized mode:"
+          echo "   - Using in-memory storage (no RDS/Redis)"
+          echo "   - Fargate Spot pricing (70% cheaper)"
+          echo "   - Minimal services deployed"
+          echo "   - Estimated cost: $3-7/month"

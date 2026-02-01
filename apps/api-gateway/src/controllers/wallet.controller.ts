@@ -42,6 +42,44 @@ export class WalletController {
     }
   }
 
+  @Get('history')
+  async getWalletHistory(
+    @Req() req: FastifyRequest & { session: any }
+  ) {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        throw new UnauthorizedException('User not authenticated');
+      }
+
+      // Query raw range from params if needed, defaulting to 1 week for now or just returning last 50 entries
+      // In a real app, parse 'range' query param (1D, 1W, etc.)
+
+      const result = await this.databaseService.query(
+        `SELECT created_at, balance, (COALESCE(credit, 0) - COALESCE(debit, 0)) as amount, entry_type, description 
+         FROM ledger_entries 
+         WHERE user_id = $1 
+         ORDER BY created_at DESC 
+         LIMIT 100`,
+        [userId]
+      );
+
+      // Transform for chart
+      // We need to reverse it to be chronological for the chart
+      const history = result.rows.reverse().map(row => ({
+        timestamp: row.created_at,
+        balance: parseFloat(row.balance),
+        available: parseFloat(row.balance), // Simplified: available = balance for now
+        reserved: 0 // Placeholder
+      }));
+
+      return { history };
+    } catch (error) {
+      this.logger.error('Failed to fetch wallet history', error);
+      throw error;
+    }
+  }
+
   @Post('deposit')
   @HttpCode(HttpStatus.OK)
   async deposit(

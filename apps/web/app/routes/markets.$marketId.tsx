@@ -1,14 +1,16 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useActionData, Link, Form, useRevalidator } from "@remix-run/react";
-import { getMarket, getMarketOrderBook, getMarketTrades, createOrder, getWallet, getPosition, cashOutPosition } from "~/lib/api.server";
+import { getMarket, getMarketOrderBook, getMarketTrades, createOrder, getWallet, getPosition, cashOutPosition, getUserOrders, cancelOrder } from "~/lib/api.server";
 import { OrderBook } from "~/components/OrderBook";
 import { OrderTicket } from "~/components/OrderTicket";
 import { TradesTape } from "~/components/TradesTape";
 import { PriceChart } from "~/components/PriceChart";
 import { PositionPanel } from "~/components/PositionPanel";
 import { PositionsModal } from "~/components/PositionsModal";
+import OpenOrders from "~/components/OpenOrders";
 import { useEffect, useState, useMemo } from "react";
 import { wsClient } from "~/lib/ws.client";
+import "~/styles/components/controls.css";
 
 // Add CSS animation for toast
 const toastStyle = `
@@ -56,17 +58,19 @@ export async function loader({ params, request }: LoaderFunctionArgs) {
       getMarketTrades(marketId, 500),
     ]);
 
-    // Get wallet and position if user is authenticated
+    // Get wallet, position, and orders if user is authenticated
     let wallet = null;
     let position = null;
+    let userOrders = null;
     try {
       wallet = await getWallet(request);
       position = await getPosition(request, marketId);
+      userOrders = await getUserOrders(request, marketId);
     } catch {
       // Not authenticated or fetch failed
     }
 
-    return json({ market, orderBook, trades, wallet, position, marketId });
+    return json({ market, orderBook, trades, wallet, position, userOrders, marketId });
   } catch (error) {
     throw new Response("Market not found", { status: 404 });
   }
@@ -78,6 +82,29 @@ export async function action({ request, params }: ActionFunctionArgs) {
   const intent = formData.get("intent") as string;
 
   try {
+    // Handle multiple order cancellation
+    if (intent === "cancelMany") {
+      const orderIds = formData.getAll("orderIds").map(String);
+      await Promise.all(orderIds.map(id => cancelOrder(request, id)));
+      
+      return json({ 
+        success: true, 
+        message: `Cancelled ${orderIds.length} ${orderIds.length === 1 ? 'order' : 'orders'}`
+      });
+    }
+    
+    // Handle single order cancellation
+    if (intent === "cancel") {
+      const orderId = formData.get("orderId") as string;
+      const result = await cancelOrder(request, orderId);
+      
+      return json({ 
+        success: true, 
+        message: `Order ${orderId.substring(0, 8)} cancelled`,
+        result
+      });
+    }
+    
     // Handle cash out
     if (intent === "cashout") {
       const percentage = parseInt(formData.get("percentage") as string) || 100;
@@ -113,7 +140,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
 export default function MarketDetail() {
   const loaderData = useLoaderData<typeof loader>();
-  const { market, wallet, position, marketId } = loaderData;
+  const { market, wallet, position, marketId, userOrders } = loaderData;
   const actionData = useActionData<typeof action>();
   const revalidator = useRevalidator();
 
@@ -121,10 +148,12 @@ export default function MarketDetail() {
   const [trades, setTrades] = useState(loaderData.trades?.trades || []);
   const [lastTrade, setLastTrade] = useState<any | null>(null);
   const [orderBook, setOrderBook] = useState(loaderData.orderBook);
-  const [timeframe, setTimeframe] = useState<Timeframe>('15m');
+  const [timeframe, setTimeframe] = useState<Timeframe>('tick');
   const [selectedPrice, setSelectedPrice] = useState<number | null>(null);
   const [isPositionsModalOpen, setIsPositionsModalOpen] = useState(false);
   const [orderFeedback, setOrderFeedback] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [isToastExiting, setIsToastExiting] = useState(false);
+  const [activeTab, setActiveTab] = useState<'trades' | 'orders' | 'positions'>('trades');
   
   // Callback to refetch data after cashout
   const handleCashoutSuccess = () => {
@@ -134,23 +163,28 @@ export default function MarketDetail() {
   // Show feedback from action results
   useEffect(() => {
     if (actionData) {
+      setIsToastExiting(false);
       if (actionData.success) {
         setOrderFeedback({
           type: 'success',
           message: actionData.message || 'Order placed successfully'
         });
-        // Auto-dismiss after 5 seconds
-        setTimeout(() => setOrderFeedback(null), 5000);
+        // Trigger exit animation, then remove after animation completes
+        setTimeout(() => setIsToastExiting(true), 4700); // Start exit animation
+        setTimeout(() => setOrderFeedback(null), 5000); // Remove after animation
+        // Revalidate to refetch user orders and position
+        revalidator.revalidate();
       } else {
         setOrderFeedback({
           type: 'error',
           message: actionData.error || 'Order failed'
         });
-        // Auto-dismiss after 7 seconds
-        setTimeout(() => setOrderFeedback(null), 7000);
+        // Trigger exit animation, then remove after animation completes
+        setTimeout(() => setIsToastExiting(true), 6700); // Start exit animation
+        setTimeout(() => setOrderFeedback(null), 7000); // Remove after animation
       }
     }
-  }, [actionData]);
+  }, [actionData, revalidator]);
 
   // Calculate market stats from trades
   const marketStats = useMemo(() => {
@@ -185,26 +219,31 @@ export default function MarketDetail() {
 
   useEffect(() => {
     // Connect to WebSocket
+    // console.log('[Market] Connecting to WebSocket for market:', marketId);
     wsClient.connect();
 
     // Subscribe to market events
     const bookTopic = `book:${marketId}`;
     const tradeTopic = `trades:${marketId}`;
     
+    // console.log('[Market] Subscribing to topics:', { bookTopic, tradeTopic });
     wsClient.subscribe(bookTopic);
     wsClient.subscribe(tradeTopic);
 
     // Handle order book updates
     const handleBookUpdate = (data: any) => {
-      console.log('[Market] Book update:', data);
+      // console.log('[Market] 📊 Real-time book update received:', data);
       if (data.orderBook) {
         setOrderBook(data.orderBook);
+      } else if (data) {
+        // If data itself is the orderBook
+        setOrderBook(data);
       }
     };
 
     // Handle trade events
     const handleTrade = (data: any) => {
-      console.log('[Market] Trade:', data);
+      // console.log('[Market] 💰 Real-time trade received:', data);
       setLastTrade(data);
       
       setTrades(prev => {
@@ -215,6 +254,7 @@ export default function MarketDetail() {
       
       // Auto-refresh position after trade (if user is involved)
       if (wallet && (data.maker_id === wallet.userId || data.taker_id === wallet.userId)) {
+        // console.log('[Market] User involved in trade, revalidating...');
         revalidator.revalidate();
       }
     };
@@ -222,8 +262,11 @@ export default function MarketDetail() {
     wsClient.on('book_update', handleBookUpdate);
     wsClient.on('trade', handleTrade);
 
+    // console.log('[Market] WebSocket handlers registered');
+
     // Cleanup
     return () => {
+      // console.log('[Market] Cleaning up WebSocket subscriptions');
       wsClient.off('book_update', handleBookUpdate);
       wsClient.off('trade', handleTrade);
       wsClient.unsubscribe(bookTopic);
@@ -264,7 +307,7 @@ export default function MarketDetail() {
           gap: '0.5rem'
         }}>
           <span>📊</span>
-          <span>Exchange</span>
+          <span>GameFix</span>
         </Link>
         <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', fontSize: '0.875rem' }}>
           <Link to="/markets" style={{ color: '#94a3b8', textDecoration: 'none', fontWeight: 500 }}>Markets</Link>
@@ -383,18 +426,6 @@ export default function MarketDetail() {
         </div>
       )}
 
-      {actionData && actionData.success && (
-        <div style={{ 
-          padding: '0.75rem 1rem', 
-          background: '#14532d', 
-          color: '#86efac', 
-          borderBottom: '1px solid #166534',
-          fontSize: '0.875rem'
-        }}>
-          ✓ {actionData.message || `Order submitted! ID: ${actionData.result.orderId?.substring(0, 8)}`}
-        </div>
-      )}
-
       {/* 3-Column Terminal Layout */}
       <div style={{ 
         display: 'grid',
@@ -503,6 +534,9 @@ export default function MarketDetail() {
               marketId={marketId} 
               wallet={wallet}
               selectedPrice={selectedPrice}
+              bestBidPPts={orderBook?.bids?.[0]?.yesPts ?? null}
+              bestAskPPts={orderBook?.asks?.[0]?.yesPts ?? null}
+              lastTradePPts={trades?.[0]?.yes_pts ?? null}
               compact={true}
             />
           </div>
@@ -585,19 +619,47 @@ export default function MarketDetail() {
             gap: '1.5rem',
             flexShrink: 0
           }}>
-            <span style={{ color: '#667eea', borderBottom: '2px solid #667eea', paddingBottom: '0.5rem' }}>
+            <span 
+              style={{ 
+                color: activeTab === 'trades' ? '#667eea' : '#94a3b8',
+                borderBottom: activeTab === 'trades' ? '2px solid #667eea' : 'none',
+                paddingBottom: '0.5rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => setActiveTab('trades')}
+            >
               Recent Trades
             </span>
-            <span style={{ cursor: 'pointer' }}>Open Orders</span>
             <span 
-              style={{ cursor: 'pointer' }}
-              onClick={() => position && setIsPositionsModalOpen(true)}
+              style={{ 
+                color: activeTab === 'orders' ? '#667eea' : '#94a3b8',
+                borderBottom: activeTab === 'orders' ? '2px solid #667eea' : 'none',
+                paddingBottom: '0.5rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => setActiveTab('orders')}
+            >
+              Open Orders
+            </span>
+            <span 
+              style={{ 
+                color: activeTab === 'positions' ? '#667eea' : '#94a3b8',
+                borderBottom: activeTab === 'positions' ? '2px solid #667eea' : 'none',
+                paddingBottom: '0.5rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => {
+                if (position && BigInt(position.netContractsMicros || '0') !== 0n) {
+                  setIsPositionsModalOpen(true);
+                }
+              }}
             >
               Positions
             </span>
           </div>
-          <div style={{ flex: 1, overflow: 'auto' }}>
-            <TradesTape trades={trades} marketId={marketId} compact={true} />
+          <div style={{ flex: 1, overflow: 'auto', padding: activeTab === 'orders' ? '0.875rem' : '0' }}>
+            {activeTab === 'trades' && <TradesTape trades={trades} marketId={marketId} compact={true} />}
+            {activeTab === 'orders' && <OpenOrders orders={userOrders} />}
           </div>
         </div>
       </div>
@@ -613,53 +675,7 @@ export default function MarketDetail() {
         />
       )}
 
-      {/* Order Feedback Toast */}
-      {orderFeedback && (
-        <div style={{
-          position: 'fixed',
-          top: '20px',
-          right: '20px',
-          zIndex: 9999,
-          background: orderFeedback.type === 'success' ? '#10b981' : '#ef4444',
-          color: 'white',
-          padding: '1rem 1.5rem',
-          borderRadius: '8px',
-          boxShadow: '0 10px 40px rgba(0, 0, 0, 0.3)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.75rem',
-          minWidth: '300px',
-          maxWidth: '500px',
-          animation: 'slideIn 0.3s ease-out'
-        }}>
-          <div style={{ fontSize: '1.5rem' }}>
-            {orderFeedback.type === 'success' ? '✓' : '⚠️'}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
-              {orderFeedback.type === 'success' ? 'Success' : 'Failed'}
-            </div>
-            <div style={{ fontSize: '0.875rem', opacity: 0.95 }}>
-              {orderFeedback.message}
-            </div>
-          </div>
-          <button
-            onClick={() => setOrderFeedback(null)}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'white',
-              fontSize: '1.5rem',
-              cursor: 'pointer',
-              padding: '0',
-              lineHeight: 1,
-              opacity: 0.8
-            }}
-          >
-            ×
-          </button>
-        </div>
-      )}
+
     </div>
   );
 }

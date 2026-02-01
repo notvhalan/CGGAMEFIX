@@ -38,6 +38,14 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             accentColor: '#667eea'
           }}
         />
+        <p style={{ 
+          fontSize: '0.75rem', 
+          color: '#64748b', 
+          marginTop: '0.25rem',
+          lineHeight: '1.4'
+        }}>
+          Center point for all bot orders. Bots will place orders spread around this price.
+        </p>
       </div>
 
       <div style={{ marginBottom: '1rem' }}>
@@ -64,6 +72,14 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             accentColor: '#667eea'
           }}
         />
+        <p style={{ 
+          fontSize: '0.75rem', 
+          color: '#64748b', 
+          marginTop: '0.25rem',
+          lineHeight: '1.4'
+        }}>
+          Distance from mid price to furthest orders. Larger = wider orderbook depth.
+        </p>
       </div>
 
       <div style={{ marginBottom: '1rem' }}>
@@ -93,6 +109,14 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             fontSize: '0.875rem'
           }}
         />
+        <p style={{ 
+          fontSize: '0.75rem', 
+          color: '#64748b', 
+          marginTop: '0.25rem',
+          lineHeight: '1.4'
+        }}>
+          Number of price levels per side (FOR/LAY). Each bot places 2 orders per level (1 FOR, 1 LAY). 8 levels = 16 orders per bot.
+        </p>
       </div>
 
       <div style={{ marginBottom: '1rem' }}>
@@ -123,36 +147,14 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             fontSize: '0.875rem'
           }}
         />
-      </div>
-
-      <div style={{ marginBottom: '1rem' }}>
-        <label style={{ 
-          display: 'block', 
-          marginBottom: '0.5rem',
-          fontWeight: 600,
-          fontSize: '0.875rem',
-          color: '#cbd5e1'
+        <p style={{ 
+          fontSize: '0.75rem', 
+          color: '#64748b', 
+          marginTop: '0.25rem',
+          lineHeight: '1.4'
         }}>
-          Refresh Interval (ms)
-        </label>
-        <input
-          type="number"
-          name="refreshMs"
-          min="1000"
-          max="10000"
-          step="100"
-          defaultValue="4000"
-          disabled={disabled}
-          style={{
-            width: '100%',
-            padding: '0.625rem',
-            background: '#0f172a',
-            border: '1px solid #334155',
-            borderRadius: '6px',
-            color: '#e2e8f0',
-            fontSize: '0.875rem'
-          }}
-        />
+          Number of contracts per order. Higher = more liquidity at each price level.
+        </p>
       </div>
 
       <div style={{ marginBottom: '1.5rem' }}>
@@ -179,6 +181,14 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             accentColor: '#667eea'
           }}
         />
+        <p style={{ 
+          fontSize: '0.75rem', 
+          color: '#64748b', 
+          marginTop: '0.25rem',
+          lineHeight: '1.4'
+        }}>
+          Probability each bot will place an aggressive market order (to generate trades). 0% = only passive orders.
+        </p>
       </div>
 
       {/* Variance Controls */}
@@ -194,7 +204,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
           color: '#94a3b8',
           marginBottom: '1rem'
         }}>
-          Variance Settings (Optional)
+          Advanced Settings (Optional)
         </h4>
 
         <div style={{ marginBottom: '1rem' }}>
@@ -205,17 +215,17 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             fontSize: '0.875rem',
             color: '#cbd5e1'
           }}>
-            Delay Variance (±ms)
+            Order Delay (ms)
           </label>
           <input
             type="number"
-            name="delayVarianceMs"
+            name="orderDelayMs"
             min="0"
             max="2000"
-            step="100"
-            defaultValue="0"
+            step="50"
+            defaultValue="100"
             disabled={disabled}
-            placeholder="0 = no variance"
+            placeholder="100"
             style={{
               width: '100%',
               padding: '0.625rem',
@@ -226,8 +236,42 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
               fontSize: '0.875rem'
             }}
           />
-          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem' }}>
-            Adds random ±ms to refresh interval
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            Time delay between placing each order. With 8 levels (16 orders) and 100ms delay, orders spread over ~1.6 seconds. Set to 0 for instant placement.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ 
+            display: 'block', 
+            marginBottom: '0.5rem',
+            fontWeight: 600,
+            fontSize: '0.875rem',
+            color: '#cbd5e1'
+          }}>
+            Order Delay Variance (±ms)
+          </label>
+          <input
+            type="number"
+            name="orderDelayVarianceMs"
+            min="0"
+            max="500"
+            step="25"
+            defaultValue="50"
+            disabled={disabled}
+            placeholder="50"
+            style={{
+              width: '100%',
+              padding: '0.625rem',
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: '6px',
+              color: '#e2e8f0',
+              fontSize: '0.875rem'
+            }}
+          />
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            Random variance added to order delay. Example: 100ms ± 50ms = orders delayed 50-150ms each. Makes bot timing less predictable.
           </div>
         </div>
 
@@ -260,8 +304,8 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
               fontSize: '0.875rem'
             }}
           />
-          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem' }}>
-            e.g., 0.2 = ±20% size variation
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            Randomize order sizes. Example: 0.2 = ±20% variation. If base size is 1.5 contracts, orders will be 1.2-1.8 contracts.
           </div>
         </div>
 
@@ -294,8 +338,8 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
               fontSize: '0.875rem'
             }}
           />
-          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem' }}>
-            e.g., 50000 = ±0.5% price variation
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            Randomize order prices. Example: 50000 = ±0.5% variation. Creates more realistic, less uniform orderbook.
           </div>
         </div>
       </div>
@@ -343,13 +387,13 @@ export async function action({ request }: ActionFunctionArgs) {
     const spread = Number(formData.get('spread') || 2.5);
     const levels = Number(formData.get('levels') || 8);
     const sizeContracts = Number(formData.get('sizeContracts') || 1.5);
-    const refreshMs = Number(formData.get('refreshMs') || 4000);
     const takerChance = Number(formData.get('takerChance') || 10);
     
     // Variance parameters
-    const delayVarianceMs = Number(formData.get('delayVarianceMs') || 0);
     const sizeVariance = Number(formData.get('sizeVariance') || 0);
     const priceVariance = Number(formData.get('priceVariance') || 0);
+    const orderDelayMs = Number(formData.get('orderDelayMs') || 0);
+    const orderDelayVarianceMs = Number(formData.get('orderDelayVarianceMs') || 0);
 
     // Convert percentage values to points (scale of 10,000,000 = 100%)
     const midYesPts = Math.round((midPrice / 100) * 10_000_000);
@@ -371,11 +415,11 @@ export async function action({ request }: ActionFunctionArgs) {
           halfSpreadPts,
           levels,
           sizeContracts,
-          refreshMs,
           takerChance: takerChanceDecimal,
-          delayVarianceMs,
           sizeVariance,
           priceVariance,
+          orderDelayMs,
+          orderDelayVarianceMs,
         }),
       });
 

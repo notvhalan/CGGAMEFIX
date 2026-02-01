@@ -43,7 +43,7 @@ export default function Signup() {
       }}>
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
           <Link to="/" style={{ color: '#667eea', fontSize: '1.75rem', fontWeight: 700, textDecoration: 'none' }}>
-            Betting Exchange
+            GameFix
           </Link>
           <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginTop: '1rem', color: '#1a202c' }}>
             Create Account

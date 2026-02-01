@@ -20,8 +20,11 @@ export class AdminController {
       halfSpreadPts: number;
       levels: number;
       sizeContracts: number;
-      refreshMs: number;
       takerChance: number;
+      sizeVariance?: number;
+      priceVariance?: number;
+      orderDelayMs?: number;
+      orderDelayVarianceMs?: number;
     },
     @Req() req: FastifyRequest & { session: any },
   ) {

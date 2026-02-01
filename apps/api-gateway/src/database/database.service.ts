@@ -413,17 +413,19 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     liabilityPence: number;
     originalContractsMicros: string;
     remainingContractsMicros: string;
+    timeInForce?: 'GTC' | 'IOC';
   }): Promise<Order> {
     const result = await this.pool.query<Order>(
       `INSERT INTO orders (id, user_id, market_id, outcome_id, side, p_pts, limit_price_yes_pts, 
                           liability_pence, status, 
-                          qty_original_micros, qty_remaining_micros) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9, $10) 
+                          qty_original_micros, qty_remaining_micros, time_in_force) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9, $10, $11) 
        RETURNING id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
                  side, p_pts as "pPts", limit_price_yes_pts as "yesPts",
                  liability_pence as "liabilityPence", status, 
                  qty_original_micros as "originalContractsMicros", 
                  qty_remaining_micros as "remainingContractsMicros",
+                 time_in_force as "timeInForce",
                  created_at as "createdAt", updated_at as "updatedAt"`,
       [
         data.id, 
@@ -436,6 +438,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         data.liabilityPence,
         data.originalContractsMicros,
         data.remainingContractsMicros,
+        data.timeInForce || 'GTC',
       ]
     );
     return result.rows[0];
@@ -447,8 +450,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async getOrdersByUserId(userId: string, limit = 50): Promise<Order[]> {
     const result = await this.pool.query<Order>(
       `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
-              side, p_pts as "pPts", stake_pence as "stakePence", status, 
+              side, p_pts as "pPts", limit_price_yes_pts as "yesPts", 
+              stake_pence as "stakePence", liability_pence as "liabilityPence",
+              qty_original_micros as "originalContractsMicros", 
+              qty_remaining_micros as "remainingContractsMicros",
+              status, 
               filled_pence as "filledPence", remaining_pence as "remainingPence",
+              time_in_force as "timeInForce",
               created_at as "createdAt", updated_at as "updatedAt"
        FROM orders 
        WHERE user_id = $1 

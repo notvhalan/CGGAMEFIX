@@ -34,6 +34,45 @@ export class PositionsController {
   ) {}
 
   /**
+   * Get all active positions for the user across all markets
+   */
+  @Get('me')
+  async getAllMyPositions(@Req() req: any): Promise<Position[]> {
+    const userId = req.session?.userId;
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+
+    const result = await this.databaseService.query(
+      `SELECT 
+        p.market_id,
+        p.net_qty_micros,
+        p.avg_open_price_yes_pts,
+        p.realized_pnl_pence,
+        p.fees_paid_pence,
+        m.name as market_question
+       FROM positions p
+       JOIN markets m ON p.market_id = m.id
+       WHERE p.user_id = $1 AND p.net_qty_micros != 0`,
+      [userId]
+    );
+
+    return result.rows.map(row => ({
+      marketId: row.market_id,
+      marketQuestion: row.market_question,
+      netYesPence: 0, // Calculated frontend side or need mark price here
+      netContractsMicros: row.net_qty_micros,
+      avgEntryYesPts: parseInt(row.avg_open_price_yes_pts || '0'),
+      markYesPts: Math.floor(PRICE_SCALE / 2), // Default mark, frontend should fetch real mark
+      unrealizedPnlPence: 0, // Calculated frontend
+      totalFeesPence: parseInt(row.fees_paid_pence || '0'),
+      canCashOut: true,
+      buyPositions: [],
+      sellPositions: []
+    }));
+  }
+
+  /**
    * Get user's position for a specific market
    * Computes from trades table
    */

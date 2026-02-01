@@ -24,6 +24,7 @@ export class OrdersController {
   async getOrders(
     @Req() req: FastifyRequest & { session: any },
     @Query('limit') limit?: string,
+    @Query('marketId') marketId?: string,
   ) {
     try {
       // Extract userId from session
@@ -35,7 +36,12 @@ export class OrdersController {
       const orderLimit = limit ? parseInt(limit) : 50;
       const orders = await this.databaseService.getOrdersByUserId(userId, orderLimit);
       
-      return { orders };
+      // Filter by marketId if provided
+      const filteredOrders = marketId 
+        ? orders.filter(order => order.marketId === marketId)
+        : orders;
+      
+      return { orders: filteredOrders };
     } catch (error) {
       this.logger.error('Failed to fetch orders', error);
       throw error;
@@ -158,6 +164,7 @@ export class OrdersController {
         liabilityPence,
         originalContractsMicros: contractsMicros.toString(),
         remainingContractsMicros: contractsMicros.toString(),
+        timeInForce,
       });
       
       // Publish order submission command to NATS for matching engine

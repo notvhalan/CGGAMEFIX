@@ -12,7 +12,7 @@ export default function Legal() {
         alignItems: 'center'
       }}>
         <Link to="/" style={{ color: '#667eea', fontSize: '1.5rem', fontWeight: 700, textDecoration: 'none' }}>
-          Betting Exchange
+          GameFix
         </Link>
         <Link to="/markets" style={{ color: '#4a5568', textDecoration: 'none' }}>Markets</Link>
       </nav>

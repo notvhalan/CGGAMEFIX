@@ -14,16 +14,17 @@ interface BotConfig {
   halfSpreadPts: bigint;
   levels: number;
   sizeContracts: number;
-  refreshMs: number;
   takerChance: number;
-  delayVarianceMs: number; // Random delay variance (±ms)
   sizeVariance: number; // Contract size variance (0-1, e.g., 0.2 = ±20%)
   priceVariance: number; // Price variance in pts (±pts)
+  orderDelayMs: number; // Delay between individual order placements (ms)
+  orderDelayVarianceMs: number; // Variance for order delay (±ms)
 }
 
 interface BotState {
   userId: string;
   liveOrders: Array<{ id: string; side: Side; yesPts: bigint }>;
+  timeoutId?: NodeJS.Timeout; // Track timeout for cleanup
 }
 
 @Injectable()
@@ -45,11 +46,11 @@ export class LiquidityBotsService {
     halfSpreadPts: number;
     levels: number;
     sizeContracts: number;
-    refreshMs: number;
     takerChance: number;
-    delayVarianceMs?: number;
     sizeVariance?: number;
     priceVariance?: number;
+    orderDelayMs?: number;
+    orderDelayVarianceMs?: number;
   }) {
     // Stop any existing bots first
     this.stopBots();
@@ -76,11 +77,11 @@ export class LiquidityBotsService {
       halfSpreadPts: BigInt(params.halfSpreadPts),
       levels: params.levels,
       sizeContracts: params.sizeContracts,
-      refreshMs: params.refreshMs,
       takerChance: params.takerChance,
-      delayVarianceMs: params.delayVarianceMs || 0,
       sizeVariance: params.sizeVariance || 0,
       priceVariance: params.priceVariance || 0,
+      orderDelayMs: params.orderDelayMs || 0,
+      orderDelayVarianceMs: params.orderDelayVarianceMs || 0,
     };
 
     this.logger.info(`Creating ${params.userCount} bot users...`);
@@ -141,11 +142,11 @@ export class LiquidityBotsService {
       halfSpreadPts: this.config.halfSpreadPts.toString(),
       levels: this.config.levels,
       sizeContracts: this.config.sizeContracts,
-      refreshMs: this.config.refreshMs,
       takerChance: this.config.takerChance,
-      delayVarianceMs: this.config.delayVarianceMs,
       sizeVariance: this.config.sizeVariance,
       priceVariance: this.config.priceVariance,
+      orderDelayMs: this.config.orderDelayMs,
+      orderDelayVarianceMs: this.config.orderDelayVarianceMs,
     });
 
     // Start each bot
@@ -160,10 +161,18 @@ export class LiquidityBotsService {
     
     this.stopping = true;
     
+    // Clear all scheduled timeouts
+    for (const bot of this.bots) {
+      if (bot.timeoutId) {
+        clearTimeout(bot.timeoutId);
+        bot.timeoutId = undefined;
+      }
+    }
+    
     this.bots = [];
     this.config = null;
     
-    this.logger.info('All bots stopped');
+    this.logger.info('All bots stopped and timeouts cleared');
   }
 
   private async startBot(bot: BotState) {
@@ -171,66 +180,19 @@ export class LiquidityBotsService {
 
     const config = this.config;
     
-    // Initial quote
+    // Place initial ladder only - no periodic refresh
     await this.quoteOnce(bot, config).catch(err => 
-      this.logger.error(`Bot ${bot.userId} initial quote failed:`, err)
+      this.logger.error(`Bot ${bot.userId} order placement failed:`, err)
     );
 
-    // Set up periodic quoting and taking with random delay variance
-    const runBotCycle = async () => {
-      if (this.stopping) return;
-      
-      try {
-        // Maybe send a taker order
-        await this.maybeTaker(bot, config);
-        
-        // Refresh quotes
-        await this.quoteOnce(bot, config);
-      } catch (error) {
-        this.logger.error(`Bot ${bot.userId} iteration failed:`, error);
-      }
-      
-      // Schedule next run with variance
-      if (!this.stopping) {
-        const variance = config.delayVarianceMs > 0 
-          ? Math.random() * config.delayVarianceMs * 2 - config.delayVarianceMs
-          : 0;
-        const nextDelay = Math.max(100, config.refreshMs + variance);
-        setTimeout(runBotCycle, nextDelay);
-      }
-    };
-    
-    // Start first cycle
-    setTimeout(runBotCycle, config.refreshMs);
+    this.logger.info(`Bot ${bot.userId} completed initial order placement`);
   }
 
   private async quoteOnce(bot: BotState, config: BotConfig) {
     // Check if we're stopping
     if (this.stopping) return;
     
-    // Cancel existing orders
-    for (const order of bot.liveOrders) {
-      try {
-        await this.databaseService.query(
-          `UPDATE orders SET status = 'CANCELLED', updated_at = NOW() WHERE id = $1`,
-          [order.id]
-        );
-
-        this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, {
-          orderId: order.id,
-          userId: bot.userId,
-          marketId: config.marketId,
-          reason: 'Bot requote',
-          timestamp: new Date().toISOString(),
-        });
-      } catch (err) {
-        // Order may have filled already
-      }
-    }
-
-    bot.liveOrders = [];
-
-    // Place new ladder
+    // Place ladder with delays between orders
     for (let i = 0; i < config.levels; i++) {
       const offset = config.levels > 1
         ? (config.halfSpreadPts * BigInt(i)) / BigInt(config.levels - 1)
@@ -253,9 +215,27 @@ export class LiquidityBotsService {
 
       // Place FOR (bid)
       await this.placeOrder(bot, config.marketId, 'FOR', bidYes, contractsMicros);
+      
+      // Delay before placing next order
+      if (config.orderDelayMs > 0) {
+        const orderVariance = config.orderDelayVarianceMs > 0
+          ? Math.random() * config.orderDelayVarianceMs * 2 - config.orderDelayVarianceMs
+          : 0;
+        const orderDelay = Math.max(0, config.orderDelayMs + orderVariance);
+        await this.sleep(orderDelay);
+      }
 
       // Place LAY (ask)
       await this.placeOrder(bot, config.marketId, 'LAY', askYes, contractsMicros);
+      
+      // Delay before next level
+      if (i < config.levels - 1 && config.orderDelayMs > 0) {
+        const orderVariance = config.orderDelayVarianceMs > 0
+          ? Math.random() * config.orderDelayVarianceMs * 2 - config.orderDelayVarianceMs
+          : 0;
+        const orderDelay = Math.max(0, config.orderDelayMs + orderVariance);
+        await this.sleep(orderDelay);
+      }
     }
   }
 

@@ -9,10 +9,10 @@ const LOG_LEVEL = (process.env.LOG_LEVEL || 'info') as 'debug' | 'info' | 'warn'
 
 // Simple logger
 const logger = {
-  info: (message: string, ...args: any[]) => console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'info', service: 'WalletService', message, ...args })),
-  warn: (message: string, ...args: any[]) => console.warn(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', service: 'WalletService', message, ...args })),
-  error: (message: string, ...args: any[]) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', service: 'WalletService', message, ...args })),
-  debug: (message: string, ...args: any[]) => { if (LOG_LEVEL === 'debug') console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'debug', service: 'WalletService', message, ...args })); },
+  info: (message: string, ...args: any[]) => {}, // console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'info', service: 'WalletService', message, ...args })),
+  warn: (message: string, ...args: any[]) => {}, // console.warn(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', service: 'WalletService', message, ...args })),
+  error: (message: string, ...args: any[]) => {}, // console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', service: 'WalletService', message, ...args })),
+  debug: (message: string, ...args: any[]) => {}, // { if (LOG_LEVEL === 'debug') console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'debug', service: 'WalletService', message, ...args })); },
 };
 
 const env = {

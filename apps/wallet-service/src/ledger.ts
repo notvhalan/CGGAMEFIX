@@ -67,7 +67,7 @@ export class WalletService {
    * Handle trade executed event - capture/settle funds
    */
   async handleTradeExecuted(event: any) {
-    console.log('Received TRADE_EXECUTED event:', JSON.stringify(event, null, 2));
+    // console.log('Received TRADE_EXECUTED event:', JSON.stringify(event, null, 2));
     const { tradeId, makerUserId, takerUserId, notionalPence, takerSide, makerFeePence, takerFeePence } = event;
     
     // Skip system/placeholder trades (zero UUID or zero notionalPence)
@@ -118,7 +118,7 @@ export class WalletService {
       }
       
     } catch (error) {
-      console.error('Failed to settle trade:', error);
+      // console.error('Failed to settle trade:', error);
       this.logger.error('Failed to settle trade', { tradeId, error: error instanceof Error ? error.message : String(error) });
     }
   }

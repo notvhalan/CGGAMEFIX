@@ -6,13 +6,13 @@ const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres
 
 async function main() {
   try {
-    console.log('Starting Matching Engine...');
+    // console.log('Starting Matching Engine...');
     
     // Create and start matching engine
     const engine = new MatchingEngine(NATS_URL, DATABASE_URL);
     await engine.start();
     
-    console.log('Matching Engine is running');
+    // console.log('Matching Engine is running');
     
   } catch (error) {
     console.error('Failed to start matching engine:', error);

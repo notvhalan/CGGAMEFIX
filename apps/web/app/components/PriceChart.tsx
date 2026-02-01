@@ -88,15 +88,16 @@ class CandleAgg {
   // - in normal tf: might return multiple (gap fills) + last updated candle
   // - in tick: always returns one new bar
   ingest(tr: Trade, emitGapFills: boolean): Candle[] {
-    const yesPts = Number(tr.yes_pts);
-    const contracts = Number(tr.contracts);
+    // Handle different trade data structures - check for various field names
+    const yesPts = Number(tr.yes_pts || (tr as any).yesPts || (tr as any).price || 0);
+    const contracts = Number(tr.contracts || (tr as any).quantity || (tr as any).size || 0);
     
-    if (isNaN(yesPts) || isNaN(contracts)) {
-      console.error('[CandleAgg] Invalid trade data:', { 
+    if (isNaN(yesPts) || isNaN(contracts) || yesPts === 0) {
+      console.warn('[CandleAgg] Skipping invalid trade:', { 
         yes_pts: tr.yes_pts, 
         contracts: tr.contracts,
         availableKeys: Object.keys(tr),
-        trade: tr 
+        rawTrade: tr 
       });
       return [];
     }
@@ -202,7 +203,7 @@ export function PriceChart({
   lastTrade,
   timeframe = "15m",
 }: PriceChartProps) {
-  console.log('[PriceChart] Render - trades count:', trades?.length, 'timeframe:', timeframe, 'isLoading:', 'initializing');
+  // console.log('[PriceChart] Render - trades count:', trades?.length, 'timeframe:', timeframe, 'isLoading:', 'initializing');
   
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -221,20 +222,20 @@ export function PriceChart({
 
     const initChart = async () => {
       try {
-        console.log('[PriceChart] Starting chart initialization...');
+        // console.log('[PriceChart] Starting chart initialization...');
         const imported = await import("lightweight-charts");
-        console.log('[PriceChart] lightweight-charts imported, keys:', Object.keys(imported));
-        console.log('[PriceChart] createChart:', typeof imported.createChart);
-        console.log('[PriceChart] ColorType:', typeof imported.ColorType);
+        // console.log('[PriceChart] lightweight-charts imported, keys:', Object.keys(imported));
+        // console.log('[PriceChart] createChart:', typeof imported.createChart);
+        // console.log('[PriceChart] ColorType:', typeof imported.ColorType);
         
         const { createChart, ColorType } = imported;
         
         if (!mounted || !containerRef.current) {
-          console.log('[PriceChart] Component unmounted before chart creation');
+          // console.log('[PriceChart] Component unmounted before chart creation');
           return;
         }
 
-        console.log('[PriceChart] Creating chart...');
+        // console.log('[PriceChart] Creating chart...');
         const chart = createChart(containerRef.current, {
           autoSize: true,
           layout: {
@@ -249,10 +250,10 @@ export function PriceChart({
           timeScale: { borderColor: "#1f2937", rightOffset: 2 },
           crosshair: { mode: 1 },
         });
-        console.log('[PriceChart] Chart created successfully, type:', typeof chart, 'methods:', Object.keys(chart).slice(0, 10));
+        // console.log('[PriceChart] Chart created successfully, type:', typeof chart, 'methods:', Object.keys(chart).slice(0, 10));
 
-        console.log('[PriceChart] Adding candlestick series...');
-        console.log('[PriceChart] chart.addCandlestickSeries:', typeof chart.addCandlestickSeries);
+        // console.log('[PriceChart] Adding candlestick series...');
+        // console.log('[PriceChart] chart.addCandlestickSeries:', typeof chart.addCandlestickSeries);
         
         // v5 API: use addSeries with type
         const candles = chart.addSeries(imported.CandlestickSeries, {
@@ -261,20 +262,20 @@ export function PriceChart({
             formatter: (p: number) => `${p.toFixed(2)}%`,
           },
         });
-        console.log('[PriceChart] Candlestick series added');
+        // console.log('[PriceChart] Candlestick series added');
 
-        console.log('[PriceChart] Adding volume histogram...');
+        // console.log('[PriceChart] Adding volume histogram...');
         const volume = chart.addSeries(imported.HistogramSeries, {
           priceFormat: { type: "volume" },
           priceScaleId: "",
           scaleMargins: { top: 0.8, bottom: 0.0 },
         });
-        console.log('[PriceChart] Volume histogram added');
+        // console.log('[PriceChart] Volume histogram added');
 
         chartRef.current = chart;
         candleRef.current = candles;
         volRef.current = volume;
-        console.log('[PriceChart] Chart initialization complete, setting isLoading to false');
+        // console.log('[PriceChart] Chart initialization complete, setting isLoading to false');
         setIsLoading(false);
       } catch (error) {
         console.error("[PriceChart] Failed to initialize chart:", error);
@@ -306,31 +307,31 @@ export function PriceChart({
 
   useEffect(() => {
     // Don't try to seed data while chart is still loading
-    console.log('[PriceChart] Data seeding effect - isLoading:', isLoading, 'trades:', trades.length);
+    // console.log('[PriceChart] Data seeding effect - isLoading:', isLoading, 'trades:', trades.length);
     if (isLoading) {
-      console.log('[PriceChart] Skipping seed - chart still loading');
+      // console.log('[PriceChart] Skipping seed - chart still loading');
       return;
     }
     
     const chart = chartRef.current;
     const candleSeries = candleRef.current;
     const volSeries = volRef.current;
-    console.log('[PriceChart] Refs - chart:', !!chart, 'candleSeries:', !!candleSeries, 'volSeries:', !!volSeries);
+    // console.log('[PriceChart] Refs - chart:', !!chart, 'candleSeries:', !!candleSeries, 'volSeries:', !!volSeries);
     if (!chart || !candleSeries || !volSeries) return;
 
     const sortedAsc = [...trades].sort(
       (a, b) => new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
     );
-    console.log('[PriceChart] Sorted trades:', sortedAsc.length, 'first:', sortedAsc[0]?.executed_at, 'last:', sortedAsc[sortedAsc.length-1]?.executed_at);
+    // console.log('[PriceChart] Sorted trades:', sortedAsc.length, 'first:', sortedAsc[0]?.executed_at, 'last:', sortedAsc[sortedAsc.length-1]?.executed_at);
 
     if (!aggRef.current) aggRef.current = new CandleAgg(timeframe);
     aggRef.current.reset(timeframe);
 
     const seeded = aggRef.current.seedFromTrades(sortedAsc);
-    console.log('[PriceChart] Seeded candles:', seeded.length);
+    // console.log('[PriceChart] Seeded candles:', seeded.length);
 
     if (seeded.length === 0) {
-      console.log('[PriceChart] No candles generated, exiting');
+      // console.log('[PriceChart] No candles generated, exiting');
       return;
     }
 
@@ -340,9 +341,9 @@ export function PriceChart({
       dedupedMap.set(c.time, c);
     }
     const deduped = Array.from(dedupedMap.values()).sort((a, b) => a.time - b.time);
-    console.log('[PriceChart] After dedup:', deduped.length, 'first:', deduped[0], 'last:', deduped[deduped.length-1]);
+    // console.log('[PriceChart] After dedup:', deduped.length, 'first:', deduped[0], 'last:', deduped[deduped.length-1]);
 
-    console.log('[PriceChart] Setting candle data, first:', deduped[0], 'last:', deduped[deduped.length-1]);
+    // console.log('[PriceChart] Setting candle data, first:', deduped[0], 'last:', deduped[deduped.length-1]);
     candleSeries.setData(
       deduped.map(c => ({
         time: c.time,

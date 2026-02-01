@@ -1,71 +1,147 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, Link } from "@remix-run/react";
-import { getWallet, getMarkets, getMyOrders } from "~/lib/api.server";
-import { StatCard } from "~/components/StatCard";
-import { MarketCard } from "~/components/MarketCard";
-import { Section } from "~/components/Section";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
+import { getWallet, getMarkets, getMyOrders, getBalanceHistory, getMyPositions } from "~/lib/api.server";
+import { formatPence } from "~/lib/format";
+import { BalanceChart } from "~/components/dashboard/BalanceChart";
+import { SearchBar } from "~/components/layout/SearchBar";
+import "~/styles/pages/dashboard.css";
+import "~/styles/components/panels.css";
+import "~/styles/components/metrics.css";
+import "~/styles/components/tables.css";
+import "~/styles/components/controls.css";
 
-// Helper functions
-const formatMoney = (value: number | null | undefined): string => {
-  if (value === null || value === undefined || isNaN(value)) return "—";
-  return `£${value.toFixed(2)}`;
-};
+type TimeRange = '1D' | '1W' | '1M' | 'ALL';
 
-const formatPercent = (value: number | null | undefined): string => {
-  if (value === null || value === undefined || isNaN(value)) return "—";
-  return `${value.toFixed(1)}%`;
-};
-
-const safeNumber = (value: any, fallback: string = "—"): string => {
-  if (value === null || value === undefined || isNaN(Number(value))) return fallback;
-  return String(value);
-};
-
-const timeAgo = (date: string | Date): string => {
-  const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+const generateMockBalanceData = (pence: number, range: TimeRange) => {
+  const now = Math.floor(Date.now() / 1000);
+  const points = range === '1D' ? 48 : range === '1W' ? 168 : range === '1M' ? 720 : 2160;
+  const interval = range === '1D' ? 1800 : range === '1W' ? 3600 : range === '1M' ? 3600 : 14400;
+  
+  const data = [];
+  const startValue = pence * (0.85 + Math.random() * 0.1);
+  
+  for (let i = 0; i < points; i++) {
+    const time = now - (points - i) * interval;
+    const variance = (Math.random() - 0.5) * pence * 0.02;
+    const trend = ((pence - startValue) / points) * i;
+    const value = Math.max(0, startValue + trend + variance);
+    data.push({ time, value });
+  }
+  
+  return data;
 };
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
-    const [walletResponse, marketsResponse, ordersResponse] = await Promise.allSettled([
+    const url = new URL(request.url);
+    const timeRange = (url.searchParams.get('range') || '1W') as TimeRange;
+    
+    const [walletResponse, marketsResponse, ordersResponse, historyResponse, positionsResponse] = await Promise.allSettled([
       getWallet(request),
       getMarkets(),
-      getMyOrders(request, 10)
+      getMyOrders(request, 20),
+      getBalanceHistory(request, timeRange).catch(() => null),
+      getMyPositions(request)
     ]);
 
     const wallet = walletResponse.status === 'fulfilled' ? walletResponse.value : null;
     const markets = marketsResponse.status === 'fulfilled' ? marketsResponse.value?.markets || [] : [];
     const orders = ordersResponse.status === 'fulfilled' ? ordersResponse.value?.orders || [] : [];
+    const history = historyResponse.status === 'fulfilled' ? historyResponse.value : null;
+    const positions = positionsResponse.status === 'fulfilled' ? positionsResponse.value || [] : [];
+
+    // Use real history if available, otherwise generate mock data
+    const availablePence = wallet?.balancePence ?? 0;
+    const reservedPence = wallet?.reservedPence ?? 0;
+    const equityPence = availablePence + reservedPence;
+
+    let equityData, availableData, reservedData;
+    
+    if (history?.history && history.history.length > 0) {
+      console.log('[Dashboard Loader] Using REAL wallet history:', history.history.length, 'entries');
+      console.log('[Dashboard Loader] Sample entry:', history.history[0]);
+      
+      // Deduplicate by timestamp - keep the last entry for each unique timestamp
+      const deduped = history.history.reduce((acc: any[], h: any) => {
+        const time = Math.floor(new Date(h.timestamp).getTime() / 1000);
+        const existing = acc.find(item => item.time === time);
+        if (existing) {
+          // Update existing entry (keep the latest values for this timestamp)
+          existing.balance = h.balance;
+          existing.available = h.available;
+          existing.reserved = h.reserved;
+        } else {
+          acc.push({
+            time,
+            balance: h.balance,
+            available: h.available,
+            reserved: h.reserved
+          });
+        }
+        return acc;
+      }, []);
+      
+      equityData = deduped.map(h => ({ time: h.time, value: h.balance }));
+      availableData = deduped.map(h => ({ time: h.time, value: h.available }));
+      reservedData = deduped.map(h => ({ time: h.time, value: h.reserved }));
+      
+      console.log('[Dashboard Loader] After deduplication:', deduped.length, 'unique timestamps');
+      console.log('[Dashboard Loader] Transformed equity data sample:', equityData.slice(0, 3));
+      console.log('[Dashboard Loader] Value range:', {
+        min: Math.min(...equityData.map(d => d.value)),
+        max: Math.max(...equityData.map(d => d.value))
+      });
+    } else {
+      console.log('[Dashboard Loader] No real history found, using MOCK data. History response:', history);
+      // Fallback to mock data
+      equityData = generateMockBalanceData(equityPence, timeRange);
+      availableData = generateMockBalanceData(availablePence, timeRange);
+      reservedData = generateMockBalanceData(reservedPence, timeRange);
+    }
 
     return json({ 
       wallet, 
-      markets: markets.slice(0, 8), // Top 8 trending
-      orders: orders.slice(0, 6), // Recent 6 orders
-      error: null,
-      timestamp: new Date().toISOString()
+      markets: markets.slice(0, 8),
+      orders: orders.filter((o: any) => o.status === 'open' || o.status === 'partial').slice(0, 10),
+      positions,
+      timestamp: new Date().toISOString(),
+      equityData,
+      availableData,
+      reservedData,
+      timeRange
     });
   } catch (error) {
-    console.error('Dashboard loader error:', error);
+    const timeRange = '1W';
     return json({ 
       wallet: null, 
       markets: [], 
-      orders: [],
-      error: 'Failed to load dashboard data' 
+      orders: [], 
+      positions: [],
+      timestamp: new Date().toISOString(),
+      equityData: generateMockBalanceData(10000, timeRange),
+      availableData: generateMockBalanceData(8000, timeRange),
+      reservedData: generateMockBalanceData(2000, timeRange),
+      timeRange
     });
   }
 }
 
-export default function AppIndex() {
-  const { wallet, markets, orders, timestamp } = useLoaderData<typeof loader>();
+export default function Dashboard() {
+  const { wallet, markets, orders, positions, equityData, availableData, reservedData, timeRange } = useLoaderData<typeof loader>();
   const [watchlist, setWatchlist] = useState<string[]>([]);
-  const [selectedMarket, setSelectedMarket] = useState<string>("");
-  const [tradeType, setTradeType] = useState<"YES" | "NO">("YES");
-  const [tradeAmount, setTradeAmount] = useState<string>("");
+  
+  if (typeof window !== 'undefined') {
+    console.log('[Dashboard Effect] Rerender', { timeRange, equityDataLength: equityData?.length });
+  }
+
+  const availablePence = wallet?.balancePence ?? 0;
+  const reservedPence = wallet?.reservedPence ?? 0;
+  const totalBalance = availablePence + reservedPence;
+  const totalPositions = positions.length;
+  // TODO: Calculate real PnL from history or positions
+  const pnlPence = 15_00;
+  const pnlPercent = totalBalance > 0 ? (pnlPence / totalBalance) * 100 : 0;
 
   // Load watchlist from localStorage
   useEffect(() => {
@@ -89,906 +165,219 @@ export default function AppIndex() {
     });
   };
 
-  const watchedMarkets = markets.filter(m => watchlist.includes(m.id));
-  const openOrders = orders.filter((o: any) => o.status === 'OPEN' || o.status === 'PENDING');
-  const totalEquity = (wallet?.balance || 0) + (wallet?.lockedBalance || 0);
-
-  // Generate mini balance history (7 days for compact view)
-  const balanceHistory = useMemo(() => {
-    return Array.from({ length: 7 }, (_, i) => {
-      const baseBalance = wallet?.balance || 1000;
-      const variation = Math.sin(i / 2) * 50 + Math.random() * 30;
-      return Math.max(0, baseBalance + variation);
-    });
-  }, [wallet?.balance]);
-
-  const minBalance = Math.min(...balanceHistory);
-  const maxBalance = Math.max(...balanceHistory);
-  const balanceChange = balanceHistory.length > 1 ? 
-    ((balanceHistory[balanceHistory.length - 1] - balanceHistory[0]) / balanceHistory[0] * 100) : 0;
+  const watchedMarkets = markets.filter((m: any) => watchlist.includes(m.id));
 
   return (
-    <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
-      {/* A) Header */}
-      <div style={{ 
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '1.5rem',
-        padding: '1.5rem',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        borderRadius: '12px',
-        color: 'white',
-        boxShadow: '0 4px 12px rgba(102, 126, 234, 0.2)'
-      }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0, marginBottom: '0.25rem' }}>
-            👋 Welcome back
-          </h1>
-          <p style={{ fontSize: '0.8125rem', opacity: 0.9, margin: 0 }}>
-            Last updated: {new Date(timestamp).toLocaleTimeString()}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <Link
-            to="/markets"
-            style={{
-              padding: '0.625rem 1.25rem',
-              background: 'white',
-              color: '#667eea',
-              borderRadius: '8px',
-              textDecoration: 'none',
-              fontWeight: 600,
-              fontSize: '0.875rem',
-              transition: 'all 0.2s'
-            }}
-          >
-            Browse Markets
-          </Link>
-          <Link
-            to="/app/wallet"
-            style={{
-              padding: '0.625rem 1.25rem',
-              background: 'rgba(255, 255, 255, 0.2)',
-              border: '1px solid rgba(255, 255, 255, 0.3)',
-              color: 'white',
-              borderRadius: '8px',
-              textDecoration: 'none',
-              fontWeight: 600,
-              fontSize: '0.875rem',
-              transition: 'all 0.2s'
-            }}
-          >
-            Deposit
-          </Link>
-        </div>
-      </div>
-
-      {/* B) Row 1: Capital + Exposure + Performance */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(12, 1fr)',
-        gap: '1rem',
-        marginBottom: '1rem'
-      }}>
-        {/* Capital Card */}
-        <div style={{ gridColumn: 'span 4' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem',
-            height: '100%'
-          }}>
-            <h3 style={{ fontSize: '0.875rem', fontWeight: 600, color: '#64748b', margin: 0, marginBottom: '1rem' }}>
-              Capital
-            </h3>
-            <div style={{ marginBottom: '0.875rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>Available</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b' }}>
-                {formatMoney(wallet?.balance)}
-              </div>
+    <div className="terminal-dashboard">
+      <div className="terminal-grid">
+        
+        {/* HERO CARD: Portfolio Snapshot */}
+        {/* Top Left - 8 cols */}
+        <div className="terminal-span-8 terminal-panel" style={{ position: 'relative', overflow: 'hidden' }}>
+          <div className="terminal-panel-header" style={{ position: 'relative', zIndex: 10, background: 'transparent', borderBottom: 'none' }}>
+            <h2 className="terminal-panel-title">Balance</h2>
+            <div className="toggle-group">
+              <Link to="?range=1D" className={`toggle-item ${timeRange === '1D' ? 'active' : ''}`}>1D</Link>
+              <Link to="?range=1W" className={`toggle-item ${timeRange === '1W' ? 'active' : ''}`}>1W</Link>
+              <Link to="?range=1M" className={`toggle-item ${timeRange === '1M' ? 'active' : ''}`}>1M</Link>
+              <Link to="?range=ALL" className={`toggle-item ${timeRange === 'ALL' ? 'active' : ''}`}>ALL</Link>
             </div>
-            <div style={{ marginBottom: '0.875rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>Reserved</div>
-              <div style={{ fontSize: '1.125rem', fontWeight: 600, color: '#64748b' }}>
-                {formatMoney(wallet?.lockedBalance)}
-              </div>
-            </div>
-            <div style={{ paddingTop: '0.875rem', borderTop: '1px solid #f1f5f9', marginBottom: '0.875rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>Total Equity</div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#1e293b' }}>
-                {formatMoney(totalEquity)}
-              </div>
-            </div>
-            <Link
-              to="/app/wallet"
-              style={{
-                fontSize: '0.8125rem',
-                color: '#667eea',
-                textDecoration: 'none',
-                fontWeight: 600,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.25rem'
-              }}
-            >
-              Manage wallet →
-            </Link>
           </div>
-        </div>
+          <div className="terminal-panel-body" style={{ position: 'relative', height: '320px', padding: 0 }}>
+             {/* Graph Legend */}
+             <div style={{ 
+               position: 'absolute', 
+               top: '1.25rem', 
+               left: '1.25rem', 
+               zIndex: 10,
+               display: 'flex',
+               gap: '1.5rem',
+               fontSize: '0.875rem',
+               color: 'var(--terminal-muted)'
+             }}>
+              <span>Balance History</span>
+              <span>Available Funds</span>
+              <span>Reserved Funds</span>
+            </div>
 
-        {/* Exposure Card */}
-        <div style={{ gridColumn: 'span 4' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem',
-            height: '100%'
-          }}>
-            <h3 style={{ fontSize: '0.875rem', fontWeight: 600, color: '#64748b', margin: 0, marginBottom: '1rem' }}>
-              Exposure
-            </h3>
-            <div style={{ marginBottom: '0.875rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>Open Orders</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b' }}>
-                {safeNumber(openOrders.length, '0')}
-              </div>
-            </div>
-            <div style={{ marginBottom: '0.875rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>Active Positions</div>
-              <div style={{ fontSize: '1.125rem', fontWeight: 600, color: '#64748b' }}>
-                {safeNumber(0, '0')}
-              </div>
-            </div>
-            <div style={{ paddingTop: '0.875rem', borderTop: '1px solid #f1f5f9', marginBottom: '0.875rem' }}>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>Notional at Risk</div>
-              <div style={{ fontSize: '1.125rem', fontWeight: 600, color: '#ef4444' }}>
-                {formatMoney(wallet?.lockedBalance)}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.8125rem' }}>
-              <Link to="/app/orders" style={{ color: '#667eea', textDecoration: 'none', fontWeight: 600 }}>
-                View orders →
-              </Link>
-              <Link to="/app/positions" style={{ color: '#667eea', textDecoration: 'none', fontWeight: 600 }}>
-                Positions →
-              </Link>
+            {/* Full Height Chart */}
+            <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
+              <BalanceChart 
+                equity={equityData}
+                available={availableData}
+                reserved={reservedData}
+                timeRange={timeRange}
+              />
             </div>
           </div>
         </div>
 
-        {/* Performance Card with Balance History Graph */}
-        <div style={{ gridColumn: 'span 4' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem',
-            height: '100%'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
-              <div>
-                <h3 style={{ fontSize: '0.875rem', fontWeight: 600, color: '#64748b', margin: 0, marginBottom: '0.25rem' }}>
-                  Balance History
-                </h3>
-                <p style={{ fontSize: '0.6875rem', color: '#94a3b8', margin: 0 }}>Last 7 days</p>
+        {/* Top Right - 4 Cols - Risk / Quick Actions */}
+        <div className="terminal-span-4 terminal-panel" style={{ overflow: 'visible' }}>
+          <div className="terminal-panel-header">
+            <h2 className="terminal-panel-title">Quick Access</h2>
+          </div>
+          <div className="terminal-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'visible' }}>
+            <SearchBar compact markets={markets} />
+
+            <div>
+              <div className="detail-label" style={{marginBottom: '0.5rem'}}>Exposure Breakdown</div>
+              <div className="exposure-bar">
+                <div className="exposure-segment" style={{ width: '40%', background: '#667eea' }}></div>
+                <div className="exposure-segment" style={{ width: '30%', background: '#10b981' }}></div>
+                <div className="exposure-segment" style={{ width: '20%', background: '#f59e0b' }}></div>
+                <div className="exposure-segment" style={{ width: '10%', background: '#374151' }}></div>
               </div>
-              <div style={{
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                color: balanceChange >= 0 ? '#10b981' : '#ef4444',
-                background: balanceChange >= 0 ? '#f0fdf4' : '#fef2f2',
-                padding: '0.25rem 0.5rem',
-                borderRadius: '4px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.25rem'
-              }}>
-                {balanceChange >= 0 ? '↑' : '↓'} {Math.abs(balanceChange).toFixed(1)}%
-              </div>
-            </div>
-
-            {/* Enhanced Balance History Chart */}
-            <div style={{ position: 'relative', marginBottom: '1rem' }}>
-              <svg width="100%" height="120" style={{ overflow: 'visible' }}>
-                {/* Grid lines */}
-                {[0, 1, 2, 3].map(i => (
-                  <line
-                    key={i}
-                    x1="0"
-                    y1={i * 30}
-                    x2="100%"
-                    y2={i * 30}
-                    stroke="#f1f5f9"
-                    strokeWidth="1"
-                  />
-                ))}
-
-                {/* Gradient fill */}
-                <defs>
-                  <linearGradient id="balanceGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" stopColor={balanceChange >= 0 ? "#10b981" : "#ef4444"} stopOpacity="0.2" />
-                    <stop offset="100%" stopColor={balanceChange >= 0 ? "#10b981" : "#ef4444"} stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-
-                {/* Area fill */}
-                <polygon
-                  fill="url(#balanceGradient)"
-                  points={[
-                    '0%,120',
-                    ...balanceHistory.map((val, i) => {
-                      const x = (i / (balanceHistory.length - 1)) * 100;
-                      const y = 110 - ((val - minBalance) / (maxBalance - minBalance)) * 100;
-                      return `${x}%,${y}`;
-                    }),
-                    '100%,120'
-                  ].join(' ')}
-                />
-
-                {/* Line */}
-                <polyline
-                  fill="none"
-                  stroke={balanceChange >= 0 ? "#10b981" : "#ef4444"}
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  points={balanceHistory.map((val, i) => {
-                    const x = (i / (balanceHistory.length - 1)) * 100;
-                    const y = 110 - ((val - minBalance) / (maxBalance - minBalance)) * 100;
-                    return `${x}%,${y}`;
-                  }).join(' ')}
-                />
-
-                {/* Data points */}
-                {balanceHistory.map((val, i) => {
-                  const x = (i / (balanceHistory.length - 1)) * 100;
-                  const y = 110 - ((val - minBalance) / (maxBalance - minBalance)) * 100;
-                  return (
-                    <circle
-                      key={i}
-                      cx={`${x}%`}
-                      cy={y}
-                      r="3"
-                      fill="white"
-                      stroke={balanceChange >= 0 ? "#10b981" : "#ef4444"}
-                      strokeWidth="2"
-                    />
-                  );
-                })}
-              </svg>
-
-              {/* Value labels */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.5rem', fontSize: '0.6875rem', color: '#94a3b8' }}>
-                <span>Day 1</span>
-                <span>{formatMoney(balanceHistory[Math.floor(balanceHistory.length / 2)])}</span>
-                <span>Today</span>
-              </div>
-            </div>
-
-            {/* Quick Stats */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', fontSize: '0.75rem', borderTop: '1px solid #f1f5f9', paddingTop: '0.75rem' }}>
-              <div>
-                <div style={{ color: '#94a3b8', marginBottom: '0.25rem' }}>Volume</div>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>$2,450</div>
-              </div>
-              <div>
-                <div style={{ color: '#94a3b8', marginBottom: '0.25rem' }}>Trades</div>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>18</div>
-              </div>
-              <div>
-                <div style={{ color: '#94a3b8', marginBottom: '0.25rem' }}>Fees</div>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>$24.50</div>
+              <div className="exposure-legend">
+                <div className="legend-item"><div className="legend-dot" style={{background: '#667eea'}}></div> Football</div>
+                <div className="legend-item"><div className="legend-dot" style={{background: '#10b981'}}></div> Politics</div>
+                <div className="legend-item"><div className="legend-dot" style={{background: '#f59e0b'}}></div> Crypto</div>
+                <div className="legend-item"><div className="legend-dot" style={{background: '#374151'}}></div> Other</div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* C) Row 2: Markets + Quick Trade */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(12, 1fr)',
-        gap: '1rem',
-        marginBottom: '1rem'
-      }}>
-        {/* Trending Markets */}
-        <div style={{ gridColumn: 'span 8' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <div>
-                <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#1e293b', margin: 0 }}>
-                  Trending Markets
-                </h3>
-                <p style={{ fontSize: '0.75rem', color: '#94a3b8', margin: 0 }}>
-                  Popular right now
-                </p>
-              </div>
-              <Link
-                to="/markets"
-                style={{
-                  fontSize: '0.8125rem',
-                  color: '#667eea',
-                  textDecoration: 'none',
-                  fontWeight: 600
-                }}
-              >
-                View all →
-              </Link>
+        {/* Current Bets Table - Full width */}
+        <div className="terminal-span-8 terminal-panel">
+          <div className="terminal-panel-header">
+            <h2 className="terminal-panel-title">Current Bets</h2>
+            <div className="toggle-group">
+               <button className="toggle-item active">All</button>
+               <button className="toggle-item">Open</button>
+               <button className="toggle-item">Settled</button>
             </div>
+          </div>
+          <div className="terminal-panel-body no-padding">
+             {/* Use dummy data for now as positions API isn't fully linked in loader yet */}
+             <table className="terminal-table">
+               <thead>
+                 <tr>
+                   <th>Market</th>
+                   <th>Side</th>
+                   <th className="align-right">Size</th>
+                   <th className="align-right">Avg Entry</th>
+                   <th className="align-right">Mark</th>
+                   <th className="align-right">P&L</th>
+                   <th></th>
+                 </tr>
+               </thead>
+               <tbody>
+                 {positions.length === 0 ? (
+                   <tr>
+                     <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--terminal-muted)' }}>
+                       No active positions
+                     </td>
+                   </tr>
+                 ) : (positions.map((p: any, i: number) => {
+                    const micros = BigInt(p.netContractsMicros);
+                    const isLong = micros > 0n;
+                    const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
+                    const side = isLong ? 'YES' : 'NO';
+                    const pillClass = isLong ? 'pill-yes' : 'pill-no';
+                    const avgPrice = p.avgEntryYesPts / 100_000;
+                    const mark = p.markYesPts / 100_000;
+                    
+                    const pnlPercent = isLong ? (mark - avgPrice) : (avgPrice - mark);
+                    const pnlValue = (pnlPercent / 100) * contracts;
+                    
+                    // Cost/Exposure calculation
+                    // For Long: Contracts * Price
+                    // For Short: Contracts * (1 - Price) ? Or is it essentially margin?
+                    // We'll show Risk/Cost for now.
+                    const cost = contracts * (isLong ? avgPrice/100 : (1 - avgPrice/100));
 
-            {markets.length > 0 ? (
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', 
-                gap: '0.75rem' 
-              }}>
-                {markets.map((market: any) => (
-                  <Link
-                    key={market.id}
-                    to={`/markets/${market.id}`}
-                    style={{
-                      display: 'block',
-                      padding: '0.875rem',
-                      background: '#fafbfc',
-                      border: '1px solid #f1f5f9',
-                      borderRadius: '8px',
-                      textDecoration: 'none',
-                      transition: 'all 0.2s'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = '#667eea';
-                      e.currentTarget.style.background = 'white';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = '#f1f5f9';
-                      e.currentTarget.style.background = '#fafbfc';
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '0.5rem' }}>
-                      <div style={{ fontWeight: 600, color: '#1e293b', fontSize: '0.8125rem', flex: 1, lineHeight: 1.3 }}>
-                        {market.name || market.id.slice(0, 20)}
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleToggleWatch(market.id);
-                        }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          fontSize: '0.875rem',
-                          padding: 0
-                        }}
-                      >
-                        {watchlist.includes(market.id) ? '⭐' : '☆'}
-                      </button>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
-                      <div style={{ 
-                        flex: 1,
-                        padding: '0.375rem 0.5rem',
-                        background: '#dcfce7',
-                        color: '#16a34a',
-                        borderRadius: '4px',
-                        textAlign: 'center',
-                        fontWeight: 600
-                      }}>
-                        YES {formatPercent(market.backPrice)}
-                      </div>
-                      <div style={{ 
-                        flex: 1,
-                        padding: '0.375rem 0.5rem',
-                        background: '#fee2e2',
-                        color: '#dc2626',
-                        borderRadius: '4px',
-                        textAlign: 'center',
-                        fontWeight: 600
-                      }}>
-                        NO {formatPercent(market.layPrice)}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '0.6875rem', color: '#94a3b8' }}>
-                      Vol: ${market.volume || '—'}
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            ) : (
-              <div style={{
-                padding: '2rem',
-                textAlign: 'center',
-                color: '#94a3b8',
-                fontSize: '0.875rem'
-              }}>
-                No markets available
-              </div>
-            )}
+                    return (
+                   <tr key={i}>
+                     <td className="td-mono" style={{ color: 'white' }}>{p.marketQuestion}</td>
+                     <td><span className={`pill ${pillClass}`}>{side}</span></td>
+                     <td className="align-right td-mono">£{cost.toFixed(2)}</td>
+                     <td className="align-right td-mono">{avgPrice.toFixed(1)}%</td>
+                     <td className="align-right td-mono">{mark.toFixed(1)}%</td>
+                     <td className="align-right td-mono" style={{ color: pnlValue >= 0 ? 'var(--terminal-green)' : 'var(--terminal-red)' }}>
+                        {pnlValue >= 0 ? '+' : '-'}£{Math.abs(pnlValue).toFixed(2)}
+                     </td>
+                     <td className="align-right">
+                        <Link to={`/markets/${p.marketId}`} style={{textDecoration: 'none', color: 'inherit'}}>➜</Link>
+                     </td>
+                   </tr>
+                 )}))}
+                 <tr className="empty-row" style={{ height: '100%' }}></tr>
+               </tbody>
+             </table>
+             <div style={{ padding: '1rem', textAlign: 'center' }}>
+                <Link to="/app/positions" className="terminal-link">View all active positions</Link>
+             </div>
           </div>
         </div>
 
-        {/* Quick Trade Panel */}
-        <div style={{ gridColumn: 'span 4' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem',
-            height: '100%'
-          }}>
-            <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#1e293b', margin: 0, marginBottom: '1rem' }}>
-              Quick Trade
-            </h3>
+        {/* Open Orders & Watchlist Tiles */}
+        <div className="terminal-span-4" style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: '1.25rem' }}>
+          
+          {/* Tile 1: Open Orders */}
+          <div className="terminal-panel">
+            <div className="terminal-panel-header">
+              <h2 className="terminal-panel-title">Open Orders</h2>
+              <Link to="/app/orders" className="terminal-link">Manage</Link>
+            </div>
+            <div className="terminal-panel-body">
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '2.5rem', fontWeight: 700, color: 'white', fontFamily: 'JetBrains Mono' }}>
+                  {orders.length}
+                </span>
+                <span className="detail-label">Active</span>
+              </div>
+              <div style={{ display: 'flex', gap: '1rem', color: 'var(--terminal-muted)', fontSize: '0.875rem' }}>
+                 <span>2 waiting fill</span>
+                 <span>•</span>
+                 <span>1 partial</span>
+              </div>
+              <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+                 <div style={{ flex: 1, padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '4px', textAlign: 'center' }}>
+                    <div className="detail-label" style={{ color: 'var(--terminal-green)' }}>FOR</div>
+                    <div className="detail-value">4</div>
+                 </div>
+                 <div style={{ flex: 1, padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '4px', textAlign: 'center' }}>
+                    <div className="detail-label" style={{ color: 'var(--terminal-red)' }}>LAY</div>
+                    <div className="detail-value">1</div>
+                 </div>
+              </div>
+            </div>
+          </div>
 
-            {wallet ? (
-              <>
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <label style={{ display: 'block', fontSize: '0.75rem', color: '#64748b', marginBottom: '0.375rem', fontWeight: 500 }}>
-                    Select Market
-                  </label>
-                  <select
-                    value={selectedMarket}
-                    onChange={(e) => setSelectedMarket(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '0.5rem',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '6px',
-                      fontSize: '0.8125rem',
-                      background: 'white'
-                    }}
-                  >
-                    <option value="">Choose a market...</option>
-                    {markets.slice(0, 5).map((m: any) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name || m.id.slice(0, 30)}
-                      </option>
-                    ))}
-                  </select>
+          {/* Tile 2: Watchlist */}
+          <div className="terminal-panel">
+            <div className="terminal-panel-header">
+              <h2 className="terminal-panel-title">Watchlist</h2>
+              <Link to="/markets" className="terminal-link">Browse</Link>
+            </div>
+            <div className="terminal-panel-body no-padding">
+              {watchedMarkets.length === 0 ? (
+                <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--terminal-muted)', fontSize: '0.875rem' }}>
+                  No markets in watchlist
                 </div>
-
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <label style={{ display: 'block', fontSize: '0.75rem', color: '#64748b', marginBottom: '0.375rem', fontWeight: 500 }}>
-                    Side
-                  </label>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                      onClick={() => setTradeType('YES')}
-                      style={{
-                        flex: 1,
-                        padding: '0.5rem',
-                        background: tradeType === 'YES' ? '#10b981' : 'white',
-                        color: tradeType === 'YES' ? 'white' : '#64748b',
-                        border: '1px solid',
-                        borderColor: tradeType === 'YES' ? '#10b981' : '#e2e8f0',
-                        borderRadius: '6px',
-                        fontSize: '0.8125rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'all 0.2s'
-                      }}
-                    >
-                      Buy YES
-                    </button>
-                    <button
-                      onClick={() => setTradeType('NO')}
-                      style={{
-                        flex: 1,
-                        padding: '0.5rem',
-                        background: tradeType === 'NO' ? '#ef4444' : 'white',
-                        color: tradeType === 'NO' ? 'white' : '#64748b',
-                        border: '1px solid',
-                        borderColor: tradeType === 'NO' ? '#ef4444' : '#e2e8f0',
-                        borderRadius: '6px',
-                        fontSize: '0.8125rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'all 0.2s'
-                      }}
-                    >
-                      Buy NO
-                    </button>
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: '1rem' }}>
-                  <label style={{ display: 'block', fontSize: '0.75rem', color: '#64748b', marginBottom: '0.375rem', fontWeight: 500 }}>
-                    Amount
-                  </label>
-                  <input
-                    type="number"
-                    value={tradeAmount}
-                    onChange={(e) => setTradeAmount(e.target.value)}
-                    placeholder="0.00"
-                    style={{
-                      width: '100%',
-                      padding: '0.5rem',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '6px',
-                      fontSize: '0.8125rem'
-                    }}
-                  />
-                </div>
-
-                <button
-                  disabled={!selectedMarket}
-                  style={{
-                    width: '100%',
-                    padding: '0.625rem',
-                    background: selectedMarket ? '#667eea' : '#e2e8f0',
-                    color: selectedMarket ? 'white' : '#94a3b8',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '0.875rem',
-                    fontWeight: 600,
-                    cursor: selectedMarket ? 'pointer' : 'not-allowed',
-                    transition: 'all 0.2s'
-                  }}
-                  onClick={() => {
-                    if (selectedMarket) {
-                      window.location.href = `/markets/${selectedMarket}`;
-                    }
-                  }}
-                >
-                  Open Trade Ticket
-                </button>
-              </>
-            ) : (
-              <div style={{
-                padding: '2rem 1rem',
-                textAlign: 'center',
-                background: '#fafbfc',
-                borderRadius: '8px'
-              }}>
-                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔒</div>
-                <p style={{ fontSize: '0.8125rem', color: '#64748b', marginBottom: '0.75rem' }}>
-                  Log in to start trading
-                </p>
-                <Link
-                  to="/login"
-                  style={{
-                    display: 'inline-block',
-                    padding: '0.5rem 1rem',
-                    background: '#667eea',
-                    color: 'white',
-                    borderRadius: '6px',
-                    textDecoration: 'none',
-                    fontSize: '0.8125rem',
-                    fontWeight: 600
-                  }}
-                >
-                  Log In
-                </Link>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* D) Row 3: Activity + Watchlist */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(12, 1fr)',
-        gap: '1rem',
-        marginBottom: '1rem'
-      }}>
-        {/* Recent Activity */}
-        <div style={{ gridColumn: 'span 8' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <div>
-                <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#1e293b', margin: 0 }}>
-                  Recent Activity
-                </h3>
-                <p style={{ fontSize: '0.75rem', color: '#94a3b8', margin: 0 }}>
-                  Your latest orders
-                </p>
-              </div>
-              <Link
-                to="/app/orders"
-                style={{
-                  fontSize: '0.8125rem',
-                  color: '#667eea',
-                  textDecoration: 'none',
-                  fontWeight: 600
-                }}
-              >
-                View all →
-              </Link>
+              ) : (
+                <table className="terminal-table" style={{ fontSize: '0.75rem' }}>
+                  <tbody>
+                    {watchedMarkets.slice(0, 3).map((m: any) => (
+                    <tr key={m.id}>
+                      <td style={{ padding: '0.5rem 1rem' }}>{m.name}</td>
+                      <td className="td-mono align-right" style={{ color: 'var(--terminal-green)', padding: '0.5rem 1rem' }}>
+                        -
+                      </td>
+                      <td className="align-right" style={{ padding: '0.5rem 1rem' }}>
+                        <Link to={`/markets/${m.id}`} className="pill" style={{ background: 'rgba(255, 255, 255, 0.1)', color: 'white', textDecoration: 'none' }}>Trade</Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              )}
             </div>
-
-            {orders.length > 0 ? (
-              <div style={{ borderTop: '1px solid #f1f5f9' }}>
-                {orders.map((order: any, index: number) => {
-                  const sideLabel = order.side === 'BACK' ? 'Buy YES' : 'Buy NO';
-                  const priceDisplay = order.odds ? `${((order.odds - 1) * 100).toFixed(1)}%` : '—';
-                  const amountDisplay = formatMoney(order.stake);
-                  const statusColors: any = {
-                    'OPEN': { bg: '#dbeafe', text: '#1e40af' },
-                    'PENDING': { bg: '#fef3c7', text: '#92400e' },
-                    'FILLED': { bg: '#dcfce7', text: '#15803d' },
-                    'MATCHED': { bg: '#dcfce7', text: '#15803d' },
-                    'CANCELLED': { bg: '#fee2e2', text: '#991b1b' }
-                  };
-                  const statusColor = statusColors[order.status] || { bg: '#f1f5f9', text: '#64748b' };
-
-                  return (
-                    <div
-                      key={order.id || index}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1.2fr 0.8fr 0.8fr 0.8fr 0.8fr 0.6fr',
-                        gap: '0.75rem',
-                        alignItems: 'center',
-                        padding: '0.75rem 0.5rem',
-                        borderBottom: index < orders.length - 1 ? '1px solid #f8fafc' : 'none',
-                        fontSize: '0.8125rem'
-                      }}
-                    >
-                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: '0.125rem' }}>
-                          {order.marketId?.slice(0, 25) || 'Unknown Market'}
-                        </div>
-                        <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-                          {order.createdAt ? timeAgo(order.createdAt) : '—'}
-                        </div>
-                      </div>
-                      <div>
-                        <span style={{
-                          display: 'inline-block',
-                          padding: '0.25rem 0.5rem',
-                          background: order.side === 'BACK' ? '#dcfce7' : '#fee2e2',
-                          color: order.side === 'BACK' ? '#15803d' : '#991b1b',
-                          borderRadius: '4px',
-                          fontSize: '0.75rem',
-                          fontWeight: 600
-                        }}>
-                          {sideLabel}
-                        </span>
-                      </div>
-                      <div style={{ fontWeight: 600, color: '#1e293b' }}>
-                        {priceDisplay}
-                      </div>
-                      <div style={{ fontWeight: 600, color: '#1e293b' }}>
-                        {amountDisplay}
-                      </div>
-                      <div>
-                        <span style={{
-                          display: 'inline-block',
-                          padding: '0.25rem 0.5rem',
-                          background: statusColor.bg,
-                          color: statusColor.text,
-                          borderRadius: '4px',
-                          fontSize: '0.75rem',
-                          fontWeight: 600
-                        }}>
-                          {order.status}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div style={{
-                padding: '2rem',
-                textAlign: 'center',
-                color: '#94a3b8',
-                fontSize: '0.875rem',
-                background: '#fafbfc',
-                borderRadius: '8px'
-              }}>
-                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📭</div>
-                No recent activity
-              </div>
-            )}
           </div>
+
         </div>
 
-        {/* Watchlist */}
-        <div style={{ gridColumn: 'span 4' }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid #e2e8f0',
-            borderRadius: '12px',
-            padding: '1.25rem'
-          }}>
-            <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#1e293b', margin: 0, marginBottom: '1rem' }}>
-              Watchlist
-            </h3>
-
-            {watchedMarkets.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
-                {watchedMarkets.slice(0, 5).map((market: any) => (
-                  <div
-                    key={market.id}
-                    style={{
-                      padding: '0.75rem',
-                      background: '#fafbfc',
-                      border: '1px solid #f1f5f9',
-                      borderRadius: '8px'
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '0.5rem' }}>
-                      <div style={{ flex: 1, fontSize: '0.8125rem', fontWeight: 600, color: '#1e293b', lineHeight: 1.3 }}>
-                        {market.name || market.id.slice(0, 20)}
-                      </div>
-                      <button
-                        onClick={() => handleToggleWatch(market.id)}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          fontSize: '0.875rem',
-                          padding: 0,
-                          marginLeft: '0.5rem'
-                        }}
-                      >
-                        ⭐
-                      </button>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.375rem', marginBottom: '0.5rem' }}>
-                      <span style={{ fontSize: '0.75rem', color: '#10b981', fontWeight: 600 }}>
-                        YES {formatPercent(market.backPrice)}
-                      </span>
-                      <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>•</span>
-                      <span style={{ fontSize: '0.75rem', color: '#ef4444', fontWeight: 600 }}>
-                        NO {formatPercent(market.layPrice)}
-                      </span>
-                    </div>
-                    <Link
-                      to={`/markets/${market.id}`}
-                      style={{
-                        display: 'inline-block',
-                        padding: '0.375rem 0.75rem',
-                        background: '#667eea',
-                        color: 'white',
-                        borderRadius: '4px',
-                        textDecoration: 'none',
-                        fontSize: '0.75rem',
-                        fontWeight: 600
-                      }}
-                    >
-                      Trade
-                    </Link>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{
-                padding: '2rem 1rem',
-                textAlign: 'center',
-                background: '#fafbfc',
-                borderRadius: '8px'
-              }}>
-                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⭐</div>
-                <p style={{ fontSize: '0.8125rem', color: '#64748b', marginBottom: '0.75rem' }}>
-                  No watched markets
-                </p>
-                <p style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-                  Star markets to track them here
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* E) Footer: Quick Actions */}
-      <div style={{
-        display: 'flex',
-        gap: '0.75rem',
-        padding: '1rem',
-        background: 'white',
-        border: '1px solid #e2e8f0',
-        borderRadius: '12px'
-      }}>
-        <Link
-          to="/app/wallet"
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem',
-            padding: '0.75rem',
-            background: '#fafbfc',
-            border: '1px solid #f1f5f9',
-            borderRadius: '8px',
-            textDecoration: 'none',
-            color: '#1e293b',
-            fontSize: '0.8125rem',
-            fontWeight: 600,
-            transition: 'all 0.2s'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.borderColor = '#667eea'}
-          onMouseLeave={(e) => e.currentTarget.style.borderColor = '#f1f5f9'}
-        >
-          <span>💳</span> Deposit
-        </Link>
-        <Link
-          to="/app/wallet"
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem',
-            padding: '0.75rem',
-            background: '#fafbfc',
-            border: '1px solid #f1f5f9',
-            borderRadius: '8px',
-            textDecoration: 'none',
-            color: '#1e293b',
-            fontSize: '0.8125rem',
-            fontWeight: 600,
-            transition: 'all 0.2s'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.borderColor = '#667eea'}
-          onMouseLeave={(e) => e.currentTarget.style.borderColor = '#f1f5f9'}
-        >
-          <span>💸</span> Withdraw
-        </Link>
-        <Link
-          to="/app/orders"
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem',
-            padding: '0.75rem',
-            background: '#fafbfc',
-            border: '1px solid #f1f5f9',
-            borderRadius: '8px',
-            textDecoration: 'none',
-            color: '#1e293b',
-            fontSize: '0.8125rem',
-            fontWeight: 600,
-            transition: 'all 0.2s'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.borderColor = '#667eea'}
-          onMouseLeave={(e) => e.currentTarget.style.borderColor = '#f1f5f9'}
-        >
-          <span>📋</span> Orders
-        </Link>
-        <Link
-          to="/app/settings"
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem',
-            padding: '0.75rem',
-            background: '#fafbfc',
-            border: '1px solid #f1f5f9',
-            borderRadius: '8px',
-            textDecoration: 'none',
-            color: '#1e293b',
-            fontSize: '0.8125rem',
-            fontWeight: 600,
-            transition: 'all 0.2s'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.borderColor = '#667eea'}
-          onMouseLeave={(e) => e.currentTarget.style.borderColor = '#f1f5f9'}
-        >
-          <span>⚙️</span> Settings
-        </Link>
       </div>
     </div>
   );

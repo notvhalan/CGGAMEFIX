@@ -1,0 +1,167 @@
+name: Deploy to AWS Production
+
+on:
+  push:
+    branches:
+      - aws-prod
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_PREFIX: betting-exchange
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build, tag, and push API Gateway
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:latest \
+            -f apps/api-gateway/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/api-gateway:latest
+      
+      - name: Build, tag, and push Matching Engine
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/matching-engine:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/matching-engine:latest \
+            -f apps/matching-engine/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/matching-engine:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/matching-engine:latest
+      
+      - name: Build, tag, and push Wallet Service
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/wallet-service:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/wallet-service:latest \
+            -f apps/wallet-service/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/wallet-service:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/wallet-service:latest
+      
+      - name: Build, tag, and push Market Data Service
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/market-data:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/market-data:latest \
+            -f apps/market-data/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/market-data:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/market-data:latest
+      
+      - name: Build, tag, and push Settlement Service
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/settlement-service:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/settlement-service:latest \
+            -f apps/settlement-service/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/settlement-service:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/settlement-service:latest
+      
+      - name: Build, tag, and push Web Frontend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:latest \
+            -f apps/web/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_PREFIX/web:latest
+      
+      - name: Update ECS API Gateway Service
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange \
+            --service api-gateway \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Update ECS Matching Engine Service
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange \
+            --service matching-engine \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Update ECS Wallet Service
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange \
+            --service wallet-service \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Update ECS Market Data Service
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange \
+            --service market-data \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Update ECS Settlement Service
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange \
+            --service settlement-service \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Update ECS Web Service
+        run: |
+          aws ecs update-service \
+            --cluster betting-exchange \
+            --service web \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Wait for deployment to complete
+        run: |
+          aws ecs wait services-stable \
+            --cluster betting-exchange \
+            --services api-gateway matching-engine wallet-service \
+            --region ${{ env.AWS_REGION }}
+      
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo "Image Tag: ${{ github.sha }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Cluster: betting-exchange"

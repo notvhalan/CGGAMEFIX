@@ -109,6 +109,29 @@ export async function cancelOrder(request: Request, orderId: string) {
   });
 }
 
+export async function getUserOrders(request: Request, marketId?: string) {
+  const cookie = request.headers.get('Cookie');
+  const url = marketId ? `/v1/orders?marketId=${marketId}` : '/v1/orders';
+  const response = await fetchApi<{
+    orders: Array<{
+      id: string;
+      marketId: string;
+      side: 'FOR' | 'LAY';
+      pPts: number;
+      yesPts: number;
+      liabilityPence: number;
+      originalContractsMicros: string;
+      remainingContractsMicros: string;
+      status: string;
+      timeInForce?: string;
+      createdAt: string;
+    }>;
+  }>(url, {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+  return response.orders;
+}
+
 // Wallet APIs
 export async function getWallet(request?: Request) {
   const cookie = request?.headers.get('Cookie');
@@ -118,6 +141,20 @@ export async function getWallet(request?: Request) {
     currency: string;
     lockedBalance: number;
   }>('/v1/wallet', {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+}
+
+export async function getBalanceHistory(request: Request, timeRange: '1D' | '1W' | '1M' | 'ALL' = '1W') {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{
+    history: Array<{
+      timestamp: string;
+      balance: number;
+      available: number;
+      reserved: number;
+    }>;
+  }>(`/v1/wallet/history?range=${timeRange}`, {
     headers: cookie ? { Cookie: cookie } : {},
   });
 }
@@ -155,6 +192,14 @@ export async function withdrawFunds(
 export async function getMyOrders(request: Request, limit = 50) {
   const cookie = request.headers.get('Cookie');
   return fetchApi<{ orders: any[] }>(`/v1/orders?limit=${limit}`, {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+}
+
+// User Positions API
+export async function getMyPositions(request: Request) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<any[]>('/v1/positions/me', {
     headers: cookie ? { Cookie: cookie } : {},
   });
 }

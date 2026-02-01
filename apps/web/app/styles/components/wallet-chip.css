@@ -1,0 +1,20 @@
+/* Wallet Chip */
+.wallet-chip {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+}
+
+.wallet-chip-terminal {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+.wallet-chip-dashboard {
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+}

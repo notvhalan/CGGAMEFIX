@@ -12,7 +12,7 @@ export default function Fees() {
         alignItems: 'center'
       }}>
         <Link to="/" style={{ color: '#667eea', fontSize: '1.5rem', fontWeight: 700, textDecoration: 'none' }}>
-          Betting Exchange
+          GameFix
         </Link>
         <div style={{ display: 'flex', gap: '1rem' }}>
           <Link to="/markets" style={{ color: '#4a5568', textDecoration: 'none' }}>Markets</Link>

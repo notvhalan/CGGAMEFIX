@@ -1,0 +1,12 @@
+# Copy this file to terraform.tfvars and fill in your values
+# DO NOT commit terraform.tfvars to git
+
+aws_region  = "us-east-1"
+environment = "production"
+
+# Database credentials (use strong passwords!)
+db_username = "postgres"
+db_password = "CHANGE_THIS_TO_STRONG_PASSWORD"
+
+# Optional: Custom domain
+domain_name = "yourdomain.com"

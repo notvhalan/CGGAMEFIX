@@ -1,0 +1,38 @@
+/* Table Styles */
+.terminal-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.terminal-table th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--terminal-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--terminal-border);
+  background: var(--bg-tertiary);
+}
+
+.terminal-table td {
+  padding: 0.875rem 1rem;
+  color: var(--terminal-text);
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--terminal-border);
+  transition: background 0.15s;
+}
+
+.terminal-table tbody tr:hover td {
+  background: var(--bg-tertiary);
+  cursor: pointer;
+}
+
+.terminal-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.td-mono {
+  font-family: 'JetBrains Mono', monospace;
+}

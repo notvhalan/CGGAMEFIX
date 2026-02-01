@@ -37,7 +37,7 @@ export function MarketCard({
 
   return (
     <Link
-      to={`/markets/${marketId}`}
+      to={`/app/markets/${marketId}`}
       style={{
         display: 'block',
         background: 'white',

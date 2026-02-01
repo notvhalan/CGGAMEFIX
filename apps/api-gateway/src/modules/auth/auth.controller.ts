@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Req, Res, UseGuards, Query } from '@nestjs/common';
+import { Controller, Get, Post, Req, Res, UseGuards, Query, Body, HttpException, HttpStatus } from '@nestjs/common';
 import { AuthGuard as PassportAuthGuard } from '@nestjs/passport';
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { AuthService } from './auth.service';
@@ -122,6 +122,109 @@ export class AuthController {
         resolve(null);
       });
     });
+  }
+
+  /**
+   * POST /v1/auth/signup
+   * Register with email and password
+   */
+  @Post('signup')
+  async signup(
+    @Body() body: { email: string; password: string; name?: string },
+    @Req() req: FastifyRequest & { session: any },
+    @Res() res: FastifyReply,
+  ) {
+    try {
+      const { email, password, name } = body;
+
+      // Validate input
+      if (!email || !password) {
+        throw new HttpException('Email and password are required', HttpStatus.BAD_REQUEST);
+      }
+
+      if (password.length < 6) {
+        throw new HttpException('Password must be at least 6 characters', HttpStatus.BAD_REQUEST);
+      }
+
+      // Register user
+      const user = await this.authService.registerWithPassword({ email, password, name });
+
+      // Store user ID in session
+      req.session.userId = user.id;
+
+      // Save session and wait for it to complete
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err: any) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      this.logger.info(`User registered and logged in: ${user.email}`);
+
+      return res.send({
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+        },
+      });
+    } catch (error) {
+      this.logger.error('Signup error:', error);
+      if (error.message === 'User with this email already exists') {
+        throw new HttpException(error.message, HttpStatus.CONFLICT);
+      }
+      throw new HttpException('Registration failed', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * POST /v1/auth/login
+   * Login with email and password
+   */
+  @Post('login')
+  async login(
+    @Body() body: { email: string; password: string },
+    @Req() req: FastifyRequest & { session: any },
+    @Res() res: FastifyReply,
+  ) {
+    try {
+      const { email, password } = body;
+
+      // Validate input
+      if (!email || !password) {
+        throw new HttpException('Email and password are required', HttpStatus.BAD_REQUEST);
+      }
+
+      // Login user
+      const user = await this.authService.loginWithPassword(email, password);
+
+      // Store user ID in session
+      req.session.userId = user.id;
+
+      // Save session and wait for it to complete
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err: any) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      this.logger.info(`User logged in: ${user.email}`);
+
+      return res.send({
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+        },
+      });
+    } catch (error) {
+      this.logger.error('Login error:', error);
+      throw new HttpException('Invalid email or password', HttpStatus.UNAUTHORIZED);
+    }
   }
 
   /**

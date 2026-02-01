@@ -5,8 +5,10 @@ import {
   Scripts,
   ScrollRestoration,
   LiveReload,
+  useLoaderData,
 } from "@remix-run/react";
-import type { LinksFunction } from "@remix-run/node";
+import type { LinksFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { json } from "@remix-run/node";
 import "~/styles/theme.css";
 
 export const links: LinksFunction = () => [
@@ -22,6 +24,15 @@ export const links: LinksFunction = () => [
   },
 ];
 
+export async function loader({ request }: LoaderFunctionArgs) {
+  return json({
+    ENV: {
+      API_URL: process.env.VITE_API_URL || process.env.API_BASE_URL || 'http://localhost:3000',
+      WS_URL: process.env.VITE_WS_URL || 'ws://localhost:3000',
+    },
+  });
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -30,14 +41,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <Meta />
         <Links />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `window.ENV = ${JSON.stringify({
-              API_URL: process.env.VITE_API_URL || 'http://localhost:3000',
-              WS_URL: process.env.VITE_WS_URL || 'ws://localhost:3000',
-            })}`,
-          }}
-        />
       </head>
       <body style={{ margin: 0, fontFamily: 'Inter, system-ui, sans-serif' }}>
         {children}
@@ -50,5 +53,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  const data = useLoaderData<typeof loader>();
+  
+  return (
+    <>
+      <script
+        dangerouslySetInnerHTML={{
+          __html: `window.ENV = ${JSON.stringify(data.ENV)}`,
+        }}
+      />
+      <Outlet />
+    </>
+  );
 }

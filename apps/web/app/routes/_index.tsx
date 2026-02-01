@@ -1,7 +1,9 @@
 import { Link } from "@remix-run/react";
-import type { MetaFunction } from "@remix-run/node";
+import type { MetaFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { redirect } from "@remix-run/node";
 import { useEffect, useState } from "react";
 import RealTimeGlassChart from "~/components/RealTimeGlassChart";
+import { getAuthenticatedUser } from "~/lib/auth.server";
 import "~/styles/pages/landing.css";
 
 export const meta: MetaFunction = () => {
@@ -10,6 +12,15 @@ export const meta: MetaFunction = () => {
     { name: "description", content: "GameFix democratizes gambling. Zero transaction fees." },
   ];
 };
+
+export async function loader({ request }: LoaderFunctionArgs) {
+  // If user is already logged in, redirect to app
+  const user = await getAuthenticatedUser(request);
+  if (user) {
+    return redirect("/app");
+  }
+  return null;
+}
 
 export default function Index() {
   const [scrolled, setScrolled] = useState(false);

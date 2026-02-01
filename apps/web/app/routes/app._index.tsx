@@ -298,7 +298,7 @@ export default function Dashboard() {
                         {pnlValue >= 0 ? '+' : '-'}£{Math.abs(pnlValue).toFixed(2)}
                      </td>
                      <td className="align-right">
-                        <Link to={`/markets/${p.marketId}`} style={{textDecoration: 'none', color: 'inherit'}}>➜</Link>
+                        <Link to={`/app/markets/${p.marketId}`} style={{textDecoration: 'none', color: 'inherit'}}>➜</Link>
                      </td>
                    </tr>
                  )}))}
@@ -366,7 +366,7 @@ export default function Dashboard() {
                         -
                       </td>
                       <td className="align-right" style={{ padding: '0.5rem 1rem' }}>
-                        <Link to={`/markets/${m.id}`} className="pill" style={{ background: 'rgba(255, 255, 255, 0.1)', color: 'white', textDecoration: 'none' }}>Trade</Link>
+                        <Link to={`/app/markets/${m.id}`} className="pill" style={{ background: 'rgba(255, 255, 255, 0.1)', color: 'white', textDecoration: 'none' }}>Trade</Link>
                       </td>
                     </tr>
                   ))}

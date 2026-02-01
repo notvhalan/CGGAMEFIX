@@ -1,5 +1,8 @@
 import { Link } from "@remix-run/react";
 import { useState } from "react";
+import type { ActionFunctionArgs } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
+import { Form, useActionData, useNavigation } from "@remix-run/react";
 import "~/styles/pages/landing.css";
 
 // Use window.ENV if available, otherwise default to localhost
@@ -12,9 +15,53 @@ const getApiUrl = () => {
     : 'http://localhost:3000';
 };
 
+export async function action({ request }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  const mode = formData.get("mode"); // "login" or "signup"
+  const email = formData.get("email");
+  const password = formData.get("password");
+  const name = formData.get("name");
+
+  const API_BASE_URL = process.env.API_BASE_URL || process.env.VITE_API_URL || 'http://localhost:3000';
+
+  try {
+    const endpoint = mode === "signup" ? "/v1/auth/signup" : "/v1/auth/login";
+    const body = mode === "signup" 
+      ? { email, password, name }
+      : { email, password };
+
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "include",
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return json({ error: data.message || "Authentication failed" }, { status: response.status });
+    }
+
+    // Forward the Set-Cookie header from backend to browser
+    const setCookie = response.headers.get("Set-Cookie");
+    
+    // Redirect to app on success with the session cookie
+    return redirect("/app", {
+      headers: setCookie ? { "Set-Cookie": setCookie } : {},
+    });
+  } catch (error) {
+    return json({ error: "Something went wrong. Please try again." }, { status: 500 });
+  }
+}
+
 export default function Login() {
   const API_BASE_URL = getApiUrl();
   const [isHovered, setIsHovered] = useState(false);
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state === "submitting";
 
   return (
     <div style={{ 
@@ -140,8 +187,112 @@ export default function Login() {
           <div style={{ flex: 1, height: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
         </div>
 
-        {/* Email/Password Form (Placeholder) */}
-        <form style={{ marginBottom: '1.5rem' }}>
+        {/* Mode Switcher */}
+        <div style={{ 
+          display: 'flex', 
+          gap: '0.5rem',
+          marginBottom: '1.5rem',
+          background: 'rgba(22, 27, 34, 0.6)',
+          padding: '0.375rem',
+          borderRadius: '8px'
+        }}>
+          <button
+            type="button"
+            onClick={() => setMode("login")}
+            style={{
+              flex: 1,
+              padding: '0.625rem',
+              background: mode === "login" ? 'rgba(88, 166, 255, 0.15)' : 'transparent',
+              color: mode === "login" ? '#58a6ff' : '#8b949e',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '0.9375rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            Log In
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("signup")}
+            style={{
+              flex: 1,
+              padding: '0.625rem',
+              background: mode === "signup" ? 'rgba(88, 166, 255, 0.15)' : 'transparent',
+              color: mode === "signup" ? '#58a6ff' : '#8b949e',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '0.9375rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+          >
+            Sign Up
+          </button>
+        </div>
+
+        {/* Error Message */}
+        {actionData?.error && (
+          <div style={{
+            padding: '1rem',
+            background: 'rgba(248, 81, 73, 0.1)',
+            border: '1px solid rgba(248, 81, 73, 0.3)',
+            borderRadius: '8px',
+            color: '#f85149',
+            fontSize: '0.875rem',
+            marginBottom: '1.25rem'
+          }}>
+            {actionData.error}
+          </div>
+        )}
+
+        {/* Email/Password Form */}
+        <Form method="post" style={{ marginBottom: '1.5rem' }}>
+          <input type="hidden" name="mode" value={mode} />
+
+          {mode === "signup" && (
+            <div style={{ marginBottom: '1.25rem' }}>
+              <label style={{ 
+                display: 'block', 
+                color: '#c9d1d9', 
+                fontSize: '0.9375rem',
+                fontWeight: 500,
+                marginBottom: '0.5rem'
+              }}>
+                Name (optional)
+              </label>
+              <input
+                type="text"
+                name="name"
+                placeholder="Your name"
+                style={{
+                  width: '100%',
+                  padding: '0.875rem 1rem',
+                  background: 'rgba(22, 27, 34, 0.6)',
+                  border: '1px solid rgba(88, 166, 255, 0.2)',
+                  borderRadius: '8px',
+                  color: '#ffffff',
+                  fontSize: '1rem',
+                  backdropFilter: 'blur(10px)',
+                  outline: 'none',
+                  transition: 'all 0.2s',
+                  boxSizing: 'border-box'
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(88, 166, 255, 0.5)';
+                  e.currentTarget.style.boxShadow = '0 0 0 3px rgba(88, 166, 255, 0.1)';
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(88, 166, 255, 0.2)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
+              />
+            </div>
+          )}
+
           <div style={{ marginBottom: '1.25rem' }}>
             <label style={{ 
               display: 'block', 
@@ -154,6 +305,8 @@ export default function Login() {
             </label>
             <input
               type="email"
+              name="email"
+              required
               placeholder="your@email.com"
               style={{
                 width: '100%',
@@ -191,6 +344,8 @@ export default function Login() {
             </label>
             <input
               type="password"
+              name="password"
+              required
               placeholder="••••••••"
               style={{
                 width: '100%',
@@ -214,28 +369,39 @@ export default function Login() {
                 e.currentTarget.style.boxShadow = 'none';
               }}
             />
+            {mode === "signup" && (
+              <p style={{ 
+                color: '#8b949e', 
+                fontSize: '0.8125rem', 
+                marginTop: '0.5rem',
+                marginBottom: 0
+              }}>
+                Minimum 6 characters
+              </p>
+            )}
           </div>
 
           <button
-            type="button"
+            type="submit"
+            disabled={isSubmitting}
             style={{
               width: '100%',
               padding: '1rem',
-              background: 'linear-gradient(135deg, #58a6ff 0%, #409eff 100%)',
+              background: isSubmitting 
+                ? 'rgba(88, 166, 255, 0.3)'
+                : 'linear-gradient(135deg, #58a6ff 0%, #409eff 100%)',
               color: 'white',
               border: 'none',
               borderRadius: '8px',
               fontSize: '1.0625rem',
               fontWeight: 600,
-              cursor: 'not-allowed',
-              opacity: 0.5,
+              cursor: isSubmitting ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s'
             }}
-            disabled
           >
-            Coming Soon
+            {isSubmitting ? "Please wait..." : mode === "signup" ? "Create Account" : "Log In"}
           </button>
-        </form>
+        </Form>
 
         {/* Info Text */}
         <div style={{ 
@@ -266,14 +432,16 @@ export default function Login() {
               <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0z"/>
               <path d="M8 3.5a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5-.5zM8 11a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>
             </svg>
-            Secure authentication redirects you to Google, then back to your dashboard
+            {mode === "signup" 
+              ? "New users get £10,000 to start trading" 
+              : "Secure session-based authentication"}
           </p>
         </div>
 
         {/* Footer Links */}
         <div style={{ 
           display: 'flex', 
-          justifyContent: 'space-between',
+          justifyContent: 'center',
           alignItems: 'center',
           paddingTop: '1.5rem',
           borderTop: '1px solid rgba(255, 255, 255, 0.1)'
@@ -296,20 +464,6 @@ export default function Login() {
               <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 7.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5z"/>
             </svg>
             Back to home
-          </Link>
-          <Link 
-            to="/auth/signup" 
-            style={{ 
-              color: '#58a6ff', 
-              fontSize: '0.9375rem', 
-              fontWeight: 600,
-              textDecoration: 'none',
-              transition: 'color 0.2s'
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.color = '#409eff'}
-            onMouseLeave={(e) => e.currentTarget.style.color = '#58a6ff'}
-          >
-            Create account →
           </Link>
         </div>
       </div>

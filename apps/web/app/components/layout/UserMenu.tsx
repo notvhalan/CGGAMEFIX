@@ -129,7 +129,7 @@ export function UserMenu({ user, compact = false }: UserMenuProps) {
             ⚙️ Settings
           </Link>
 
-          <Form method="post" action="/auth/logout">
+          <Form method="post" action="/auth/logout" onClick={(e) => e.stopPropagation()}>
             <button
               type="submit"
               style={{

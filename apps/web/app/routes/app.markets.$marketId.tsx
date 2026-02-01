@@ -287,63 +287,6 @@ export default function MarketDetail() {
       display: 'flex',
       flexDirection: 'column'
     }}>
-      {/* Top Header Bar */}
-      <div style={{ 
-        background: '#1a1f26', 
-        borderBottom: '1px solid #2d3748',
-        padding: '0.5rem 1rem',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexShrink: 0
-      }}>
-        <Link to="/" style={{ 
-          color: '#667eea', 
-          fontSize: '1.25rem', 
-          fontWeight: 700, 
-          textDecoration: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem'
-        }}>
-          <span>📊</span>
-          <span>GameFix</span>
-        </Link>
-        <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', fontSize: '0.875rem' }}>
-          <Link to="/markets" style={{ color: '#94a3b8', textDecoration: 'none', fontWeight: 500 }}>Markets</Link>
-          {wallet ? (
-            <>
-              <span style={{ color: '#94a3b8' }}>
-                Balance: <span style={{ color: '#10b981', fontWeight: 600 }}>{formatMoney(wallet.balance)}</span>
-              </span>
-              <Link to="/app" style={{ 
-                padding: '0.4rem 0.875rem', 
-                background: '#667eea', 
-                color: 'white', 
-                borderRadius: '4px',
-                textDecoration: 'none',
-                fontWeight: 600,
-                fontSize: '0.8125rem'
-              }}>
-                Dashboard
-              </Link>
-            </>
-          ) : (
-            <Link to="/auth/login" style={{ 
-              padding: '0.4rem 0.875rem', 
-              background: '#667eea', 
-              color: 'white', 
-              borderRadius: '4px',
-              textDecoration: 'none',
-              fontWeight: 600,
-              fontSize: '0.8125rem'
-            }}>
-              Log In
-            </Link>
-          )}
-        </div>
-      </div>
-
       {/* Market Header Bar */}
       <div style={{
         background: '#1a1f26',

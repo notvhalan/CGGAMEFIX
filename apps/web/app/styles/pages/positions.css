@@ -1,0 +1,51 @@
+/* Positions Page Styles - Dark Theme */
+
+.positions-page {
+  padding: 1.5rem;
+  width: 100%;
+  max-width: none;
+}
+
+.positions-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  color: var(--text-primary);
+  background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.positions-card {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  padding: 3rem;
+  text-align: center;
+}
+
+.positions-empty-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  opacity: 0.3;
+}
+
+.positions-empty-text {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+@media (max-width: 768px) {
+  .positions-page {
+    padding: 1rem;
+  }
+
+  .positions-title {
+    font-size: 1.5rem;
+  }
+
+  .positions-card {
+    padding: 2rem 1rem;
+  }
+}

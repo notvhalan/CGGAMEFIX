@@ -5,7 +5,8 @@ import { Logger } from '@betting-exchange/shared-config';
 export interface User {
   id: string;
   email: string;
-  googleSub: string;
+  googleSub: string | null;
+  passwordHash: string | null;
   name: string | null;
   avatarUrl: string | null;
   createdAt: Date;
@@ -81,7 +82,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         CREATE TABLE IF NOT EXISTS users (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           email VARCHAR(255) NOT NULL UNIQUE,
-          google_sub VARCHAR(255) NOT NULL UNIQUE,
+          google_sub VARCHAR(255),
+          password_hash VARCHAR(255),
           name VARCHAR(255),
           avatar_url VARCHAR(500),
           created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -89,7 +91,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         );
         
         CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-        CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
+        CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL;
       `);
 
       // Create wallets table
@@ -147,7 +149,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    */
   async findUserByGoogleSub(googleSub: string): Promise<User | null> {
     const result = await this.pool.query<User>(
-      'SELECT id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE google_sub = $1',
+      'SELECT id, email, google_sub as "googleSub", password_hash as "passwordHash", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE google_sub = $1',
       [googleSub]
     );
     return result.rows[0] || null;
@@ -158,7 +160,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    */
   async findUserByEmail(email: string): Promise<User | null> {
     const result = await this.pool.query<User>(
-      'SELECT id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE email = $1',
+      'SELECT id, email, google_sub as "googleSub", password_hash as "passwordHash", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE email = $1',
       [email]
     );
     return result.rows[0] || null;
@@ -169,14 +171,14 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    */
   async findUserById(id: string): Promise<User | null> {
     const result = await this.pool.query<User>(
-      'SELECT id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE id = $1',
+      'SELECT id, email, google_sub as "googleSub", password_hash as "passwordHash", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt" FROM users WHERE id = $1',
       [id]
     );
     return result.rows[0] || null;
   }
 
   /**
-   * Create new user
+   * Create new user with Google OAuth
    */
   async createUser(data: {
     email: string;
@@ -187,8 +189,25 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     const result = await this.pool.query<User>(
       `INSERT INTO users (email, google_sub, name, avatar_url) 
        VALUES ($1, $2, $3, $4) 
-       RETURNING id, email, google_sub as "googleSub", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt"`,
+       RETURNING id, email, google_sub as "googleSub", password_hash as "passwordHash", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt"`,
       [data.email, data.googleSub, data.name || null, data.avatarUrl || null]
+    );
+    return result.rows[0];
+  }
+
+  /**
+   * Create new user with email/password
+   */
+  async createUserWithPassword(data: {
+    email: string;
+    passwordHash: string;
+    name?: string;
+  }): Promise<User> {
+    const result = await this.pool.query<User>(
+      `INSERT INTO users (email, password_hash, name) 
+       VALUES ($1, $2, $3) 
+       RETURNING id, email, google_sub as "googleSub", password_hash as "passwordHash", name, avatar_url as "avatarUrl", created_at as "createdAt", updated_at as "updatedAt"`,
+      [data.email, data.passwordHash, data.name || null]
     );
     return result.rows[0];
   }

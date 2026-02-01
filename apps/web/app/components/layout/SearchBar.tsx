@@ -79,7 +79,7 @@ export function SearchBar({ compact = false, markets = [] }: SearchBarProps) {
     } else if (e.key === 'Enter' && searchFocusIndex >= 0) {
       e.preventDefault();
       const selected = searchResults[searchFocusIndex];
-      navigate(`/markets/${selected.id}`);
+      navigate(`/app/markets/${selected.id}`);
       setSearchOpen(false);
       setSearchQuery('');
     }
@@ -159,7 +159,7 @@ export function SearchBar({ compact = false, markets = [] }: SearchBarProps) {
           {searchResults.map((result, idx) => (
             <Link
               key={result.id}
-              to={`/markets/${result.id}`}
+              to={`/app/markets/${result.id}`}
               onClick={() => {
                 setSearchOpen(false);
                 setSearchQuery('');

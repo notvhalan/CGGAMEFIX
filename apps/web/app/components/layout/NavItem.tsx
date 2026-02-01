@@ -25,7 +25,7 @@ export function NavItem({ to, icon, label, end = false, compact = false }: NavIt
             alignItems: 'center',
             justifyContent: 'center',
             width: '48px',
-            height: '48px',
+            height: '44px',
             borderRadius: '6px',
             textDecoration: 'none',
             color: isActive ? '#58a6ff' : '#8b949e',

@@ -1,0 +1,98 @@
+/* Markets Index Page Styles - Dark Theme */
+
+.markets-page {
+  min-height: 100vh;
+  background: var(--terminal-bg);
+  padding: 1.5rem;
+  width: 100%;
+  max-width: none;
+}
+
+.markets-header {
+  margin-bottom: 2rem;
+}
+
+.markets-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+  background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.markets-subtitle {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.markets-search-container {
+  margin-bottom: 2rem;
+}
+
+.markets-search-input {
+  width: 100%;
+  max-width: 500px;
+  padding: 0.875rem 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 1rem;
+  color: var(--text-primary);
+  outline: none;
+  transition: all 0.2s;
+}
+
+.markets-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.markets-search-input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
+  background: var(--bg-primary);
+}
+
+.markets-empty-state {
+  padding: 3rem;
+  text-align: center;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+}
+
+.markets-empty-title {
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.markets-empty-subtitle {
+  color: var(--text-muted);
+}
+
+.markets-grid {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+}
+
+@media (max-width: 768px) {
+  .markets-page {
+    padding: 1rem;
+  }
+
+  .markets-title {
+    font-size: 1.5rem;
+  }
+
+  .markets-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .markets-search-input {
+    max-width: 100%;
+  }
+}

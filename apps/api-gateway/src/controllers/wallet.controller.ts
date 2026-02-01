@@ -52,6 +52,8 @@ export class WalletController {
         throw new UnauthorizedException('User not authenticated');
       }
 
+      this.logger.info(`Fetching wallet history for user: ${userId}`);
+
       // Query raw range from params if needed, defaulting to 1 week for now or just returning last 50 entries
       // In a real app, parse 'range' query param (1D, 1W, etc.)
 
@@ -63,6 +65,8 @@ export class WalletController {
          LIMIT 100`,
         [userId]
       );
+
+      this.logger.info(`Found ${result.rows.length} ledger entries for user ${userId}`);
 
       // Transform for chart
       // We need to reverse it to be chronological for the chart

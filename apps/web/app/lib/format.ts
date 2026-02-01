@@ -14,7 +14,7 @@ export function formatMoney(amount: number | string, currency = 'USD'): string {
  * Format pence as money (divide by 100)
  */
 export function formatPence(pence: number | string): string {
-  return formatMoney(Number(pence) / 100);
+  return formatMoney(Number(pence) / 100, 'GBP');
 }
 
 /**

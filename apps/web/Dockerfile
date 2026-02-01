@@ -40,8 +40,11 @@ COPY --from=builder /app/apps/web/public ./apps/web/public
 
 WORKDIR /app/apps/web
 
-# Expose port
-EXPOSE 3001
+# Expose port 80 for standard HTTP
+EXPOSE 80
+
+# Set port via environment variable
+ENV PORT=80
 
 # Start the app
 CMD ["pnpm", "start"]

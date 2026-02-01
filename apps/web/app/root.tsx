@@ -30,6 +30,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <Meta />
         <Links />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.ENV = ${JSON.stringify({
+              API_URL: process.env.VITE_API_URL || 'http://localhost:3000',
+              WS_URL: process.env.VITE_WS_URL || 'ws://localhost:3000',
+            })}`,
+          }}
+        />
       </head>
       <body style={{ margin: 0, fontFamily: 'Inter, system-ui, sans-serif' }}>
         {children}

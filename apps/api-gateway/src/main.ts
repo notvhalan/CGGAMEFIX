@@ -28,19 +28,31 @@ async function bootstrap() {
   await fastifyInstance.register(fastifySession.default, {
     secret: process.env.SESSION_SECRET || 'replace-with-secure-secret-in-production',
     cookie: {
-      secure: false, // Set to false for localhost development
+      secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: 'lax', // Allows cookies on same-site localhost navigation
-      domain: 'localhost', // Explicitly set domain for localhost
+      sameSite: 'lax', // Allows cookies on same-site navigation
+      domain: process.env.COOKIE_DOMAIN || 'localhost', // Use .gamefix.fun for production
     },
     saveUninitialized: false,
     rolling: true,
   });
 
-  // Enable CORS with credentials - accept both ports
+  // Enable CORS with credentials - accept both ports and AWS S3
+  const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:3001',
+    'http://betting-exchange-frontend-474668399531.s3-website-us-east-1.amazonaws.com',
+    process.env.AUTH_SUCCESS_REDIRECT?.replace(/\/app$/, '') || 'http://localhost:3001'
+  ];
+  
+  // Add CORS_ORIGINS from environment if set
+  if (process.env.CORS_ORIGINS) {
+    allowedOrigins.push(...process.env.CORS_ORIGINS.split(','));
+  }
+  
   app.enableCors({
-    origin: ['http://localhost:5173', 'http://localhost:3001', process.env.AUTH_SUCCESS_REDIRECT?.replace(/\/app$/, '') || 'http://localhost:3001'],
+    origin: allowedOrigins,
     credentials: true,
   });
 

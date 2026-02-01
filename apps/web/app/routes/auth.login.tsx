@@ -7,7 +7,9 @@ const getApiUrl = () => {
   if (typeof window !== 'undefined' && (window as any).ENV?.API_BASE_URL) {
     return (window as any).ENV.API_BASE_URL;
   }
-  return 'http://localhost:3000';
+  return typeof window !== 'undefined' && window.ENV?.API_URL 
+    ? window.ENV.API_URL 
+    : 'http://localhost:3000';
 };
 
 export default function Login() {

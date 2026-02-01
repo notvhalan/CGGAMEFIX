@@ -1,0 +1,50 @@
+﻿{
+    "memory":  "512",
+    "executionRoleArn":  "arn:aws:iam::474668399531:role/ecsTaskExecutionRole",
+    "family":  "web-frontend-hybrid",
+    "networkMode":  "awsvpc",
+    "requiresCompatibilities":  [
+                                    "FARGATE"
+                                ],
+    "containerDefinitions":  [
+                                 {
+                                     "name":  "web-frontend",
+                                     "logConfiguration":  {
+                                                              "logDriver":  "awslogs",
+                                                              "options":  {
+                                                                              "awslogs-region":  "us-east-1",
+                                                                              "awslogs-stream-prefix":  "ecs",
+                                                                              "awslogs-create-group":  "true",
+                                                                              "awslogs-group":  "/ecs/web-frontend-hybrid"
+                                                                          }
+                                                          },
+                                     "environment":  [
+                                                         {
+                                                             "value":  "production",
+                                                             "name":  "NODE_ENV"
+                                                         },
+                                                         {
+                                                             "value":  "80",
+                                                             "name":  "PORT"
+                                                         },
+                                                         {
+                                                             "value":  "https://api.gamefix.fun",
+                                                             "name":  "VITE_API_URL"
+                                                         },
+                                                         {
+                                                             "value":  "wss://api.gamefix.fun",
+                                                             "name":  "VITE_WS_URL"
+                                                         }
+                                                     ],
+                                     "essential":  true,
+                                     "image":  "474668399531.dkr.ecr.us-east-1.amazonaws.com/betting-exchange/web-hybrid:latest",
+                                     "portMappings":  [
+                                                          {
+                                                              "protocol":  "tcp",
+                                                              "containerPort":  80
+                                                          }
+                                                      ]
+                                 }
+                             ],
+    "cpu":  "256"
+}

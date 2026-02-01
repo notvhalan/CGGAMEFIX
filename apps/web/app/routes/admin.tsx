@@ -4,7 +4,9 @@ import { getAuthenticatedUser } from "~/lib/auth.server";
 import { getMarkets } from "~/lib/api.server";
 import { useState } from "react";
 
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
+const API_BASE_URL = typeof window !== 'undefined' && window.ENV?.API_URL 
+  ? window.ENV.API_URL 
+  : (process.env.API_BASE_URL || 'http://localhost:3000');
 
 // Bot control inputs component
 function BotControlInputs({ disabled }: { disabled: boolean }) {

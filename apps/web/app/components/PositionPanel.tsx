@@ -244,68 +244,36 @@ export function PositionPanel({ position, isLoading, compact = false, onOpenDeta
           </div>
         )}
         
-        {/* Cash Out Button */}
-        {canCashOut ? (
-          <Form method="post" style={{ paddingTop: '1rem' }}>
-            <input type="hidden" name="intent" value="cashout" />
-            <button
-              type="submit"
-              style={{
-                width: '100%',
-                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                color: 'white',
-                fontWeight: 600,
-                padding: '0.75rem 1rem',
-                borderRadius: '8px',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: '1rem',
-                boxShadow: '0 4px 6px rgba(102, 126, 234, 0.25)',
-                transition: 'all 0.2s'
-              }}
-              onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-1px)'}
-              onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
-            >
-              💰 Cash Out Now
-            </button>
-            <div style={{ 
-              marginTop: '0.5rem',
-              padding: '0.5rem',
-              background: '#f7fafc',
-              borderRadius: '6px',
-              fontSize: '0.75rem',
-              color: '#718096',
-              textAlign: 'center'
-            }}>
-              <div style={{ fontWeight: 500 }}>Estimated Fee: {formatPence(estimatedFee)}</div>
-              <div style={{ marginTop: '0.25rem', fontSize: '0.7rem' }}>
-                Places IOC order at best available price
-              </div>
-            </div>
-          </Form>
-        ) : (
-          <div style={{ paddingTop: '1rem' }}>
-            <button
-              disabled
-              style={{
-                width: '100%',
-                background: '#e2e8f0',
-                color: '#a0aec0',
-                fontWeight: 600,
-                padding: '0.75rem 1rem',
-                borderRadius: '8px',
-                border: 'none',
-                cursor: 'not-allowed',
-                fontSize: '1rem'
-              }}
-            >
-              Cash Out Unavailable
-            </button>
-            <p style={{ fontSize: '0.75rem', color: '#a0aec0', marginTop: '0.5rem', textAlign: 'center' }}>
-              Insufficient liquidity in orderbook
-            </p>
-          </div>
-        )}
+        {/* Details Button - Opens Full Position Modal */}
+        <div style={{ 
+          borderTop: '1px solid #2d3748',
+          padding: '0.875rem',
+          flexShrink: 0
+        }}>
+          <button
+            type="button"
+            onClick={() => onOpenDetails && onOpenDetails()}
+            style={{
+              width: '100%',
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              color: 'white',
+              fontWeight: 700,
+              padding: '0.625rem 1rem',
+              borderRadius: '4px',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '0.8125rem',
+              boxShadow: '0 2px 4px rgba(102, 126, 234, 0.25)',
+              transition: 'all 0.2s',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-1px)'}
+            onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+          >
+            📊 View Full Details
+          </button>
+        </div>
       </div>
     );
   }

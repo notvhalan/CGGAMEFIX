@@ -131,7 +131,7 @@ export class EventsGateway
 
     // Subscribe to trade executions
     this.natsClient.subscribe('events.trade.executed', async (data) => {
-      const { marketId, yesPricePts, sizePence, executedAt, ...rest } = data;
+      const { marketId, priceYesPts, notionalPence, executedAt, ...rest } = data;
       
       // Process position lots (FIFO consumption)
       try {
@@ -143,8 +143,8 @@ export class EventsGateway
       // Normalize field names to match DB schema (snake_case)
       const normalizedTrade = {
         ...rest,
-        yes_pts: yesPricePts,
-        cost_pence: sizePence,
+        yes_pts: priceYesPts,
+        cost_pence: notionalPence,
         executed_at: executedAt,
       };
       

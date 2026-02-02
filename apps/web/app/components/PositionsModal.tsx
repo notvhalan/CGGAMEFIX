@@ -2,6 +2,7 @@ import { Form } from '@remix-run/react';
 import { formatPence, formatProbability } from '~/lib/format';
 import { useState, useEffect, useCallback } from 'react';
 import type { Position } from './PositionPanel';
+import { getWSClient } from '~/lib/ws.client';
 
 interface PositionsModalProps {
   position: Position;
@@ -9,6 +10,7 @@ interface PositionsModalProps {
   onClose: () => void;
   onCashoutSuccess?: () => void;
   marketId: string;
+  orderBook?: any;
 }
 
 interface CashoutQuote {
@@ -23,7 +25,7 @@ interface CashoutQuote {
   quoteTimestamp: number;
 }
 
-export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, marketId }: PositionsModalProps) {
+export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, marketId, orderBook }: PositionsModalProps) {
   const [closeMode, setCloseMode] = useState<'ioc' | 'limit'>('ioc');
   const [slippage, setSlippage] = useState(0.25);
   const [limitPrice, setLimitPrice] = useState('');
@@ -38,6 +40,16 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const [loadingGroupQuotes, setLoadingGroupQuotes] = useState<Set<number>>(new Set());
   const [sideFilter, setSideFilter] = useState<'all' | 'for' | 'lay'>('all');
   const [viewMode, setViewMode] = useState<'grouped' | 'individual'>('grouped');
+  
+  // Live orderbook prices via WebSocket (initialize from orderBook prop)
+  const [liveBestBid, setLiveBestBid] = useState<number>(() => {
+    const bids = orderBook?.bids || [];
+    return bids[0]?.yesPts || 0;
+  });
+  const [liveBestAsk, setLiveBestAsk] = useState<number>(() => {
+    const asks = orderBook?.asks || [];
+    return asks[0]?.yesPts || 0;
+  });
 
   // Extract position data (use fallback values if position is null)
   const { netYesPence, avgEntryYesPts, markYesPts, unrealizedPnlPence, totalFeesPence, buyPositions, sellPositions, netContractsMicros: netContractsMicrosStr } = position || {
@@ -102,6 +114,36 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       return () => clearInterval(interval);
     }
   }, [isOpen, fetchCashoutQuote]);
+
+  // WebSocket subscription for live orderbook prices
+  useEffect(() => {
+    if (!isOpen || !marketId) return;
+
+    const ws = getWSClient();
+    ws.connect();
+    
+    const bookTopic = `book:${marketId}`;
+    ws.subscribe(bookTopic);
+
+    const handleBookUpdate = (data: any) => {
+      // Extract best bid and ask from orderbook
+      const bids = data?.bids || data?.orderBook?.bids || [];
+      const asks = data?.asks || data?.orderBook?.asks || [];
+      
+      const bestBid = bids[0]?.yesPts || 0;
+      const bestAsk = asks[0]?.yesPts || 0;
+      
+      setLiveBestBid(bestBid);
+      setLiveBestAsk(bestAsk);
+    };
+
+    ws.on('book_update', handleBookUpdate);
+
+    return () => {
+      ws.off('book_update', handleBookUpdate);
+      ws.unsubscribe(bookTopic);
+    };
+  }, [isOpen, marketId]);
 
   // Fetch cashout quote for a specific group
   const fetchGroupQuote = useCallback(async (yesPricePts: number, totalContractsMicros: bigint) => {
@@ -181,14 +223,16 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
     const filledContracts = BigInt(cashoutQuote.filledContractsMicros);
     const unfilledContracts = BigInt(cashoutQuote.unfilledContractsMicros);
-    const fillablePercent = Number(filledContracts) > 0 
-      ? (Number(filledContracts) * 100 / (Number(filledContracts) + Number(unfilledContracts))).toFixed(1)
+    const filledAbs = filledContracts < 0n ? -filledContracts : filledContracts;
+    const unfilledAbs = unfilledContracts < 0n ? -unfilledContracts : unfilledContracts;
+    const fillablePercent = Number(filledAbs) > 0 
+      ? (Number(filledAbs) * 100 / (Number(filledAbs) + Number(unfilledAbs))).toFixed(1)
       : '0';
 
     if (!confirm(
       `Cash out position for ${formatPence(Number(cashoutQuote.netValuePence))}?\n\n` +
-      `Book fill: ${fillablePercent}% (${(Number(filledContracts) / 1_000_000).toFixed(2)} contracts)\n` +
-      `Unfilled: ${(Number(unfilledContracts) / 1_000_000).toFixed(2)} contracts will not close`
+      `Book fill: ${fillablePercent}% (${(Number(filledAbs) / 1_000_000).toFixed(2)} contracts)\n` +
+      `Unfilled: ${(Number(unfilledAbs) / 1_000_000).toFixed(2)} contracts will not close`
     )) {
       console.log('[Cashout] User cancelled confirmation');
       return;
@@ -228,7 +272,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       }
     } catch (error) {
       console.error('Failed to execute cashout:', error);
-      alert(`❌ Close failed: ${error instanceof Error ? error.message : String(error)}`);
+      alert(`✗ Close failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setExecutingCashout(false);
     }
@@ -248,11 +292,14 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
     const filledContracts = BigInt(quote.filledContractsMicros);
     const unfilledContracts = BigInt(quote.unfilledContractsMicros);
-    const fillablePercent = Number(filledContracts) > 0 
-      ? (Number(filledContracts) * 100 / (Number(filledContracts) + Number(unfilledContracts))).toFixed(1)
+    const filledAbs = filledContracts < 0n ? -filledContracts : filledContracts;
+    const unfilledAbs = unfilledContracts < 0n ? -unfilledContracts : unfilledContracts;
+    const contractsAbs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
+    const fillablePercent = Number(filledAbs) > 0 
+      ? (Number(filledAbs) * 100 / (Number(filledAbs) + Number(unfilledAbs))).toFixed(1)
       : '0';
 
-    const confirmMessage = `Close ${(Number(totalContractsMicros) / 1_000_000).toFixed(2)} contracts @ ${(yesPricePts / 100_000).toFixed(2)}% for ${formatPence(Number(quote.netValuePence))}?\n\nBook fill: ${fillablePercent}%\nUnfilled: ${(Number(unfilledContracts) / 1_000_000).toFixed(2)} contracts\n\nThis will reduce your position but not close it entirely.`;
+    const confirmMessage = `Close ${(Number(contractsAbs) / 1_000_000).toFixed(2)} contracts @ ${(yesPricePts / 100_000).toFixed(2)}% for ${formatPence(Number(quote.netValuePence))}?\n\nBook fill: ${fillablePercent}%\nUnfilled: ${(Number(unfilledAbs) / 1_000_000).toFixed(2)} contracts\n\nThis will reduce your position but not close it entirely.`;
     console.log('[GroupCashout] Confirmation message:', confirmMessage);
     
     if (!confirm(confirmMessage)) {
@@ -297,16 +344,16 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       console.log('[GroupCashout] Result:', result);
       
       if (result.success) {
-        alert(`✅ Close order submitted! Order ID: ${result.orderId}\n\n${result.message}`);
+        alert(`✓ Close order submitted! Order ID: ${result.orderId}\n\n${result.message}`);
         onClose();
         // Trigger refetch in parent component
         onCashoutSuccess?.();
       } else {
-        alert(`❌ Close failed: ${result.error || 'Unknown error'}`);
+        alert(`✗ Close failed: ${result.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('[GroupCashout] Error:', error);
-      alert(`❌ Close failed: ${error instanceof Error ? error.message : String(error)}`);
+      alert(`✗ Close failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setExecutingCashout(false);
     }
@@ -460,7 +507,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         <div style={{
           flex: 1,
           display: 'grid',
-          gridTemplateColumns: 'minmax(700px, 1fr) 360px',
+          gridTemplateColumns: 'minmax(650px, 1fr) 420px',
           overflow: 'hidden'
         }}>
           {/* LEFT PANE - Positions Blotter */}
@@ -601,7 +648,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 const isSelected = selectedGroup === group.yesPricePts;
                 const isExpanded = expandedRows.has(group.yesPricePts);
                 const avgEntry = group.yesPricePts / 100_000;
-                const contracts = Number(group.totalContractsMicros) / 1_000_000;
+                const contracts = Math.abs(Number(group.totalContractsMicros) / 1_000_000);
                 const cost = group.totalSizePence;
                 const markValue = contracts * (markPercent / 100) * 100; // Value at mark
                 const pnl = group.side === 'FOR' 
@@ -723,9 +770,9 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
           }}>
             {/* Ticket Header */}
             <div style={{
-              padding: '0.75rem 1rem',
+              padding: '0.5rem 0.75rem',
               borderBottom: '1px solid #30363d',
-              fontSize: '0.875rem',
+              fontSize: '0.75rem',
               fontWeight: 600,
               color: '#c9d1d9',
               fontFamily: 'monospace',
@@ -735,43 +782,93 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               CLOSE TICKET
             </div>
 
+            {/* Live Market Prices - Fixed at top */}
+            <div style={{
+              padding: '0.5rem',
+              borderBottom: '1px solid #30363d',
+              background: '#0d1117',
+              flexShrink: 0
+            }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '0.5rem',
+                background: '#161b22',
+                border: '1px solid #30363d',
+                borderRadius: '3px',
+                fontFamily: 'monospace',
+                fontSize: '0.75rem'
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: '#8b949e', fontSize: '0.5625rem', marginBottom: '0.125rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                    Live Buy
+                  </div>
+                  <div style={{ 
+                    color: liveBestBid > 0 ? '#3fb950' : '#6e7681', 
+                    fontWeight: 700,
+                    fontSize: '0.875rem'
+                  }}>
+                    {liveBestBid > 0 ? formatProbability(liveBestBid) : '—'}
+                  </div>
+                </div>
+                <div style={{ 
+                  width: '1px', 
+                  height: '1.75rem', 
+                  background: '#30363d',
+                  margin: '0 0.5rem'
+                }} />
+                <div style={{ flex: 1, textAlign: 'right' }}>
+                  <div style={{ color: '#8b949e', fontSize: '0.5625rem', marginBottom: '0.125rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                    Live Sell
+                  </div>
+                  <div style={{ 
+                    color: liveBestAsk > 0 ? '#f85149' : '#6e7681', 
+                    fontWeight: 700,
+                    fontSize: '0.875rem'
+                  }}>
+                    {liveBestAsk > 0 ? formatProbability(liveBestAsk) : '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Ticket Body - Scrollable */}
             <div style={{
               flex: 1,
               overflowY: 'auto',
-              padding: '1rem',
+              padding: '0.625rem',
               display: 'flex',
               flexDirection: 'column',
-              gap: '1rem',
-              fontSize: '0.75rem'
+              gap: '0.625rem',
+              fontSize: '0.7rem'
             }}>
               {/* Selection Info */}
               <div style={{
-                padding: '0.75rem',
+                padding: '0.375rem 0.5rem',
                 background: '#161b22',
                 border: '1px solid #30363d',
-                borderRadius: '4px',
-                fontFamily: 'monospace'
+                borderRadius: '3px',
+                fontFamily: 'monospace',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.5rem'
               }}>
-                <div style={{ color: '#8b949e', marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase' }}>
-                  Selected Position
+                <div style={{ color: '#8b949e', fontSize: '0.5625rem', textTransform: 'uppercase' }}>
+                  Selected:
                 </div>
-                <div style={{ color: '#c9d1d9', fontWeight: 600 }}>
+                <div style={{ color: '#c9d1d9', fontWeight: 600, fontSize: '0.6875rem', flex: 1 }}>
                   {activeGroup 
-                    ? `${activeGroup.side} @ ${(activeGroup.yesPricePts / 100_000).toFixed(2)}%`
+                    ? `${activeGroup.side} @ ${(activeGroup.yesPricePts / 100_000).toFixed(2)}% · ${Math.abs(Number(activeGroup.totalContractsMicros) / 1_000_000).toFixed(2)} contracts`
                     : 'All Positions'
                   }
                 </div>
-                {activeGroup && (
-                  <div style={{ color: '#6e7681', fontSize: '0.7rem', marginTop: '0.25rem' }}>
-                    {(Number(activeGroup.totalContractsMicros) / 1_000_000).toFixed(2)} contracts
-                  </div>
-                )}
               </div>
 
               {/* Close Mode */}
               <div>
-                <div style={{ color: '#8b949e', marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                <div style={{ color: '#8b949e', marginBottom: '0.375rem', fontSize: '0.625rem', textTransform: 'uppercase', fontWeight: 600 }}>
                   Close Mode
                 </div>
                 <div style={{
@@ -820,44 +917,40 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               {closeMode === 'ioc' && (
                 <>
                   <div>
-                    <div style={{ color: '#8b949e', marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                    <div style={{ color: '#8b949e', marginBottom: '0.375rem', fontSize: '0.625rem', textTransform: 'uppercase', fontWeight: 600 }}>
                       Max Slippage (%)
                     </div>
-                    <input
-                      type="number"
-                      value={slippage}
-                      onChange={(e) => setSlippage(parseFloat(e.target.value) || 0)}
-                      step="0.1"
-                      style={{
-                        width: '100%',
-                        padding: '0.5rem',
-                        background: '#161b22',
-                        border: '1px solid #30363d',
-                        borderRadius: '4px',
-                        color: '#c9d1d9',
-                        fontSize: '0.75rem',
-                        fontFamily: 'monospace'
-                      }}
-                    />
-                    <div style={{
-                      display: 'flex',
-                      gap: '0.25rem',
-                      marginTop: '0.5rem',
-                      flexWrap: 'wrap'
-                    }}>
+                    <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                      <input
+                        type="number"
+                        value={slippage}
+                        onChange={(e) => setSlippage(parseFloat(e.target.value) || 0)}
+                        step="0.1"
+                        style={{
+                          width: '4rem',
+                          padding: '0.375rem',
+                          background: '#161b22',
+                          border: '1px solid #30363d',
+                          borderRadius: '3px',
+                          color: '#c9d1d9',
+                          fontSize: '0.7rem',
+                          fontFamily: 'monospace'
+                        }}
+                      />
                       {[0.1, 0.25, 0.5, 1.0].map(val => (
                         <button
                           key={val}
                           onClick={() => setSlippage(val)}
                           style={{
-                            padding: '0.25rem 0.5rem',
+                            padding: '0.375rem 0.5rem',
                             background: slippage === val ? '#238636' : '#161b22',
                             border: '1px solid #30363d',
                             borderRadius: '3px',
                             color: slippage === val ? '#c9d1d9' : '#8b949e',
-                            fontSize: '0.7rem',
+                            fontSize: '0.625rem',
                             cursor: 'pointer',
-                            fontFamily: 'monospace'
+                            fontFamily: 'monospace',
+                            flex: 1
                           }}
                         >
                           {val}%
@@ -934,26 +1027,26 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
               {/* Size Control */}
               <div>
-                <div style={{ color: '#8b949e', marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                <div style={{ color: '#8b949e', marginBottom: '0.375rem', fontSize: '0.625rem', textTransform: 'uppercase', fontWeight: 600 }}>
                   Size
                 </div>
                 <div style={{
                   display: 'flex',
                   background: '#161b22',
                   border: '1px solid #30363d',
-                  borderRadius: '4px',
+                  borderRadius: '3px',
                   overflow: 'hidden'
                 }}>
                   <button
                     onClick={() => setSizeMode('all')}
                     style={{
                       flex: 1,
-                      padding: '0.5rem',
+                      padding: '0.375rem',
                       border: 'none',
                       background: sizeMode === 'all' ? '#238636' : 'transparent',
                       color: sizeMode === 'all' ? '#c9d1d9' : '#8b949e',
                       fontWeight: 600,
-                      fontSize: '0.75rem',
+                      fontSize: '0.6875rem',
                       cursor: 'pointer',
                       fontFamily: 'monospace'
                     }}
@@ -964,12 +1057,12 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                     onClick={() => setSizeMode('partial')}
                     style={{
                       flex: 1,
-                      padding: '0.5rem',
+                      padding: '0.375rem',
                       border: 'none',
                       background: sizeMode === 'partial' ? '#238636' : 'transparent',
                       color: sizeMode === 'partial' ? '#c9d1d9' : '#8b949e',
                       fontWeight: 600,
-                      fontSize: '0.75rem',
+                      fontSize: '0.6875rem',
                       cursor: 'pointer',
                       fontFamily: 'monospace'
                     }}
@@ -977,19 +1070,64 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                     Partial
                   </button>
                 </div>
-                {sizeMode === 'partial' && (
+                {/* Partial Size Controls - Always visible to preallocate space */}
+                <div style={{ 
+                  marginTop: '0.375rem',
+                  visibility: sizeMode === 'partial' ? 'visible' : 'hidden',
+                  height: '4rem'
+                }}>
+                  <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+                    <input
+                      type="number"
+                      value={partialPercent}
+                      onChange={(e) => setPartialPercent(parseInt(e.target.value) || 1)}
+                      min="1"
+                      max="100"
+                      disabled={sizeMode !== 'partial'}
+                      style={{
+                        width: '4rem',
+                        padding: '0.375rem',
+                        background: '#161b22',
+                        border: '1px solid #30363d',
+                        borderRadius: '3px',
+                        color: '#c9d1d9',
+                        fontSize: '0.7rem',
+                        fontFamily: 'monospace'
+                      }}
+                    />
+                    {[25, 50, 75, 100].map(val => (
+                      <button
+                        key={val}
+                        onClick={() => setPartialPercent(val)}
+                        disabled={sizeMode !== 'partial'}
+                        style={{
+                          padding: '0.375rem 0.5rem',
+                          background: partialPercent === val ? '#238636' : '#161b22',
+                          border: '1px solid #30363d',
+                          borderRadius: '3px',
+                          color: partialPercent === val ? '#c9d1d9' : '#8b949e',
+                          fontSize: '0.625rem',
+                          cursor: sizeMode === 'partial' ? 'pointer' : 'default',
+                          fontFamily: 'monospace',
+                          flex: 1
+                        }}
+                      >
+                        {val}%
+                      </button>
+                    ))}
+                  </div>
                   <input
                     type="range"
                     min="1"
                     max="100"
                     value={partialPercent}
                     onChange={(e) => setPartialPercent(parseInt(e.target.value))}
+                    disabled={sizeMode !== 'partial'}
                     style={{
-                      width: '100%',
-                      marginTop: '0.5rem'
+                      width: '100%'
                     }}
                   />
-                )}
+                </div>
               </div>
 
               {/* Quote Button */}
@@ -1003,30 +1141,30 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 }}
                 disabled={loadingQuote}
                 style={{
-                  padding: '0.75rem',
+                  padding: '0.5rem',
                   background: loadingQuote ? '#30363d' : '#1f6feb',
                   border: 'none',
-                  borderRadius: '4px',
+                  borderRadius: '3px',
                   color: '#c9d1d9',
                   fontWeight: 600,
-                  fontSize: '0.875rem',
+                  fontSize: '0.75rem',
                   cursor: loadingQuote ? 'not-allowed' : 'pointer',
                   fontFamily: 'monospace'
                 }}
               >
-                {loadingQuote ? '⏳ Loading...' : '📋 Get Quote'}
+                {loadingQuote ? '⟳ Loading...' : '↻ Get Quote'}
               </button>
 
               {/* Preview Box */}
               {((activeGroup && groupQuotes.get(activeGroup.yesPricePts)) || (!activeGroup && cashoutQuote)) && (
                 <div style={{
-                  padding: '0.75rem',
+                  padding: '0.5rem',
                   background: '#161b22',
                   border: '1px solid #238636',
-                  borderRadius: '4px',
+                  borderRadius: '3px',
                   fontFamily: 'monospace'
                 }}>
-                  <div style={{ color: '#8b949e', marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase' }}>
+                  <div style={{ color: '#8b949e', marginBottom: '0.375rem', fontSize: '0.625rem', textTransform: 'uppercase' }}>
                     Quote Preview
                   </div>
                   {(() => {
@@ -1038,19 +1176,23 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                       return <div style={{ color: '#f85149' }}>Failed to get quote</div>;
                     }
 
-                    const fillPercent = ((parseInt(quote.filledContractsMicros) / 
-                      (parseInt(quote.filledContractsMicros) + parseInt(quote.unfilledContractsMicros))) * 100).toFixed(1);
+                    const filledAbs = Math.abs(parseInt(quote.filledContractsMicros));
+                    const unfilledAbs = Math.abs(parseInt(quote.unfilledContractsMicros));
+                    const fillPercent = ((filledAbs / (filledAbs + unfilledAbs)) * 100).toFixed(1);
 
                     return (
                       <>
-                        <div style={{ color: '#c9d1d9', fontWeight: 700, fontSize: '1rem', marginBottom: '0.5rem' }}>
-                          {formatPence(Number(quote.netValuePence))}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                          <div style={{ color: '#c9d1d9', fontWeight: 700, fontSize: '0.875rem' }}>
+                            {formatPence(Math.abs(Number(quote.netValuePence)))}
+                          </div>
+                          <div style={{ color: '#6e7681', fontSize: '0.5625rem' }}>
+                            Fill: {fillPercent}%
+                          </div>
                         </div>
-                        <div style={{ color: '#6e7681', fontSize: '0.7rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                          <div>Fill: {fillPercent}%</div>
-                          <div>Fillable: {(parseInt(quote.filledContractsMicros) / 1_000_000).toFixed(2)}</div>
-                          <div>Unfilled: {(parseInt(quote.unfilledContractsMicros) / 1_000_000).toFixed(2)}</div>
-                          <div>Fee: {formatPence(Number(quote.estimatedFeePence))}</div>
+                        <div style={{ color: '#6e7681', fontSize: '0.5625rem', display: 'flex', justifyContent: 'space-between' }}>
+                          <span>Filled: {(filledAbs / 1_000_000).toFixed(2)}</span>
+                          <span>Fee: {formatPence(Number(quote.estimatedFeePence))}</span>
                         </div>
                       </>
                     );
@@ -1061,11 +1203,11 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
             {/* Ticket Footer */}
             <div style={{
-              padding: '1rem',
+              padding: '0.625rem',
               borderTop: '1px solid #30363d',
               display: 'flex',
               flexDirection: 'column',
-              gap: '0.5rem',
+              gap: '0.375rem',
               background: '#0d1117',
               flexShrink: 0
             }}>
@@ -1079,30 +1221,30 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 }}
                 disabled={executingCashout}
                 style={{
-                  padding: '0.75rem',
+                  padding: '0.5rem',
                   background: executingCashout ? '#30363d' : '#238636',
                   border: 'none',
-                  borderRadius: '4px',
+                  borderRadius: '3px',
                   color: '#c9d1d9',
                   fontWeight: 700,
-                  fontSize: '0.875rem',
+                  fontSize: '0.75rem',
                   cursor: executingCashout ? 'not-allowed' : 'pointer',
                   fontFamily: 'monospace'
                 }}
               >
-                {executingCashout ? '⏳ Executing...' : '💰 Submit Close Order'}
+                {executingCashout ? '⟳ Executing...' : '→ Submit Close Order'}
               </button>
               <button
                 onClick={onClose}
                 disabled={executingCashout}
                 style={{
-                  padding: '0.5rem',
+                  padding: '0.375rem',
                   background: 'transparent',
                   border: '1px solid #30363d',
-                  borderRadius: '4px',
+                  borderRadius: '3px',
                   color: '#8b949e',
                   fontWeight: 600,
-                  fontSize: '0.75rem',
+                  fontSize: '0.6875rem',
                   cursor: executingCashout ? 'not-allowed' : 'pointer',
                   fontFamily: 'monospace'
                 }}
@@ -1149,7 +1291,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 opacity: (!cashoutQuote || !cashoutQuote.success || executingCashout) ? 0.5 : 1
               }}
             >
-              💰 Close All Positions
+              ✕ Close All Positions
             </button>
           </div>
         </div>

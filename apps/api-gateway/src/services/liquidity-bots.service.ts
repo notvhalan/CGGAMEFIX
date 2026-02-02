@@ -5,6 +5,7 @@ import { NatsClient } from '../nats/nats.client';
 import { NATS_SUBJECTS } from '../nats/subjects';
 import { v4 as uuidv4 } from 'uuid';
 import { PRICE_SCALE, CONTRACT_SCALE, stakeToContracts, liabilityToContracts } from '@betting-exchange/shared-types';
+import { OrderBookBroadcastService } from './orderbook-broadcast.service';
 
 type Side = 'FOR' | 'LAY';
 
@@ -33,10 +34,12 @@ export class LiquidityBotsService {
   private bots: BotState[] = [];
   private config: BotConfig | null = null;
   private stopping = false;
+  private pendingBroadcasts: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly natsClient: NatsClient,
+    private readonly orderBookBroadcast: OrderBookBroadcastService,
   ) {}
 
   async startBots(params: {
@@ -169,6 +172,12 @@ export class LiquidityBotsService {
       }
     }
     
+    // Clear all pending broadcasts
+    for (const timeout of this.pendingBroadcasts.values()) {
+      clearTimeout(timeout);
+    }
+    this.pendingBroadcasts.clear();
+    
     this.bots = [];
     this.config = null;
     
@@ -237,6 +246,9 @@ export class LiquidityBotsService {
         await this.sleep(orderDelay);
       }
     }
+    
+    // Broadcast orderbook update once after all orders placed (debounced)
+    this.requestBroadcast(config.marketId);
   }
 
   private async maybeTaker(bot: BotState, config: BotConfig) {
@@ -324,6 +336,23 @@ export class LiquidityBotsService {
     if (yesPts < MIN_PRICE) return MIN_PRICE;
     if (yesPts > MAX_PRICE) return MAX_PRICE;
     return yesPts;
+  }
+
+  private requestBroadcast(marketId: string) {
+    // Debounce broadcasts: coalesce multiple bot updates into max 10/sec
+    const existing = this.pendingBroadcasts.get(marketId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timeout = setTimeout(() => {
+      this.pendingBroadcasts.delete(marketId);
+      this.orderBookBroadcast.broadcastOrderBookUpdate(marketId).catch(err =>
+        this.logger.error(`Failed to broadcast orderbook for ${marketId}:`, err)
+      );
+    }, 100); // 100ms debounce = max 10 broadcasts/sec per market
+
+    this.pendingBroadcasts.set(marketId, timeout);
   }
 
   private sleep(ms: number): Promise<void> {

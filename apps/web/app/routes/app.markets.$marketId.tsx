@@ -10,6 +10,7 @@ import { PositionsModal } from "~/components/PositionsModal";
 import OpenOrders from "~/components/OpenOrders";
 import { useEffect, useState, useMemo } from "react";
 import { wsClient } from "~/lib/ws.client";
+import { TrendingUp, TrendingDown } from "lucide-react";
 import "~/styles/components/controls.css";
 
 // Add CSS animation for toast
@@ -341,9 +342,17 @@ export default function MarketDetail() {
               <div>
                 <span style={{ 
                   fontWeight: 600, 
-                  color: marketStats.priceChangePercent >= 0 ? '#10b981' : '#ef4444' 
+                  color: marketStats.priceChangePercent >= 0 ? '#10b981' : '#ef4444',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem'
                 }}>
-                  {marketStats.priceChangePercent >= 0 ? '▲' : '▼'} {Math.abs(marketStats.priceChangePercent).toFixed(2)}%
+                  {marketStats.priceChangePercent >= 0 ? (
+                    <TrendingUp size={14} />
+                  ) : (
+                    <TrendingDown size={14} />
+                  )}
+                  {Math.abs(marketStats.priceChangePercent).toFixed(2)}%
                 </span>
               </div>
               <div>
@@ -430,7 +439,7 @@ export default function MarketDetail() {
           </div>
         </div>
 
-        {/* MIDDLE: Order Book (col 2, row 1) */}
+        {/* MIDDLE: Order Book + Position + Market Info (col 2, row 1) */}
         <div style={{ 
           background: '#1a1f26',
           display: 'flex',
@@ -438,36 +447,14 @@ export default function MarketDetail() {
           overflow: 'hidden',
           height: '100%'
         }}>
+          {/* Order Book at top */}
           <div style={{ 
-            padding: '0.625rem 0.875rem',
-            borderBottom: '1px solid #2d3748',
-            fontSize: '0.75rem',
-            fontWeight: 700,
-            color: '#94a3b8',
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            flexShrink: 0
+            flex: '1 1 auto',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            minHeight: 0
           }}>
-            Order Book
-          </div>
-          <OrderBook 
-            orderBook={orderBook} 
-            marketId={marketId} 
-            onPriceClick={handlePriceClick}
-            compact={true}
-          />
-        </div>
-
-        {/* RIGHT: Ticket + Position (col 3, row 1) */}
-        <div style={{ 
-          background: '#1a1f26',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          height: '100%'
-        }}>
-          {/* Sticky Ticket */}
-          <div style={{ flex: '0 0 auto' }}>
             <div style={{ 
               padding: '0.625rem 0.875rem',
               borderBottom: '1px solid #2d3748',
@@ -475,26 +462,24 @@ export default function MarketDetail() {
               fontWeight: 700,
               color: '#94a3b8',
               textTransform: 'uppercase',
-              letterSpacing: '0.05em'
+              letterSpacing: '0.05em',
+              flexShrink: 0
             }}>
-              Place Order
+              Order Book
             </div>
-            <OrderTicket 
+            <OrderBook 
+              orderBook={orderBook} 
               marketId={marketId} 
-              wallet={wallet}
-              selectedPrice={selectedPrice}
-              bestBidPPts={orderBook?.bids?.[0]?.yesPts ?? null}
-              bestAskPPts={orderBook?.asks?.[0]?.yesPts ?? null}
-              lastTradePPts={trades?.[0]?.yes_pts ?? null}
+              onPriceClick={handlePriceClick}
               compact={true}
             />
           </div>
 
-          {/* Position Panel */}
+          {/* Position Panel below orderbook */}
           {wallet && position && (
             <div style={{ 
               borderTop: '1px solid #2d3748',
-              flex: '1 1 auto',
+              flex: '0 0 auto',
               overflow: 'hidden',
               display: 'flex',
               flexDirection: 'column'
@@ -507,7 +492,7 @@ export default function MarketDetail() {
             </div>
           )}
 
-          {/* Market Info (Collapsible) */}
+          {/* Market Info below position (Collapsible) */}
           <div style={{ 
             borderTop: '1px solid #2d3748',
             padding: '0.875rem',
@@ -543,6 +528,38 @@ export default function MarketDetail() {
                 </div>
               </div>
             </details>
+          </div>
+        </div>
+
+        {/* RIGHT: Order Ticket (col 3, row 1) */}
+        <div style={{ 
+          background: '#1a1f26',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          height: '100%'
+        }}>
+          <div style={{ 
+            padding: '0.625rem 0.875rem',
+            borderBottom: '1px solid #2d3748',
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            color: '#94a3b8',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em'
+          }}>
+            Place Order
+          </div>
+          <div style={{ overflow: 'auto' }}>
+            <OrderTicket 
+              marketId={marketId} 
+              wallet={wallet}
+              selectedPrice={selectedPrice}
+              bestBidPPts={orderBook?.bids?.[0]?.yesPts ?? null}
+              bestAskPPts={orderBook?.asks?.[0]?.yesPts ?? null}
+              lastTradePPts={trades?.[0]?.yes_pts ?? null}
+              compact={true}
+            />
           </div>
         </div>
 
@@ -621,6 +638,7 @@ export default function MarketDetail() {
           onClose={() => setIsPositionsModalOpen(false)}
           onCashoutSuccess={handleCashoutSuccess}
           marketId={marketId}
+          orderBook={orderBook}
         />
       )}
 

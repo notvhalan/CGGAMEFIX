@@ -25,6 +25,7 @@ export class OrdersController {
     @Req() req: FastifyRequest & { session: any },
     @Query('limit') limit?: string,
     @Query('marketId') marketId?: string,
+    @Query('includeHistory') includeHistory?: string,
   ) {
     try {
       // Extract userId from session
@@ -37,9 +38,19 @@ export class OrdersController {
       const orders = await this.databaseService.getOrdersByUserId(userId, orderLimit);
       
       // Filter by marketId if provided
-      const filteredOrders = marketId 
+      let filteredOrders = marketId 
         ? orders.filter(order => order.marketId === marketId)
         : orders;
+      
+      // Filter by status based on includeHistory parameter
+      const showHistory = includeHistory === 'true';
+      if (!showHistory) {
+        // Only return OPEN and PARTIALLY_MATCHED orders (exclude CANCELLED, MATCHED, EXPIRED, REJECTED)
+        filteredOrders = filteredOrders.filter(order => 
+          order.status === 'OPEN' || order.status === 'PARTIALLY_MATCHED'
+        );
+      }
+      // else: return all orders including history
       
       return { orders: filteredOrders };
     } catch (error) {
@@ -76,6 +87,10 @@ export class OrdersController {
       let liabilityPence: number;
       let side: 'FOR' | 'LAY';
       let timeInForce: 'GTC' | 'IOC' = orderData.timeInForce || 'GTC';
+      
+      // Default slippage for IOC market orders: 5% (500,000 probability points)
+      const DEFAULT_MARKET_SLIPPAGE_PTS = 500_000; // 5%
+      const maxSlippagePts = orderData.maxSlippagePts;
       
       if (orderData.pPts !== undefined && (orderData.liabilityPence !== undefined || orderData.stakePence !== undefined)) {
         // New format - use liabilityPence for both sides (stakePence is backward compat)
@@ -122,17 +137,39 @@ export class OrdersController {
       let yesPts: number;
       let contractsMicros: bigint;
       
-      if (side === 'FOR') {
-        // FOR: user backs YES at pPts -> they buy YES at pPts
-        // yesPts = pPts (the probability they entered)
-        yesPts = pPts;
-        contractsMicros = stakeToContracts(liabilityPence, yesPts);
+      // Apply slippage protection for IOC market orders
+      if (timeInForce === 'IOC') {
+        const slippagePts = maxSlippagePts || DEFAULT_MARKET_SLIPPAGE_PTS;
+        
+        if (side === 'FOR') {
+          // FOR market order: willing to buy YES up to (pPts + slippage)
+          // Example: market buy at 50% with 5% slippage = willing to pay up to 55%
+          yesPts = Math.min(pPts + slippagePts, PRICE_SCALE - 1);
+          contractsMicros = stakeToContracts(liabilityPence, yesPts);
+          this.logger.info(`Market order FOR: pPts=${pPts} + slippage=${slippagePts} => yesPts=${yesPts}`);
+        } else {
+          // LAY market order: willing to sell YES down to (pPts - slippage) in NO space
+          // In YES space: PRICE_SCALE - pPts, but allow lower prices (higher YES probabilities)
+          // Example: market sell NO at 50% (YES 50%) with 5% slippage = willing to sell YES up to 55%
+          const basYesPts = PRICE_SCALE - pPts;
+          yesPts = Math.max(basYesPts - slippagePts, 1); // Allow selling at higher YES prob (lower NO prob)
+          contractsMicros = liabilityToContracts(liabilityPence, yesPts);
+          this.logger.info(`Market order LAY: NO pPts=${pPts} => YES base=${basYesPts} - slippage=${slippagePts} => yesPts=${yesPts}`);
+        }
       } else {
-        // LAY: user backs NO at pPts -> they sell YES at (1 - pPts)
-        // If they back NO at 67%, they're selling YES at 33%
-        // yesPts = PRICE_SCALE - pPts (convert NO probability to YES space)
-        yesPts = PRICE_SCALE - pPts;
-        contractsMicros = liabilityToContracts(liabilityPence, yesPts);
+        // GTC limit orders: use exact price specified
+        if (side === 'FOR') {
+          // FOR: user backs YES at pPts -> they buy YES at pPts
+          // yesPts = pPts (the probability they entered)
+          yesPts = pPts;
+          contractsMicros = stakeToContracts(liabilityPence, yesPts);
+        } else {
+          // LAY: user backs NO at pPts -> they sell YES at (1 - pPts)
+          // If they back NO at 67%, they're selling YES at 33%
+          // yesPts = PRICE_SCALE - pPts (convert NO probability to YES space)
+          yesPts = PRICE_SCALE - pPts;
+          contractsMicros = liabilityToContracts(liabilityPence, yesPts);
+        }
       }
       
       // Validate minimum contract size to prevent dust orders
@@ -228,12 +265,53 @@ export class OrdersController {
         throw new UnauthorizedException('User not authenticated');
       }
       
+      // Get the order BEFORE cancelling to calculate locked funds
+      const orders = await this.databaseService.getOrdersByUserId(userId, 1000);
+      const orderToCancel = orders.find(o => o.id === orderId);
+      
+      if (!orderToCancel) {
+        throw new Error('Order not found');
+      }
+      
+      // Only unlock if order is still active (OPEN or PARTIALLY_MATCHED)
+      if (orderToCancel.status === 'OPEN' || orderToCancel.status === 'PARTIALLY_MATCHED') {
+        // Calculate locked amount based on remaining liability
+        const remainingContracts = BigInt(orderToCancel.remainingContracts || '0');
+        const originalContracts = BigInt(orderToCancel.originalContracts || '0');
+        
+        if (remainingContracts > 0n && originalContracts > 0n) {
+          // Proportional liability based on remaining vs original contracts
+          const lockedPence = Math.floor(
+            (orderToCancel.liabilityPence * Number(remainingContracts)) / Number(originalContracts)
+          );
+          
+          if (lockedPence > 0) {
+            // Try to unlock the balance - don't fail if insufficient (could be old data or wrong currency)
+            try {
+              await this.databaseService.unlockBalance(userId, lockedPence);
+              this.logger.info('Balance unlocked for cancelled order', { 
+                orderId, 
+                userId, 
+                lockedPence, 
+                remainingContracts: remainingContracts.toString(),
+                originalContracts: originalContracts.toString(),
+                totalLiability: orderToCancel.liabilityPence
+              });
+            } catch (unlockError) {
+              // Log warning but don't fail the cancellation - wallet might have old data or wrong currency
+              this.logger.warn('Failed to unlock balance for cancelled order - continuing with cancellation', { 
+                orderId, 
+                userId, 
+                lockedPence,
+                error: unlockError.message
+              });
+            }
+          }
+        }
+      }
+      
       // Update order status in database
       await this.databaseService.updateOrderStatus(orderId, 'CANCELLED');
-      
-      // Get the order to find its marketId for broadcasting
-      const orders = await this.databaseService.getOrdersByUserId(userId, 1000);
-      const cancelledOrder = orders.find(o => o.id === orderId);
       
       // Publish order cancellation command to NATS
       const command = {
@@ -245,12 +323,10 @@ export class OrdersController {
       this.logger.info('Order cancelled', { orderId, userId });
       this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, command);
       
-      // Broadcast order book update if we found the market
-      if (cancelledOrder) {
-        setImmediate(() => {
-          this.orderBookBroadcast.broadcastOrderBookUpdate(cancelledOrder.marketId);
-        });
-      }
+      // Broadcast order book update
+      setImmediate(() => {
+        this.orderBookBroadcast.broadcastOrderBookUpdate(orderToCancel.marketId);
+      });
       
       return {
         orderId,

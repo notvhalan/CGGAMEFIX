@@ -1,8 +1,9 @@
 import { Link, useLocation } from '@remix-run/react';
+import { type ComponentType, type SVGProps } from 'react';
 
 interface NavItemProps {
   to: string;
-  icon: string;
+  icon: ComponentType<SVGProps<SVGElement>>;
   label: string;
   end?: boolean;
   compact?: boolean;
@@ -15,6 +16,7 @@ export function NavItem({ to, icon, label, end = false, compact = false }: NavIt
     : location.pathname.startsWith(to);
 
   if (compact) {
+    const IconComponent = icon;
     return (
       <div style={{ position: 'relative', display: 'flex', justifyContent: 'center' }}>
         <Link
@@ -51,7 +53,7 @@ export function NavItem({ to, icon, label, end = false, compact = false }: NavIt
             if (tooltip) tooltip.style.opacity = '0';
           }}
         >
-          {icon}
+          <IconComponent size={20} style={{ opacity: isActive ? 1 : 0.85 }} />
         </Link>
         
         <div style={{
@@ -79,6 +81,7 @@ export function NavItem({ to, icon, label, end = false, compact = false }: NavIt
     );
   }
 
+  const IconComponent = icon;
   return (
     <Link
       to={to}
@@ -108,15 +111,16 @@ export function NavItem({ to, icon, label, end = false, compact = false }: NavIt
         }
       }}
     >
-      <span style={{ fontSize: '1.25rem' }}>{icon}</span>
+      <IconComponent size={18} style={{ opacity: isActive ? 1 : 0.85 }} />
       <span>{label}</span>
     </Link>
   );
 }
 
-export function MobileNavItem({ to, icon, label }: { to: string; icon: string; label: string }) {
+export function MobileNavItem({ to, icon, label }: { to: string; icon: ComponentType<SVGProps<SVGElement>>; label: string }) {
   const location = useLocation();
   const isActive = location.pathname.startsWith(to);
+  const IconComponent = icon;
 
   return (
     <Link
@@ -135,7 +139,7 @@ export function MobileNavItem({ to, icon, label }: { to: string; icon: string; l
         transition: 'color 0.2s'
       }}
     >
-      <span style={{ fontSize: '1.5rem' }}>{icon}</span>
+      <IconComponent size={24} style={{ opacity: isActive ? 1 : 0.85 }} />
       <span>{label}</span>
     </Link>
   );

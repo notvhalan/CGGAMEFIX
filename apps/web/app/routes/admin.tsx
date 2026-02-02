@@ -352,8 +352,13 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await getAuthenticatedUser(request);
   
-  // Simple admin check - you can make this more robust
-  const isAdmin = user?.email === 'vhalan02@gmail.com' || user?.email?.includes('@admin');
+  // Admin email whitelist - must match backend admin.controller.ts
+  const ADMIN_EMAILS = [
+    'vhalan02@gmail.com',
+    'developer@gmail.com',
+  ];
+  
+  const isAdmin = user?.email ? ADMIN_EMAILS.includes(user.email) : false;
   
   try {
     const data = await getMarkets();

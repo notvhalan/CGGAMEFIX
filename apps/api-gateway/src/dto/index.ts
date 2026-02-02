@@ -15,6 +15,8 @@ export const CreateOrderDtoSchema = z.object({
   // Deprecated: stakePence (backward compat only)
   stakePence: z.coerce.number().int().positive().nullable().optional(),
   timeInForce: z.enum(['GTC', 'IOC']).optional(),
+  // Market order slippage protection (in probability points)
+  maxSlippagePts: z.coerce.number().int().min(1).max(PRICE_SCALE).optional(),
 }).refine(
   (data) => {
     // Either old format (odds + stake) or new format (pPts + liabilityPence) must be provided

@@ -140,7 +140,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
 export default function MarketDetail() {
   const loaderData = useLoaderData<typeof loader>();
-  const { market, wallet, position, marketId, userOrders } = loaderData;
+  const { market, wallet, position, marketId } = loaderData;
   const actionData = useActionData<typeof action>();
   const revalidator = useRevalidator();
 
@@ -154,6 +154,12 @@ export default function MarketDetail() {
   const [orderFeedback, setOrderFeedback] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [isToastExiting, setIsToastExiting] = useState(false);
   const [activeTab, setActiveTab] = useState<'trades' | 'orders' | 'positions'>('trades');
+  const [userOrders, setUserOrders] = useState(loaderData.userOrders);
+
+  // Sync userOrders with loaderData when it changes (after revalidation)
+  useEffect(() => {
+    setUserOrders(loaderData.userOrders);
+  }, [loaderData.userOrders]);
   
   // Callback to refetch data after cashout
   const handleCashoutSuccess = () => {

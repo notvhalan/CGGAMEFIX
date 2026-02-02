@@ -120,8 +120,8 @@ export async function getUserOrders(request: Request, marketId?: string) {
       pPts: number;
       yesPts: number;
       liabilityPence: number;
-      originalContractsMicros: string;
-      remainingContractsMicros: string;
+      originalContracts: string;
+      remainingContracts: string;
       status: string;
       timeInForce?: string;
       createdAt: string;

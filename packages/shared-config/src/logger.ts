@@ -14,6 +14,9 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   [LogLevel.ERROR]: 3,
 };
 
+// Global logging toggle - can be controlled via environment variable
+const LOGGING_ENABLED = process.env.DISABLE_LOGS !== 'true';
+
 export class Logger {
   private serviceName: string;
   private minLevel: LogLevel;
@@ -24,6 +27,7 @@ export class Logger {
   }
 
   private shouldLog(level: LogLevel): boolean {
+    if (!LOGGING_ENABLED) return false;
     return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[this.minLevel];
   }
 

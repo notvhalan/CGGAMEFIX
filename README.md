@@ -220,6 +220,10 @@ See `.env.example` for required configuration. Key variables:
 - `JWT_SECRET` - JWT signing secret
 - `API_GATEWAY_PORT` - API Gateway HTTP port
 - `WS_PORT` - WebSocket server port
+- `LOG_LEVEL` - Logging level (debug, info, warn, error)
+- `DISABLE_LOGS` - Set to `true` to disable all logging
+
+See [LOGGING.md](docs/LOGGING.md) for detailed logging configuration.
 
 ## 🔐 Security
 

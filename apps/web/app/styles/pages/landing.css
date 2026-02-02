@@ -755,3 +755,56 @@
   fill: #8b949e !important; /* Axis label colors */
 }
 
+/* ---------- OAuth Button (Login Page) ---------- */
+.oauthBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 16px;
+  border-radius: 12px;
+  text-decoration: none;
+  color: #fff;
+  background: rgba(22, 27, 34, 0.60);
+  border: 1px solid rgba(88, 166, 255, 0.18);
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+  box-sizing: border-box;
+}
+
+.oauthBtn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(88, 166, 255, 0.45);
+  background: linear-gradient(135deg, rgba(88, 166, 255, 0.16), rgba(88, 166, 255, 0.05));
+  box-shadow: 0 10px 30px rgba(88, 166, 255, 0.12);
+}
+
+.oauthBtn__inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  /* optical centering: the icon visually "pulls" left */
+  transform: translateX(4px);
+}
+
+.oauthBtn__icon {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+}
+
+.oauthBtn__label {
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.95;
+}
+
+/* Auth Form Stack */
+.auth-stack {
+  display: grid;
+  gap: 16px;
+}
+

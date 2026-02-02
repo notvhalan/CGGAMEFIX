@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, Form } from '@remix-run/react';
+import { FiChevronDown, FiUser } from 'react-icons/fi';
 import "~/styles/components/user-menu.css";
 
 interface UserMenuProps {
@@ -66,7 +67,7 @@ export function UserMenu({ user, compact = false }: UserMenuProps) {
             {user.name?.[0]?.toUpperCase() || user.email[0]?.toUpperCase()}
           </div>
         )}
-        <span style={{ fontSize: '0.75rem', color: '#8b949e' }}>▾</span>
+        <FiChevronDown size={14} style={{ color: '#8b949e' }} />
       </button>
 
       {userMenuOpen && (

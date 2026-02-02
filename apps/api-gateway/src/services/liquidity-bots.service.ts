@@ -103,8 +103,8 @@ export class LiquidityBotsService {
 
         const userId = user.rows[0].id;
 
-        // Ensure wallet with plenty of funds (use USD to match lockBalance default)
-        await this.databaseService.ensureWallet(userId, 'USD');
+        // Ensure wallet with plenty of funds (use GBP to match lockBalance default)
+        await this.databaseService.ensureWallet(userId, 'GBP');
         
         // Fund the wallet generously
         const fundResult = await this.databaseService.query(
@@ -112,7 +112,7 @@ export class LiquidityBotsService {
            SET balance = 10000.00, 
                locked_balance = 0, 
                updated_at = NOW() 
-           WHERE user_id = $1 AND currency = 'USD'
+           WHERE user_id = $1 AND currency = 'GBP'
            RETURNING balance`,
           [userId]
         );

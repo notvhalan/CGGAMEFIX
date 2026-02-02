@@ -80,14 +80,32 @@ export class MatchingEngine {
       logger.info(`Subscribed to ${NATS_SUBJECTS.ORDERS_SUBMIT}`);
       
       for await (const msg of sub) {
+        let orderData: OrderCommand | null = null;
         try {
           const data = JSON.parse(sc.decode(msg.data)) as OrderCommand;
+          orderData = data;
           logger.info(`Received order submit: ${data.orderId}`);
           
           await this.handleOrderSubmit(data);
           
         } catch (error) {
           logger.error('Error processing order submit', error);
+          
+          // Mark order as REJECTED and publish cancellation to unlock balance
+          if (orderData) {
+            try {
+              await this.db.updateOrderStatus(orderData.orderId, 'REJECTED', 0n);
+              await this.publishOrderCancelled(
+                orderData.orderId, 
+                orderData.userId, 
+                orderData.marketId, 
+                orderData.originalContractsMicros
+              );
+              logger.info(`Order ${orderData.orderId} marked as REJECTED and balance unlock event published`);
+            } catch (unlockError) {
+              logger.error(`Failed to unlock balance for rejected order ${orderData.orderId}`, unlockError);
+            }
+          }
         }
       }
     })();
@@ -275,6 +293,12 @@ export class MatchingEngine {
     const { makerOrder, takerOrder, yesPricePts, contractsMicros, costPence } = match;
 
     try {
+      // Skip processing if no contracts to trade
+      if (contractsMicros === 0n) {
+        logger.debug(`Skipping match with 0 contracts between ${takerOrder.id} and ${makerOrder.id}`);
+        return;
+      }
+
       // Calculate fees (integer math)
       const takerFeePence = calculateTakerFee(costPence);
       const makerFeePence = 0; // Maker fees are 0

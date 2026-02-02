@@ -1,19 +1,15 @@
 import { connect } from 'nats';
 import { NATS_SUBJECTS } from '@betting-exchange/shared-types';
+import { createLogger } from '@betting-exchange/shared-config';
 import { WalletService } from './ledger';
 
 // Environment variables with defaults for development
 const NATS_URL = process.env.NATS_URL || 'nats://localhost:4222';
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/betting_exchange';
-const LOG_LEVEL = (process.env.LOG_LEVEL || 'info') as 'debug' | 'info' | 'warn' | 'error';
+const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 
-// Simple logger
-const logger = {
-  info: (message: string, ...args: any[]) => {}, // console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'info', service: 'WalletService', message, ...args })),
-  warn: (message: string, ...args: any[]) => {}, // console.warn(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', service: 'WalletService', message, ...args })),
-  error: (message: string, ...args: any[]) => {}, // console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', service: 'WalletService', message, ...args })),
-  debug: (message: string, ...args: any[]) => {}, // { if (LOG_LEVEL === 'debug') console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'debug', service: 'WalletService', message, ...args })); },
-};
+// Use shared logger
+const logger = createLogger('WalletService', LOG_LEVEL);
 
 const env = {
   NATS_URL,

@@ -55,9 +55,34 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
+// OAuth Button Component
+function OAuthButton({
+  href,
+  label,
+  icon,
+}: {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      className="oauthBtn"
+      aria-label={label}
+    >
+      <span className="oauthBtn__inner">
+        <span className="oauthBtn__icon" aria-hidden>
+          {icon}
+        </span>
+        <span className="oauthBtn__label">{label}</span>
+      </span>
+    </a>
+  );
+}
+
 export default function Login() {
   const API_BASE_URL = getApiUrl();
-  const [isHovered, setIsHovered] = useState(false);
   const [mode, setMode] = useState<"login" | "signup">("login");
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -129,62 +154,31 @@ export default function Login() {
           </p>
         </div>
 
-        {/* Google Sign-In Button */}
-        <a
-          href={`${API_BASE_URL}/v1/auth/google`}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          style={{
+        <div className="auth-stack">
+          {/* Google Sign-In Button */}
+          <OAuthButton
+            href={`${API_BASE_URL}/v1/auth/google`}
+            label="Continue with Google"
+            icon={
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M19.6 10.227c0-.709-.064-1.39-.182-2.045H10v3.868h5.382a4.6 4.6 0 01-1.996 3.018v2.51h3.232c1.891-1.742 2.982-4.305 2.982-7.35z" fill="#4285F4"/>
+                <path d="M10 20c2.7 0 4.964-.895 6.618-2.423l-3.232-2.509c-.895.6-2.04.955-3.386.955-2.605 0-4.81-1.76-5.595-4.123H1.064v2.59A9.996 9.996 0 0010 20z" fill="#34A853"/>
+                <path d="M4.405 11.9c-.2-.6-.314-1.24-.314-1.9 0-.66.114-1.3.314-1.9V5.51H1.064A9.996 9.996 0 000 10c0 1.614.386 3.14 1.064 4.49l3.34-2.59z" fill="#FBBC05"/>
+                <path d="M10 3.977c1.468 0 2.786.505 3.823 1.496l2.868-2.868C14.959.99 12.695 0 10 0 6.09 0 2.71 2.24 1.064 5.51l3.34 2.59C5.19 5.736 7.395 3.977 10 3.977z" fill="#EA4335"/>
+              </svg>
+            }
+          />
+
+          {/* Divider */}
+          <div style={{ 
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.75rem',
-            width: '100%',
-            padding: '1rem 1.5rem',
-            background: isHovered 
-              ? 'linear-gradient(135deg, rgba(88, 166, 255, 0.15) 0%, rgba(88, 166, 255, 0.05) 100%)'
-              : 'rgba(22, 27, 34, 0.6)',
-            color: '#ffffff',
-            border: '1px solid',
-            borderColor: isHovered ? 'rgba(88, 166, 255, 0.5)' : 'rgba(88, 166, 255, 0.2)',
-            borderRadius: '12px',
-            fontSize: '1.0625rem',
-            fontWeight: 600,
-            textDecoration: 'none',
-            cursor: 'pointer',
-            transition: 'all 0.3s cubic-bezier(0.19, 1, 0.22, 1)',
-            backdropFilter: 'blur(10px)',
-            boxShadow: isHovered 
-              ? '0 8px 32px rgba(88, 166, 255, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-              : '0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
-            transform: isHovered ? 'translateY(-2px)' : 'translateY(0)',
-          }}
-        >
-          <svg 
-            width="20" 
-            height="20" 
-            viewBox="0 0 20 20" 
-            fill="none"
-            style={{ flexShrink: 0 }}
-          >
-            <path d="M19.6 10.227c0-.709-.064-1.39-.182-2.045H10v3.868h5.382a4.6 4.6 0 01-1.996 3.018v2.51h3.232c1.891-1.742 2.982-4.305 2.982-7.35z" fill="#4285F4"/>
-            <path d="M10 20c2.7 0 4.964-.895 6.618-2.423l-3.232-2.509c-.895.6-2.04.955-3.386.955-2.605 0-4.81-1.76-5.595-4.123H1.064v2.59A9.996 9.996 0 0010 20z" fill="#34A853"/>
-            <path d="M4.405 11.9c-.2-.6-.314-1.24-.314-1.9 0-.66.114-1.3.314-1.9V5.51H1.064A9.996 9.996 0 000 10c0 1.614.386 3.14 1.064 4.49l3.34-2.59z" fill="#FBBC05"/>
-            <path d="M10 3.977c1.468 0 2.786.505 3.823 1.496l2.868-2.868C14.959.99 12.695 0 10 0 6.09 0 2.71 2.24 1.064 5.51l3.34 2.59C5.19 5.736 7.395 3.977 10 3.977z" fill="#EA4335"/>
-          </svg>
-          <span style={{ lineHeight: '1' }}>Continue with Google</span>
-        </a>
-
-        {/* Divider */}
-        <div style={{ 
-          margin: '2rem 0', 
-          display: 'flex',
-          alignItems: 'center',
-          gap: '1rem'
-        }}>
-          <div style={{ flex: 1, height: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
-          <span style={{ color: '#8b949e', fontSize: '0.875rem' }}>OR</span>
-          <div style={{ flex: 1, height: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
+            gap: '1rem'
+          }}>
+            <div style={{ flex: 1, height: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
+            <span style={{ color: '#8b949e', fontSize: '0.875rem' }}>OR</span>
+            <div style={{ flex: 1, height: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
+          </div>
         </div>
 
         {/* Mode Switcher */}

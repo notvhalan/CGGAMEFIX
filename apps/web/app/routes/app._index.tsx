@@ -102,7 +102,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     return json({ 
       wallet, 
-      markets: markets.slice(0, 8),
+      markets,
       orders: orders.filter((o: any) => o.status === 'open' || o.status === 'partial').slice(0, 10),
       positions,
       timestamp: new Date().toISOString(),
@@ -349,27 +349,51 @@ export default function Dashboard() {
           <div className="terminal-panel">
             <div className="terminal-panel-header">
               <h2 className="terminal-panel-title">Watchlist</h2>
-              <Link to="/markets" className="terminal-link">Browse</Link>
+              <Link to="/app/markets" className="terminal-link">Browse</Link>
             </div>
             <div className="terminal-panel-body no-padding">
               {watchedMarkets.length === 0 ? (
                 <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--terminal-muted)', fontSize: '0.875rem' }}>
                   No markets in watchlist
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <Link to="/app/markets" style={{ color: 'var(--terminal-brand)', textDecoration: 'none', fontSize: '0.8125rem' }}>Browse markets →</Link>
+                  </div>
                 </div>
               ) : (
                 <table className="terminal-table" style={{ fontSize: '0.75rem' }}>
                   <tbody>
                     {watchedMarkets.slice(0, 3).map((m: any) => (
                     <tr key={m.id}>
-                      <td style={{ padding: '0.5rem 1rem' }}>{m.name}</td>
-                      <td className="td-mono align-right" style={{ color: 'var(--terminal-green)', padding: '0.5rem 1rem' }}>
-                        -
+                      <td style={{ padding: '0.5rem 1rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.name}>
+                        {m.name}
+                      </td>
+                      <td className="td-mono align-right" style={{ color: 'var(--terminal-green)', padding: '0.5rem 1rem', fontSize: '0.7rem' }}>
+                        {m.status === 'ACTIVE' ? '🟢 Active' : '⚪ Closed'}
                       </td>
                       <td className="align-right" style={{ padding: '0.5rem 1rem' }}>
-                        <Link to={`/app/markets/${m.id}`} className="pill" style={{ background: 'rgba(255, 255, 255, 0.1)', color: 'white', textDecoration: 'none' }}>Trade</Link>
+                        <Link 
+                          to={`/app/markets/${m.id}`} 
+                          className="pill" 
+                          style={{ 
+                            background: 'rgba(88, 166, 255, 0.15)', 
+                            color: '#58a6ff', 
+                            textDecoration: 'none',
+                            fontSize: '0.7rem',
+                            padding: '0.25rem 0.5rem'
+                          }}
+                        >
+                          Trade
+                        </Link>
                       </td>
                     </tr>
                   ))}
+                    {watchedMarkets.length > 3 && (
+                      <tr>
+                        <td colSpan={3} style={{ padding: '0.5rem 1rem', textAlign: 'center' }}>
+                          <Link to="/app/markets" style={{ color: 'var(--terminal-muted)', textDecoration: 'none', fontSize: '0.7rem' }}>+{watchedMarkets.length - 3} more</Link>
+                        </td>
+                      </tr>
+                    )}
                 </tbody>
               </table>
               )}

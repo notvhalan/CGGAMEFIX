@@ -18,7 +18,6 @@ export function WalletChip({ availablePence, reservedPence, equityPence, compact
         background: '#0d1117',
         border: '1px solid #30363d',
         borderRadius: '6px',
-        fontFamily: 'ui-monospace, monospace',
         fontSize: compact ? '0.75rem' : '0.8125rem'
       }} 
       className="wallet-chip"

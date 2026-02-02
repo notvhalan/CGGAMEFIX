@@ -28,7 +28,7 @@ export class WalletController {
       this.logger.debug(`Fetching wallet for user ${userId}`);
       
       // Get or create wallet from database
-      const wallet = await this.databaseService.ensureWallet(userId, 'USD');
+      const wallet = await this.databaseService.ensureWallet(userId, 'GBP');
       
       return {
         userId: wallet.userId,
@@ -100,13 +100,29 @@ export class WalletController {
       const depositData = DepositDtoSchema.parse(body);
       
       // Ensure wallet exists
-      await this.databaseService.ensureWallet(userId, depositData.currency);
+      const wallet = await this.databaseService.ensureWallet(userId, depositData.currency);
       
       // Update balance in database (this is test money, not real)
       const updatedWallet = await this.databaseService.updateWalletBalance(
         userId, 
         depositData.amount, 
         depositData.currency
+      );
+      
+      // Create ledger entry for the deposit
+      await this.databaseService.query(
+        `INSERT INTO ledger_entries 
+          (user_id, wallet_id, entry_type, credit, debit, balance, description, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+        [
+          userId,
+          wallet.id,
+          'DEPOSIT',
+          depositData.amount,
+          0,
+          updatedWallet.balance,
+          `Test funds deposit of ${depositData.currency} ${depositData.amount.toFixed(2)}`
+        ]
       );
       
       this.logger.info('Deposit processed', { 

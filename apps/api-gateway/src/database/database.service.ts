@@ -1,5 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { Logger } from '@betting-exchange/shared-config';
 
 export interface User {
@@ -243,7 +243,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   /**
    * Ensure user has a wallet (create if not exists)
    */
-  async ensureWallet(userId: string, currency = 'USD'): Promise<WalletAccount> {
+  async ensureWallet(userId: string, currency = 'GBP'): Promise<WalletAccount> {
     let wallet = await this.findWalletByUserId(userId, currency);
     if (!wallet) {
       wallet = await this.createWallet(userId, currency);
@@ -257,7 +257,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async updateWalletBalance(
     userId: string, 
     amount: number, 
-    currency = 'USD'
+    currency = 'GBP'
   ): Promise<WalletAccount> {
     const result = await this.pool.query(
       `UPDATE wallets 
@@ -290,7 +290,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async lockBalance(
     userId: string,
     amountPence: number,
-    currency = 'USD'
+    currency = 'GBP'
   ): Promise<WalletAccount> {
     const amountPounds = amountPence / 100;
     
@@ -317,7 +317,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async unlockBalance(
     userId: string,
     amountPence: number,
-    currency = 'USD'
+    currency = 'GBP'
   ): Promise<WalletAccount> {
     const amountPounds = amountPence / 100;
     
@@ -336,6 +336,70 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
     
     return result.rows[0];
+  }
+
+  /**
+   * Execute a database transaction
+   */
+  async transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Convert pence (bigint) to pounds string for NUMERIC(15,2)
+   */
+  private penceToPoundsStr(pence: bigint): string {
+    const sign = pence < 0n ? '-' : '';
+    const abs = pence < 0n ? -pence : pence;
+    const pounds = abs / 100n;
+    const pennies = abs % 100n;
+    return `${sign}${pounds.toString()}.${pennies.toString().padStart(2, '0')}`;
+  }
+
+  /**
+   * Insert settlement record for idempotency (prevents double-settlement)
+   */
+  async insertSettlementOnce(
+    client: PoolClient,
+    tradeId: string,
+    orderId: string,
+    userId: string
+  ): Promise<boolean> {
+    const res = await client.query(
+      `INSERT INTO trade_settlements (trade_id, order_id, user_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING
+       RETURNING trade_id`,
+      [tradeId, orderId, userId]
+    );
+    return res.rowCount === 1;
+  }
+
+  /**
+   * Get order fields needed for settlement
+   */
+  async getOrderForSettlement(
+    client: PoolClient,
+    orderId: string
+  ): Promise<{ user_id: string; side: string; liability_pence: string; qty_original_micros: string } | null> {
+    const res = await client.query(
+      `SELECT user_id, side, liability_pence, qty_original_micros
+       FROM orders
+       WHERE id = $1`,
+      [orderId]
+    );
+    return res.rows[0] || null;
   }
 
   /**
@@ -471,8 +535,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       `SELECT id, user_id as "userId", market_id as "marketId", outcome_id as "outcomeId", 
               side, p_pts as "pPts", limit_price_yes_pts as "yesPts", 
               stake_pence as "stakePence", liability_pence as "liabilityPence",
-              qty_original_micros as "originalContractsMicros", 
-              qty_remaining_micros as "remainingContractsMicros",
+              qty_original_micros as "originalContracts", 
+              qty_remaining_micros as "remainingContracts",
               status, 
               filled_pence as "filledPence", remaining_pence as "remainingPence",
               time_in_force as "timeInForce",

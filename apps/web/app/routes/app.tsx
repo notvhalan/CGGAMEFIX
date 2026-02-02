@@ -7,6 +7,8 @@ import { Outlet, Link, useLoaderData, useLocation } from "@remix-run/react";
 import { requireUser } from "~/lib/auth.server";
 import { getWallet, getMarkets } from "~/lib/api.server";
 import { useState } from "react";
+import { Icons } from "~/config/icons";
+import { FiActivity, FiDownload, FiTrendingUp } from "react-icons/fi";
 import { NavItem, MobileNavItem } from "~/components/layout/NavItem";
 import { WalletChip } from "~/components/layout/WalletChip";
 import { SearchBar } from "~/components/layout/SearchBar";
@@ -35,10 +37,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
       getMarkets()
     ]);
     
+    // Database stores values in pounds, but component expects pence
+    // So multiply by 100 to convert pounds to pence
     wallet = {
-      availablePence: walletData.balance || 0,
-      reservedPence: walletData.lockedBalance || 0,
-      equityPence: (walletData.balance || 0) + (walletData.lockedBalance || 0)
+      availablePence: (walletData.balance || 0) * 100,
+      reservedPence: (walletData.lockedBalance || 0) * 100,
+      equityPence: ((walletData.balance || 0) + (walletData.lockedBalance || 0)) * 100
     };
     
     markets = marketsData.markets || [];
@@ -78,8 +82,9 @@ export default function AppLayout() {
         </button>
 
         <div className="dashboard-nav-container">
-          <Link to="/app" className="logo logo-terminal">
-            🎮 GameFix
+          <Link to="/app" className="logo logo-terminal" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <FiActivity size={18} />
+            <span>GameFix</span>
           </Link>
           
           <DashboardNav />
@@ -87,6 +92,9 @@ export default function AppLayout() {
           <Link
             to="/app/markets"
             style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
               padding: '0.5rem 0.875rem',
               background: '#238636',
               color: 'white',
@@ -100,6 +108,7 @@ export default function AppLayout() {
             onMouseEnter={(e) => e.currentTarget.style.background = '#2ea043'}
             onMouseLeave={(e) => e.currentTarget.style.background = '#238636'}
           >
+            <FiTrendingUp size={16} />
             Trade
           </Link>
         </div>
@@ -115,14 +124,17 @@ export default function AppLayout() {
           compact={true}
         />
 
-        <div className="ws-status">
-          <span className="ws-status-dot" />
+        <div className="ws-status" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+          <FiActivity size={14} style={{ color: '#3fb950' }} />
           <span>Live</span>
         </div>
 
         <Link
           to="/app/wallet"
           style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
             padding: '0.5rem 0.875rem',
             background: '#1f6feb',
             color: 'white',
@@ -136,7 +148,8 @@ export default function AppLayout() {
           onMouseEnter={(e) => e.currentTarget.style.background = '#388bfd'}
           onMouseLeave={(e) => e.currentTarget.style.background = '#1f6feb'}
         >
-          💰 Deposit
+          <FiDownload size={16} />
+          Deposit
         </Link>
 
         <UserMenu user={user} compact={true} />
@@ -154,14 +167,14 @@ export default function AppLayout() {
             height: '100%',
             padding: '0.25rem 0'
           }}>
-            <NavItem to="/app" icon="🏠" label="Dashboard" end compact />
-            <NavItem to="/app/markets" icon="📈" label="Markets" compact />
-            <NavItem to="/app/positions" icon="📊" label="Positions" compact />
-            <NavItem to="/app/orders" icon="📋" label="Orders" compact />
-            <NavItem to="/app/trades" icon="🔄" label="Trades" compact />
-            <NavItem to="/app/wallet" icon="💰" label="Wallet" compact />
+            <NavItem to="/app" icon={Icons.home} label="Dashboard" end compact />
+            <NavItem to="/app/markets" icon={Icons.markets} label="Markets" compact />
+            <NavItem to="/app/positions" icon={Icons.positions} label="Positions" compact />
+            <NavItem to="/app/orders" icon={Icons.orders} label="Orders" compact />
+            <NavItem to="/app/trades" icon={Icons.trades} label="Trades" compact />
+            <NavItem to="/app/wallet" icon={Icons.wallet} label="Wallet" compact />
             <div style={{ height: '2rem' }} />
-            <NavItem to="/app/settings" icon="⚙️" label="Settings" compact />
+            <NavItem to="/app/settings" icon={Icons.settings} label="Settings" compact />
             <div style={{ flex: 1 }} />
           </nav>
         </aside>
@@ -175,10 +188,10 @@ export default function AppLayout() {
       {/* Mobile Bottom Nav */}
       <nav className="mobile-bottom-nav">
         <div className="mobile-bottom-nav-grid">
-          <MobileNavItem to="/app/markets" icon="📈" label="Markets" />
-          <MobileNavItem to="/app/positions" icon="📊" label="Positions" />
-          <MobileNavItem to="/app/orders" icon="📋" label="Orders" />
-          <MobileNavItem to="/app/wallet" icon="💰" label="Wallet" />
+          <MobileNavItem to="/app/markets" icon={Icons.markets} label="Markets" />
+          <MobileNavItem to="/app/positions" icon={Icons.positions} label="Positions" />
+          <MobileNavItem to="/app/orders" icon={Icons.orders} label="Orders" />
+          <MobileNavItem to="/app/wallet" icon={Icons.wallet} label="Wallet" />
         </div>
       </nav>
 

@@ -12,6 +12,7 @@ import { EventsGateway } from './gateways/events.gateway';
 import { OrderBookBroadcastService } from './services/orderbook-broadcast.service';
 import { LiquidityBotsService } from './services/liquidity-bots.service';
 import { PositionLotsService } from './services/position-lots.service';
+import { OrderEventsService } from './services/order-events.service';
 
 @Module({
   imports: [
@@ -27,6 +28,6 @@ import { PositionLotsService } from './services/position-lots.service';
     CashoutController,
     AdminController,
   ],
-  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService],
+  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService, OrderEventsService],
 })
 export class AppModule {}

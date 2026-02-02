@@ -48,6 +48,7 @@ export function OrderTicket({
   const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT');
   const [probability, setProbability] = useState('50.00'); // Always YES percentage 0-100
   const [amount, setAmount] = useState('10.00'); // Max cost in pounds
+  const [maxSlippagePercent, setMaxSlippagePercent] = useState('5.00'); // Default 5% slippage
 
   // Auto-fill price when clicked from orderbook (using useEffect to avoid render-time state updates)
   useEffect(() => {
@@ -90,6 +91,9 @@ export function OrderTicket({
   
   // Time in force based on order type
   const timeInForce: 'GTC' | 'IOC' = orderType === 'MARKET' ? 'IOC' : 'GTC';
+  
+  // Convert slippage percentage to probability points (for market orders)
+  const maxSlippagePPts = Math.round(parseFloat(maxSlippagePercent) * 100_000);
   
   let yesPts: number; // For preview calculations
   let contractsMicros: number;
@@ -156,6 +160,7 @@ export function OrderTicket({
       <Form method="post">
         <input type="hidden" name="marketId" value={marketId} />
         <input type="hidden" name="side" value={side} />
+        {orderType === 'MARKET' && <input type="hidden" name="maxSlippagePts" value={maxSlippagePPts} />}
         <input type="hidden" name="pPts" value={pPtsSubmitted} />
         <input type="hidden" name="liabilityPence" value={amountPence} />
         <input type="hidden" name="timeInForce" value={timeInForce} />
@@ -587,11 +592,111 @@ export function OrderTicket({
                     </div>
                   )}
                 </div>
+                {/* Max Slippage control */}
+                <div style={{ marginTop: '0.75rem' }}>
+                  <label style={{ 
+                    display: 'block', 
+                    marginBottom: '0.375rem', 
+                    fontSize: compact ? '0.6875rem' : '0.8125rem', 
+                    fontWeight: 600, 
+                    color: compact ? '#cbd5e1' : '#2d3748' 
+                  }}>
+                    Max Slippage (%)
+                  </label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input
+                      type="range"
+                      value={maxSlippagePercent}
+                      onChange={(e) => setMaxSlippagePercent(e.target.value)}
+                      min="0.5"
+                      max="20"
+                      step="0.5"
+                      style={{
+                        flex: 1,
+                        height: compact ? '4px' : '6px',
+                        borderRadius: '3px',
+                        background: compact ? '#374151' : '#e2e8f0',
+                        outline: 'none',
+                        cursor: 'pointer'
+                      }}
+                    />
+                    <input
+                      type="number"
+                      value={maxSlippagePercent}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (val >= 0.5 && val <= 20) {
+                          setMaxSlippagePercent(e.target.value);
+                        }
+                      }}
+                      min="0.5"
+                      max="20"
+                      step="0.5"
+                      style={{
+                        width: compact ? '55px' : '65px',
+                        padding: compact ? '0.25rem 0.375rem' : '0.375rem 0.5rem',
+                        border: compact ? '1px solid #374151' : '1px solid #cbd5e0',
+                        borderRadius: compact ? '4px' : '5px',
+                        fontSize: compact ? '0.75rem' : '0.875rem',
+                        background: compact ? '#0f1419' : 'white',
+                        color: compact ? '#e4e8eb' : '#2d3748',
+                        fontWeight: 600,
+                        textAlign: 'center'
+                      }}
+                    />
+                    <span style={{ 
+                      fontSize: compact ? '0.75rem' : '0.875rem', 
+                      fontWeight: 600,
+                      color: compact ? '#94a3b8' : '#4a5568',
+                      minWidth: '20px'
+                    }}>
+                      %
+                    </span>
+                  </div>
+                  <div style={{ 
+                    fontSize: compact ? '0.5625rem' : '0.625rem', 
+                    color: compact ? '#64748b' : '#718096',
+                    marginTop: '0.375rem',
+                    fontStyle: 'italic'
+                  }}>
+                    Order will fill within {maxSlippagePercent}% of {(effectiveYesPPts / 100_000).toFixed(2)}% YES price
+                    <br />
+                    ({((effectiveYesPPts - maxSlippagePPts) / 100_000).toFixed(2)}% - {((effectiveYesPPts + maxSlippagePPts) / 100_000).toFixed(2)}% range)
+                  </div>
+                  
+                  {/* Quick slippage buttons */}
+                  <div style={{ display: 'flex', gap: compact ? '0.25rem' : '0.375rem', marginTop: '0.375rem' }}>
+                    {[1, 2, 5, 10].map(pct => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setMaxSlippagePercent(pct.toFixed(2))}
+                        style={{
+                          flex: 1,
+                          padding: compact ? '0.25rem' : '0.375rem',
+                          fontSize: compact ? '0.625rem' : '0.6875rem',
+                          fontWeight: 600,
+                          background: parseFloat(maxSlippagePercent) === pct 
+                            ? '#667eea' 
+                            : (compact ? '#374151' : '#edf2f7'),
+                          color: parseFloat(maxSlippagePercent) === pct 
+                            ? 'white' 
+                            : (compact ? '#94a3b8' : '#4a5568'),
+                          border: compact ? '1px solid #475569' : '1px solid #e2e8f0',
+                          borderRadius: compact ? '3px' : '4px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {pct}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 
                 <div style={{ 
                   fontSize: compact ? '0.5625rem' : '0.625rem', 
                   color: compact ? '#fbbf24' : '#d97706',
-                  marginTop: '0.5rem',
+                  marginTop: '0.625rem',
                   fontWeight: 500
                 }}>
                   ⚠️ Executes immediately at best available price (IOC)

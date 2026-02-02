@@ -155,6 +155,12 @@ export class Orderbook {
             this.asks.splice(idx, 1); // Remove at idx, not shift()
             this.orderMap.delete(bestAsk.id);
           }
+          
+          // Clean up taker dust immediately to prevent 0-contract matches
+          if (order.remainingContractsMicros < MIN_CONTRACT_MICROS) {
+            order.remainingContractsMicros = 0n;
+            break; // Exit loop to prevent trying to match 0 contracts
+          }
         } else {
           break; // No more matches possible
         }
@@ -195,8 +201,7 @@ export class Orderbook {
           const matchContractsMicros = order.remainingContractsMicros < bestBid.remainingContractsMicros
             ? order.remainingContractsMicros
             : bestBid.remainingContractsMicros;
-          
-          // Execution price is maker's price (bid price)
+                    // Execution price is maker's price (bid price)
           const executionYesPts = bestBid.yesPts;
           
           // Calculate cash exchanged
@@ -225,6 +230,12 @@ export class Orderbook {
           if (bestBid.remainingContractsMicros === 0n) {
             this.bids.splice(idx, 1); // Remove at idx, not shift()
             this.orderMap.delete(bestBid.id);
+          }
+          
+          // Clean up taker dust immediately to prevent 0-contract matches
+          if (order.remainingContractsMicros < MIN_CONTRACT_MICROS) {
+            order.remainingContractsMicros = 0n;
+            break; // Exit loop to prevent trying to match 0 contracts
           }
         } else {
           break; // No more matches possible

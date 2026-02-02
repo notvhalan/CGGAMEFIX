@@ -56,8 +56,8 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
     };
   }, [marketId]);
 
-  const bids = orderBook?.bids || [];
-  const asks = orderBook?.asks || [];
+  const bids = (orderBook?.bids || []).filter((b: any) => Number(b.contractsMicros || 0) > 0);
+  const asks = (orderBook?.asks || []).filter((a: any) => Number(a.contractsMicros || 0) > 0);
 
   // Calculate mid price and spread
   const bestBid = Number(bids[0]?.yesPts) || 0;

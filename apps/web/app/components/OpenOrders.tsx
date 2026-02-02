@@ -28,7 +28,7 @@ interface Order {
   marketId: string;
   side: 'FOR' | 'LAY';
   yesPts: number;
-  remainingContractsMicros: string;
+  remainingContracts: string;
   status: string;
   createdAt: string;
 }
@@ -57,7 +57,7 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
         acc[key] = { yesPts: Number(order.yesPts), side: order.side, orders: [], totalContracts: 0 };
       }
       acc[key].orders.push(order);
-      acc[key].totalContracts += Math.round(Number(order.remainingContractsMicros) / 1_000_000);
+      acc[key].totalContracts += Math.round(Number(order.remainingContracts) / 1_000_000);
       return acc;
     }, {} as Record<string, GroupedOrder>);
 
@@ -147,7 +147,7 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
             {g.orders.slice(0, 20).map(o => (
               <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.15rem 0' }}>
                 <span>{o.id.slice(0, 8)}…</span>
-                <span>{Math.round(Number(o.remainingContractsMicros) / 1_000_000)} ctr</span>
+                <span>{Math.round(Number(o.remainingContracts) / 1_000_000)} ctr</span>
                 <span>{new Date(o.createdAt).toLocaleTimeString()}</span>
               </div>
             ))}

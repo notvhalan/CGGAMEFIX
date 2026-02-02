@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from '@remix-run/react';
+import { FiSearch } from 'react-icons/fi';
 import "~/styles/components/search-bar.css";
 
 interface SearchResult {
@@ -109,7 +110,10 @@ export function SearchBar({ compact = false, markets = [] }: SearchBarProps) {
 
   return (
     <div ref={searchRef} style={{ flex: 1, maxWidth: '500px', position: 'relative' }}>
-      <form onSubmit={handleSearch}>
+      <form onSubmit={handleSearch} style={{ position: 'relative' }}>
+        <div style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: '#8b949e', display: 'flex', alignItems: 'center' }}>
+          <FiSearch size={16} />
+        </div>
         <input
           id="global-search"
           type="search"
@@ -119,7 +123,7 @@ export function SearchBar({ compact = false, markets = [] }: SearchBarProps) {
           onKeyDown={handleSearchKeyDown}
           style={{
             width: '100%',
-            padding: compact ? '0.5rem 0.875rem' : '0.625rem 1rem',
+            padding: compact ? '0.5rem 0.875rem 0.5rem 2.5rem' : '0.625rem 1rem 0.625rem 2.5rem',
             background: '#0d1117',
             border: '1px solid #30363d',
             borderRadius: '6px',

@@ -20,12 +20,16 @@ interface BotConfig {
   priceVariance: number; // Price variance in pts (±pts)
   orderDelayMs: number; // Delay between individual order placements (ms)
   orderDelayVarianceMs: number; // Variance for order delay (±ms)
+  refreshIntervalMs: number; // How often to cancel and replace orders (0 = never)
+  priceDriftPts: number; // Max price drift per refresh (±pts)
+  volatility: number; // Price volatility factor (0-1, higher = more volatile)
 }
 
 interface BotState {
   userId: string;
   liveOrders: Array<{ id: string; side: Side; yesPts: bigint }>;
   timeoutId?: NodeJS.Timeout; // Track timeout for cleanup
+  currentMidPts: bigint; // Current mid price for this bot (drifts over time)
 }
 
 @Injectable()
@@ -54,6 +58,9 @@ export class LiquidityBotsService {
     priceVariance?: number;
     orderDelayMs?: number;
     orderDelayVarianceMs?: number;
+    refreshIntervalMs?: number;
+    priceDriftPts?: number;
+    volatility?: number;
   }) {
     // Stop any existing bots first
     this.stopBots();
@@ -85,6 +92,9 @@ export class LiquidityBotsService {
       priceVariance: params.priceVariance || 0,
       orderDelayMs: params.orderDelayMs || 0,
       orderDelayVarianceMs: params.orderDelayVarianceMs || 0,
+      refreshIntervalMs: params.refreshIntervalMs || 0,
+      priceDriftPts: params.priceDriftPts || 0,
+      volatility: params.volatility || 0,
     };
 
     this.logger.info(`Creating ${params.userCount} bot users...`);
@@ -128,6 +138,7 @@ export class LiquidityBotsService {
         this.bots.push({
           userId,
           liveOrders: [],
+          currentMidPts: BigInt(params.midYesPts),
         });
 
         this.logger.info(`Created bot user: ${email} (${userId}) with balance £${fundResult.rows[0].balance}`);
@@ -189,17 +200,84 @@ export class LiquidityBotsService {
 
     const config = this.config;
     
-    // Place initial ladder only - no periodic refresh
+    // Place initial ladder
     await this.quoteOnce(bot, config).catch(err => 
       this.logger.error(`Bot ${bot.userId} order placement failed:`, err)
     );
 
     this.logger.info(`Bot ${bot.userId} completed initial order placement`);
+    
+    // Schedule periodic refresh if enabled
+    if (config.refreshIntervalMs > 0) {
+      this.scheduleRefresh(bot);
+    }
+  }
+
+  private scheduleRefresh(bot: BotState) {
+    if (!this.config || this.stopping) return;
+    
+    const config = this.config;
+    
+    bot.timeoutId = setTimeout(async () => {
+      if (this.stopping) return;
+      
+      try {
+        // Cancel existing orders
+        await this.cancelBotOrders(bot);
+        
+        // Drift the mid price
+        this.driftPrice(bot, config);
+        
+        // Place new orders at new price
+        await this.quoteOnce(bot, config);
+        
+        // Schedule next refresh
+        this.scheduleRefresh(bot);
+      } catch (error) {
+        this.logger.error(`Bot ${bot.userId} refresh failed:`, error);
+        // Still schedule next refresh even on error
+        this.scheduleRefresh(bot);
+      }
+    }, config.refreshIntervalMs);
+  }
+
+  private async cancelBotOrders(bot: BotState) {
+    const orderIds = bot.liveOrders.map(o => o.id);
+    bot.liveOrders = [];
+    
+    for (const orderId of orderIds) {
+      try {
+        // Publish cancel command to matching engine
+        this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, {
+          orderId,
+          userId: bot.userId,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        this.logger.warn(`Failed to cancel bot order ${orderId}:`, error);
+      }
+    }
+  }
+
+  private driftPrice(bot: BotState, config: BotConfig) {
+    if (config.priceDriftPts <= 0) return;
+    
+    // Random walk with mean reversion
+    const drift = config.priceDriftPts * (Math.random() * 2 - 1) * (config.volatility + 0.1);
+    const meanReversion = (Number(config.midYesPts) - Number(bot.currentMidPts)) * 0.1; // 10% pull back to original mid
+    
+    const newMid = bot.currentMidPts + BigInt(Math.round(drift + meanReversion));
+    bot.currentMidPts = this.clampYesPts(newMid);
+    
+    this.logger.debug(`Bot ${bot.userId} mid price drifted to ${(Number(bot.currentMidPts) / 10_000_000 * 100).toFixed(2)}%`);
   }
 
   private async quoteOnce(bot: BotState, config: BotConfig) {
     // Check if we're stopping
     if (this.stopping) return;
+    
+    // Use bot's current mid price (which drifts over time)
+    const currentMid = bot.currentMidPts;
     
     // Place ladder with delays between orders
     for (let i = 0; i < config.levels; i++) {
@@ -212,8 +290,8 @@ export class LiquidityBotsService {
         ? Math.floor(Math.random() * config.priceVariance * 2 - config.priceVariance)
         : 0;
       
-      const bidYes = this.clampYesPts(config.midYesPts - offset + BigInt(priceVariance));
-      const askYes = this.clampYesPts(config.midYesPts + offset + BigInt(priceVariance));
+      const bidYes = this.clampYesPts(currentMid - offset + BigInt(priceVariance));
+      const askYes = this.clampYesPts(currentMid + offset + BigInt(priceVariance));
 
       // Apply size variance
       const sizeVariance = config.sizeVariance > 0
@@ -324,6 +402,9 @@ export class LiquidityBotsService {
       if (timeInForce === 'GTC') {
         bot.liveOrders.push({ id: orderId, side, yesPts });
       }
+      
+      // Broadcast orderbook update for each bot order
+      this.requestBroadcast(marketId);
     } catch (error) {
       this.logger.error(`Failed to place bot order:`, error);
     }

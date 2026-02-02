@@ -135,9 +135,9 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
           type="number"
           name="sizeContracts"
           min="0.1"
-          max="10"
-          step="0.1"
-          defaultValue="1.5"
+          max="20"
+          step="0.5"
+          defaultValue="5.0"
           disabled={disabled}
           style={{
             width: '100%',
@@ -223,11 +223,11 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             type="number"
             name="orderDelayMs"
             min="0"
-            max="2000"
-            step="50"
-            defaultValue="100"
+            max="30000"
+            step="1000"
+            defaultValue="12000"
             disabled={disabled}
-            placeholder="100"
+            placeholder="12000"
             style={{
               width: '100%',
               padding: '0.625rem',
@@ -239,7 +239,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             }}
           />
           <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
-            Time delay between placing each order. With 8 levels (16 orders) and 100ms delay, orders spread over ~1.6 seconds. Set to 0 for instant placement.
+            Time delay between placing each order. With 8 levels (16 orders) and 12000ms delay, orders spread over ~3.2 minutes. Set to 0 for instant placement.
           </div>
         </div>
 
@@ -257,11 +257,11 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             type="number"
             name="orderDelayVarianceMs"
             min="0"
-            max="500"
-            step="25"
-            defaultValue="50"
+            max="10000"
+            step="500"
+            defaultValue="2000"
             disabled={disabled}
-            placeholder="50"
+            placeholder="2000"
             style={{
               width: '100%',
               padding: '0.625rem',
@@ -273,7 +273,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             }}
           />
           <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
-            Random variance added to order delay. Example: 100ms ± 50ms = orders delayed 50-150ms each. Makes bot timing less predictable.
+            Random variance added to order delay. Example: 12000ms ± 2000ms = orders delayed 10-14 seconds each. Makes bot timing less predictable.
           </div>
         </div>
 
@@ -345,6 +345,125 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
           </div>
         </div>
       </div>
+
+      {/* Dynamic Price Movement */}
+      <div style={{ 
+        borderTop: '1px solid #334155', 
+        paddingTop: '1rem', 
+        marginTop: '1rem',
+        marginBottom: '1rem'
+      }}>
+        <h4 style={{ 
+          fontSize: '0.875rem', 
+          fontWeight: 600, 
+          color: '#94a3b8',
+          marginBottom: '1rem'
+        }}>
+          🎲 Dynamic Price Movement
+        </h4>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ 
+            display: 'block', 
+            marginBottom: '0.5rem',
+            fontWeight: 600,
+            fontSize: '0.875rem',
+            color: '#cbd5e1'
+          }}>
+            Refresh Interval (ms)
+          </label>
+          <input
+            type="number"
+            name="refreshIntervalMs"
+            min="0"
+            max="60000"
+            step="1000"
+            defaultValue="5000"
+            disabled={disabled}
+            placeholder="0 = never refresh"
+            style={{
+              width: '100%',
+              padding: '0.625rem',
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: '6px',
+              color: '#e2e8f0',
+              fontSize: '0.875rem'
+            }}
+          />
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            How often bots cancel and replace orders with new prices. Example: 5000ms = refresh every 5 seconds. Set to 0 to disable dynamic pricing.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ 
+            display: 'block', 
+            marginBottom: '0.5rem',
+            fontWeight: 600,
+            fontSize: '0.875rem',
+            color: '#cbd5e1'
+          }}>
+            Price Drift (±pts per refresh)
+          </label>
+          <input
+            type="number"
+            name="priceDriftPts"
+            min="0"
+            max="1000000"
+            step="50000"
+            defaultValue="200000"
+            disabled={disabled}
+            placeholder="0 = no drift"
+            style={{
+              width: '100%',
+              padding: '0.625rem',
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: '6px',
+              color: '#e2e8f0',
+              fontSize: '0.875rem'
+            }}
+          />
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            Maximum price movement per refresh. Example: 200000 = ±2% per refresh. Creates realistic price fluctuations. Includes mean reversion to prevent runaway drift.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ 
+            display: 'block', 
+            marginBottom: '0.5rem',
+            fontWeight: 600,
+            fontSize: '0.875rem',
+            color: '#cbd5e1'
+          }}>
+            Volatility (0-1)
+          </label>
+          <input
+            type="number"
+            name="volatility"
+            min="0"
+            max="1"
+            step="0.1"
+            defaultValue="0.3"
+            disabled={disabled}
+            placeholder="0 = calm, 1 = very volatile"
+            style={{
+              width: '100%',
+              padding: '0.625rem',
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: '6px',
+              color: '#e2e8f0',
+              fontSize: '0.875rem'
+            }}
+          />
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '0.25rem', lineHeight: '1.4' }}>
+            Price volatility factor. Higher = more dramatic price swings. Lower = gentler movements. Multiplies drift amount.
+          </div>
+        </div>
+      </div>
     </>
   );
 }
@@ -393,7 +512,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const midPrice = Number(formData.get('midPrice') || 50);
     const spread = Number(formData.get('spread') || 2.5);
     const levels = Number(formData.get('levels') || 8);
-    const sizeContracts = Number(formData.get('sizeContracts') || 1.5);
+    const sizeContracts = Number(formData.get('sizeContracts') || 5.0);
     const takerChance = Number(formData.get('takerChance') || 10);
     
     // Variance parameters
@@ -401,6 +520,11 @@ export async function action({ request }: ActionFunctionArgs) {
     const priceVariance = Number(formData.get('priceVariance') || 0);
     const orderDelayMs = Number(formData.get('orderDelayMs') || 0);
     const orderDelayVarianceMs = Number(formData.get('orderDelayVarianceMs') || 0);
+    
+    // Dynamic price movement parameters
+    const refreshIntervalMs = Number(formData.get('refreshIntervalMs') || 0);
+    const priceDriftPts = Number(formData.get('priceDriftPts') || 0);
+    const volatility = Number(formData.get('volatility') || 0);
 
     // Convert percentage values to points (scale of 10,000,000 = 100%)
     const midYesPts = Math.round((midPrice / 100) * 10_000_000);
@@ -427,6 +551,9 @@ export async function action({ request }: ActionFunctionArgs) {
           priceVariance,
           orderDelayMs,
           orderDelayVarianceMs,
+          refreshIntervalMs,
+          priceDriftPts,
+          volatility,
         }),
       });
 

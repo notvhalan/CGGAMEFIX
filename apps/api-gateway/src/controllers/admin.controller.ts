@@ -51,6 +51,9 @@ export class AdminController {
       priceVariance?: number;
       orderDelayMs?: number;
       orderDelayVarianceMs?: number;
+      refreshIntervalMs?: number;
+      priceDriftPts?: number;
+      volatility?: number;
     },
     @Req() req: FastifyRequest & { session: any },
   ) {

@@ -178,7 +178,23 @@ export default function Dashboard() {
 
   const availablePence = wallet?.balance ? Math.round(wallet.balance * 100) : 0;
   const reservedPence = wallet?.lockedBalance ? Math.round(wallet.lockedBalance * 100) : 0;
-  const totalBalance = availablePence + reservedPence;
+  
+  // Calculate position value at mark price (same as in loader)
+  const positionValuePence = positions.reduce((sum: number, p: any) => {
+    const micros = BigInt(p.netContractsMicros || '0');
+    if (micros === 0n) return sum;
+    
+    const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
+    const markPrice = (p.markYesPts || 0) / 100_000 / 100; // Convert to decimal price
+    const isLong = micros > 0n;
+    
+    // Position value = what you could sell it for at mark price
+    const value = contracts * (isLong ? markPrice : (1 - markPrice)) * 100; // Convert to pence
+    return sum + value;
+  }, 0);
+  
+  // Total equity = cash + reserved + position value
+  const totalBalance = availablePence + reservedPence + positionValuePence;
   const totalPositions = positions.length;
   
   // Calculate real metrics from positions

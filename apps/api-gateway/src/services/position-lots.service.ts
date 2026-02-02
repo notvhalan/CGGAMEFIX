@@ -178,9 +178,8 @@ export class PositionLotsService {
       remainingToClose -= closeQty;
     }
 
-    // Case 3: If we have contracts left after closing all opposite lots, open a new lot
+    // Case 3: Crossing zero - close all opposite lots, then open new lot with remainder
     if (remainingToClose > 0n) {
-      this.logger.info(`Opened new lot with remaining ${remainingToClose} contracts (crossed zero)`);
       await this.openLot(userId, marketId, tradeId, side, remainingToClose, tradePriceYesPts, executedAt);
     }
 
@@ -208,6 +207,10 @@ export class PositionLotsService {
     );
 
     this.logger.info(`Opened lot: user=${userId}, market=${marketId}, side=${side}, contracts=${contractsMicros}, entry=${entryYesPts}`);
+    
+    // NOTE: No margin locking needed for positions
+    // Both Buy YES (FOR) and Sell YES (LAY) pay their max loss upfront during settlement
+    // locked_balance is only for pending orders, not open positions
   }
 
   /**

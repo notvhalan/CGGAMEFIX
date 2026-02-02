@@ -203,21 +203,10 @@ export class CashoutController {
         : yesPts;
       const maxLiabilityPence = Number((BigInt(maxLossPerContract) * closeContractsMicros * BigInt(CONTRACT_PAYOUT_PENCE)) / (BigInt(PRICE_SCALE) * BigInt(CONTRACT_SCALE)));
 
-      // Check balance
-      const walletResult = await this.databaseService.query(
-        'SELECT balance FROM wallets WHERE user_id = $1',
-        [userId]
-      );
-      if (walletResult.rows.length === 0) {
-        throw new Error('Wallet not found');
-      }
-      const balancePence = Math.floor(parseFloat(walletResult.rows[0].balance) * 100);
-      if (balancePence < maxLiabilityPence) {
-        throw new Error(`Insufficient balance. Required: £${(maxLiabilityPence / 100).toFixed(2)}, Available: £${(balancePence / 100).toFixed(2)}`);
-      }
-
-      // Lock balance
-      await this.databaseService.lockBalance(userId, maxLiabilityPence);
+      // REDUCE-ONLY: No need to lock additional balance for closing orders
+      // The margin is already locked in the existing position
+      // Locking here would double-count and cause "2× to reserved balance" bug
+      this.logger.info(`Cashout close order: skipping lockBalance (reduce-only, existing position margin covers this)`);
 
       // Create IOC order in DB
       const orderId = uuidv4();

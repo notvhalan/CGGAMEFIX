@@ -196,6 +196,14 @@ export async function getMyOrders(request: Request, limit = 50) {
   });
 }
 
+// User Trades API
+export async function getMyTrades(request: Request, limit = 100) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{ trades: any[] }>(`/v1/orders/trades?limit=${limit}`, {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+}
+
 // User Positions API
 export async function getMyPositions(request: Request) {
   const cookie = request.headers.get('Cookie');

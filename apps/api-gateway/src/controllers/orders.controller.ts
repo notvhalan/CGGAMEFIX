@@ -20,6 +20,27 @@ export class OrdersController {
     private readonly orderBookBroadcast: OrderBookBroadcastService,
   ) {}
 
+  @Get('trades')
+  async getMyTrades(
+    @Req() req: FastifyRequest & { session: any },
+    @Query('limit') limit?: string,
+  ) {
+    try {
+      const userId = req.session?.userId;
+      if (!userId) {
+        throw new UnauthorizedException('User not authenticated');
+      }
+
+      const tradeLimit = limit ? parseInt(limit) : 100;
+      const trades = await this.databaseService.getTradesByUserId(userId, tradeLimit);
+      
+      return { trades };
+    } catch (error) {
+      this.logger.error('Failed to fetch user trades', error);
+      throw error;
+    }
+  }
+
   @Get()
   async getOrders(
     @Req() req: FastifyRequest & { session: any },

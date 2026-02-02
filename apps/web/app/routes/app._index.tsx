@@ -51,10 +51,27 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const history = historyResponse.status === 'fulfilled' ? historyResponse.value : null;
     const positions = positionsResponse.status === 'fulfilled' ? positionsResponse.value || [] : [];
 
-    // Use real history if available, otherwise generate mock data
+    // Calculate equity = available + locked (orders) + position value
     const availablePence = wallet?.balance ? Math.round(wallet.balance * 100) : 0;
     const reservedPence = wallet?.lockedBalance ? Math.round(wallet.lockedBalance * 100) : 0;
-    const equityPence = availablePence + reservedPence;
+    
+    // Calculate total position value at mark price
+    // For BUY YES (positive contracts): value = contracts * mark_price
+    // For BUY NO (negative contracts): value = contracts * (1 - mark_price)
+    const positionValuePence = positions.reduce((sum: number, p: any) => {
+      const micros = BigInt(p.netContractsMicros || '0');
+      if (micros === 0n) return sum;
+      
+      const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
+      const markPrice = (p.markYesPts || 0) / 100_000 / 100; // Convert to decimal price
+      const isLong = micros > 0n;
+      
+      // Position value = what you could sell it for at mark price
+      const value = contracts * (isLong ? markPrice : (1 - markPrice)) * 100; // Convert to pence
+      return sum + value;
+    }, 0);
+    
+    const equityPence = availablePence + reservedPence + positionValuePence;
 
     let equityData, availableData, reservedData;
     
@@ -205,7 +222,11 @@ export default function Dashboard() {
             borderRadius: '6px', 
             padding: '0.875rem 1rem',
             cursor: 'pointer',
-            transition: 'border-color 0.15s'
+            transition: 'border-color 0.15s',
+            minHeight: '64px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center'
           }}>
             <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
               Equity
@@ -315,7 +336,7 @@ export default function Dashboard() {
         
         {/* HERO CARD: Portfolio Snapshot */}
         {/* Top Left - 8 cols */}
-        <div className="terminal-span-8 terminal-panel" style={{ position: 'relative', overflow: 'hidden' }}>
+        <div className="terminal-span-8 terminal-panel" style={{ position: 'relative', overflow: 'hidden', minHeight: '350px' }}>
           <div className="terminal-panel-header" style={{ position: 'relative', zIndex: 10, background: 'transparent', borderBottom: 'none' }}>
             <h2 className="terminal-panel-title">Balance</h2>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -349,7 +370,7 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-          <div className="terminal-panel-body" style={{ position: 'relative', height: '280px', padding: 0 }}>
+          <div className="terminal-panel-body" style={{ position: 'relative', height: '290px', padding: 0 }}>
             {/* Full Height Chart */}
             <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
               <BalanceChart 
@@ -377,7 +398,7 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : (
-              <div style={{ maxHeight: '260px', overflow: 'auto' }}>
+              <div style={{ maxHeight: '340px', overflow: 'auto', paddingRight: '0.5rem' }}>
                 {positions.slice(0, 5).map((p: any, i: number) => {
                   const micros = BigInt(p.netContractsMicros || '0');
                   const isLong = micros > 0n;
@@ -456,13 +477,13 @@ export default function Dashboard() {
              <table className="terminal-table" style={{ fontSize: '0.8125rem' }}>
                <thead>
                  <tr>
-                   <th style={{ padding: '0.5rem 0.75rem' }}>Market</th>
-                   <th style={{ padding: '0.5rem 0.5rem' }}>Side</th>
-                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Size</th>
-                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Entry</th>
-                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Mark</th>
-                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>P&L</th>
-                   <th className="align-right" style={{ padding: '0.5rem 0.75rem' }}>Actions</th>
+                   <th style={{ padding: '0.375rem 0.75rem' }}>Market</th>
+                   <th style={{ padding: '0.375rem 0.5rem' }}>Side</th>
+                   <th className="align-right" style={{ padding: '0.375rem 0.5rem' }}>Size</th>
+                   <th className="align-right" style={{ padding: '0.375rem 0.5rem' }}>Entry</th>
+                   <th className="align-right" style={{ padding: '0.375rem 0.5rem' }}>Mark</th>
+                   <th className="align-right" style={{ padding: '0.375rem 0.5rem' }}>P&L</th>
+                   <th className="align-right" style={{ padding: '0.375rem 0.75rem' }}>Actions</th>
                  </tr>
                </thead>
                <tbody>
@@ -472,7 +493,7 @@ export default function Dashboard() {
                        No active positions — <Link to="/app/markets" style={{ color: '#667eea', textDecoration: 'none' }}>Browse markets</Link>
                      </td>
                    </tr>
-                 ) : (positions.slice(0, 6).map((p: any, i: number) => {
+                 ) : (positions.slice(0, 4).map((p: any, i: number) => {
                     const micros = BigInt(p.netContractsMicros);
                     const isLong = micros > 0n;
                     const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
@@ -487,19 +508,19 @@ export default function Dashboard() {
 
                     return (
                    <tr key={i}>
-                     <td className="td-mono" style={{ color: '#e4e8eb', padding: '0.5rem 0.75rem', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                     <td className="td-mono" style={{ color: '#e4e8eb', padding: '0.375rem 0.75rem', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                        <Link to={`/app/markets/${p.marketId}`} style={{ color: 'inherit', textDecoration: 'none' }}>
                          {p.marketQuestion}
                        </Link>
                      </td>
-                     <td style={{ padding: '0.5rem 0.5rem' }}><span className={`pill ${pillClass}`} style={{ fontSize: '0.6875rem', padding: '0.125rem 0.375rem' }}>{side}</span></td>
-                     <td className="align-right td-mono" style={{ padding: '0.5rem 0.5rem' }}>£{cost.toFixed(2)}</td>
-                     <td className="align-right td-mono" style={{ padding: '0.5rem 0.5rem' }}>{avgPrice.toFixed(1)}%</td>
-                     <td className="align-right td-mono" style={{ padding: '0.5rem 0.5rem' }}>{mark.toFixed(1)}%</td>
-                     <td className="align-right td-mono" style={{ color: pnlValue >= 0 ? '#10b981' : '#ef4444', padding: '0.5rem 0.5rem', fontWeight: 600 }}>
+                     <td style={{ padding: '0.375rem 0.5rem' }}><span className={`pill ${pillClass}`} style={{ fontSize: '0.6875rem', padding: '0.125rem 0.375rem' }}>{side}</span></td>
+                     <td className="align-right td-mono" style={{ padding: '0.375rem 0.5rem' }}>£{cost.toFixed(2)}</td>
+                     <td className="align-right td-mono" style={{ padding: '0.375rem 0.5rem' }}>{avgPrice.toFixed(1)}%</td>
+                     <td className="align-right td-mono" style={{ padding: '0.375rem 0.5rem' }}>{mark.toFixed(1)}%</td>
+                     <td className="align-right td-mono" style={{ color: pnlValue >= 0 ? '#10b981' : '#ef4444', padding: '0.375rem 0.5rem', fontWeight: 600 }}>
                         {pnlValue >= 0 ? '+' : '-'}£{Math.abs(pnlValue).toFixed(2)}
                      </td>
-                     <td className="align-right" style={{ padding: '0.5rem 0.75rem' }}>
+                     <td className="align-right" style={{ padding: '0.375rem 0.75rem' }}>
                         <div style={{ display: 'flex', gap: '0.375rem', justifyContent: 'flex-end' }}>
                           <Link 
                             to={`/app/markets/${p.marketId}`} 
@@ -566,7 +587,7 @@ export default function Dashboard() {
                     <div 
                       key={o.id || i} 
                       style={{ 
-                        padding: '0.5rem 0.75rem', 
+                        padding: '0.5rem 1rem 0.5rem 0.75rem', 
                         borderBottom: '1px solid #2d3748',
                         display: 'flex',
                         justifyContent: 'space-between',
@@ -635,7 +656,7 @@ export default function Dashboard() {
                 <div 
                   key={m.id}
                   style={{ 
-                    padding: '0.5rem 0.75rem', 
+                    padding: '0.5rem 1rem 0.5rem 0.75rem', 
                     borderBottom: '1px solid #2d3748',
                     display: 'flex',
                     justifyContent: 'space-between',

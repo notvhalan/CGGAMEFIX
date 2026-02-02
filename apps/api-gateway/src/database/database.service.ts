@@ -625,6 +625,51 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Get trades for a user (where they were maker or taker)
+   * Includes realized P&L from position lots when the trade opened a lot
+   */
+  async getTradesByUserId(userId: string, limit = 100): Promise<any[]> {
+    const result = await this.pool.query(
+      `SELECT 
+        t.id, 
+        t.market_id,
+        m.name as market_question,
+        t.price_yes_pts as yes_pts,
+        t.notional_pence as cost_pence,
+        t.qty_micros as contracts,
+        t.maker_order_id,
+        t.taker_order_id,
+        t.maker_user_id as maker_id,
+        t.taker_user_id as taker_id,
+        t.maker_fee_pence,
+        t.taker_fee_pence,
+        t.side,
+        t.executed_at,
+        t.created_at,
+        CASE 
+          WHEN t.maker_user_id = $1 THEN 'maker'
+          WHEN t.taker_user_id = $1 THEN 'taker'
+        END as user_role,
+        CASE 
+          WHEN t.maker_user_id = $1 THEN t.maker_fee_pence
+          WHEN t.taker_user_id = $1 THEN t.taker_fee_pence
+        END as user_fee_pence,
+        COALESCE(pl.realized_pnl_pence, 0) as realized_pnl_pence,
+        pl.qty_opened_micros as lot_opened_micros,
+        pl.qty_remaining_micros as lot_remaining_micros,
+        pl.side as lot_side
+      FROM trades t
+      LEFT JOIN markets m ON t.market_id = m.id
+      LEFT JOIN position_lots pl ON pl.opened_from_trade_id = t.id AND pl.user_id = $1
+      WHERE t.maker_user_id = $1 OR t.taker_user_id = $1
+      ORDER BY t.executed_at DESC 
+      LIMIT $2`,
+      [userId, limit]
+    );
+    return result.rows;
+  }
+
+  /**
    * Execute a raw SQL query
    */
   async query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }> {

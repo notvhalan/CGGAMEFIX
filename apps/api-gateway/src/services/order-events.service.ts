@@ -226,41 +226,103 @@ export class OrderEventsService implements OnModuleInit {
 
     const lockPortionPounds = this.penceToPoundsStr(lockPortionPence);
 
-    // 4) Apply wallet settlement based on side
-    if (side === 'FOR') {
-      // FOR: buyer pays notional + fee, refund unused lock
-      const spendPence = notionalPence + feePence;
-      const refundPence = lockPortionPence - spendPence; // Price improvement if positive
+    // Get wallet_id for ledger entry
+    const walletResult = await client.query(
+      `SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = 'GBP'`,
+      [userId]
+    );
+    const walletId = walletResult.rows[0]?.id;
+    const balanceBefore = parseFloat(walletResult.rows[0]?.balance || '0');
 
-      const refundPounds = this.penceToPoundsStr(refundPence);
+    // 4) Binary collateralized settlement: BUY YES and BUY NO (not buyer/seller)
+    // 
+    // Each contract pays out 100p (£1.00) total. At open, both sides contribute collateral:
+    // - BUY YES contributes: notionalPence (the YES cost)
+    // - BUY NO contributes: (total payout - notionalPence) = the NO cost
+    //
+    // Both REDUCE available cash at open. Only closing increases cash.
+    // 
+    // Process:
+    // 1. Unlock the order lock (move from locked back to available)
+    // 2. Debit the collateral contribution (INTO escrow/position)
+    // 3. Position value increases by same amount → equity unchanged
+    
+    // Calculate total payout for this fill (£1.00 per contract)
+    const CONTRACT_SCALE = 1_000_000n; // micros
+    const CONTRACT_PAYOUT_PENCE = 100n; // £1.00 per contract
+    const totalPayoutPence = (filledQtyMicros * CONTRACT_PAYOUT_PENCE) / CONTRACT_SCALE;
+    
+    if (side === 'FOR') {
+      // BUY YES: Contribute YES cost (notional + fee) into escrow
+      const yesContributionPence = notionalPence + feePence;
+      const yesContributionPounds = this.penceToPoundsStr(yesContributionPence);
 
       await client.query(
         `UPDATE wallets
          SET locked_balance = locked_balance - $1::numeric,
-             balance = balance + $2::numeric,
+             balance = balance + $1::numeric - $2::numeric,
              updated_at = NOW()
          WHERE user_id = $3
            AND currency = 'GBP'
            AND locked_balance >= $1::numeric`,
-        [lockPortionPounds, refundPounds, userId]
+        [lockPortionPounds, yesContributionPounds, userId]
       );
 
-      this.logger.log(`Settled FOR ${orderId}: locked-=${lockPortionPounds} refund=${refundPounds}`);
+      // Write ledger entry
+      const balanceAfter = balanceBefore + Number(lockPortionPounds) - Number(yesContributionPounds);
+      const debit = Number(yesContributionPounds);
+      
+      await client.query(
+        `INSERT INTO ledger_entries (user_id, wallet_id, entry_type, debit, credit, balance, description, created_at)
+         VALUES ($1, $2, 'TRADE_SETTLEMENT', $3, $4, $5, $6, NOW())`,
+        [
+          userId,
+          walletId,
+          debit,
+          0,
+          balanceAfter,
+          `Trade ${tradeId}: BUY YES ${orderId}, unlocked=${lockPortionPounds}, paid=${yesContributionPounds} (YES cost+fee)`
+        ]
+      );
+
+      this.logger.log(`Settled BUY YES ${orderId}: unlocked=${lockPortionPounds} paid=${yesContributionPounds}`);
     } else {
-      // LAY: seller receives premium, keeps liability locked as position margin
-      const premiumPence = notionalPence - feePence;
-      const premiumPounds = this.penceToPoundsStr(premiumPence);
+      // BUY NO (UI "Sell YES"): Contribute NO cost into escrow
+      // NO cost = total payout - YES cost = (100p per contract) - notionalPence
+      const noContributionPence = totalPayoutPence - notionalPence + feePence; // NO cost + fee
+      const noContributionPounds = this.penceToPoundsStr(noContributionPence);
+
+      this.logger.log(`BUY NO settlement: unlocked=${lockPortionPounds}, paid=${noContributionPounds} (NO cost+fee), totalPayout=${this.penceToPoundsStr(totalPayoutPence)}, notional=${this.penceToPoundsStr(notionalPence)}`);
 
       await client.query(
         `UPDATE wallets
-         SET balance = balance + $1::numeric,
+         SET locked_balance = locked_balance - $1::numeric,
+             balance = balance + $1::numeric - $2::numeric,
              updated_at = NOW()
-         WHERE user_id = $2
-           AND currency = 'GBP'`,
-        [premiumPounds, userId]
+         WHERE user_id = $3
+           AND currency = 'GBP'
+           AND locked_balance >= $1::numeric`,
+        [lockPortionPounds, noContributionPounds, userId]
       );
 
-      this.logger.log(`Settled LAY ${orderId}: premium=${premiumPounds} (lock kept as margin)`);
+      // Write ledger entry
+      const balanceAfter = balanceBefore + Number(lockPortionPounds) - Number(noContributionPounds);
+      const debit = Number(noContributionPounds);
+      
+      await client.query(
+        `INSERT INTO ledger_entries (user_id, wallet_id, entry_type, debit, credit, balance, description, created_at)
+         VALUES ($1, $2, 'TRADE_SETTLEMENT', $3, $4, $5, $6, NOW())`,
+        [
+          userId,
+          walletId,
+          debit,
+          0,
+          balanceAfter,
+          `Trade ${tradeId}: BUY NO ${orderId}, unlocked=${lockPortionPounds}, paid=${noContributionPounds} (NO cost+fee)`
+        ]
+      );
+
+      this.logger.log(`Settled BUY NO ${orderId}: unlocked=${lockPortionPounds} paid=${noContributionPounds}`);
     }
   }
 

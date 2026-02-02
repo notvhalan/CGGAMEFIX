@@ -430,7 +430,7 @@ export default function MarketDetail() {
       <div style={{ 
         display: 'grid',
         gridTemplateColumns: 'minmax(520px, 1fr) 360px 340px',
-        gridTemplateRows: 'calc(100vh - 120px - 240px) 240px',
+        gridTemplateRows: 'calc(100vh - 120px - 120px) 120px',
         gap: '1px',
         background: '#2d3748',
         height: 'calc(100vh - 120px)',
@@ -602,28 +602,28 @@ export default function MarketDetail() {
           gridColumn: '1 / -1',
           background: '#1a1f26',
           borderTop: '1px solid #2d3748',
-          height: '240px',
+          height: '120px',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden'
         }}>
           <div style={{ 
-            padding: '0.5rem 0.875rem',
+            padding: '0.35rem 0.75rem',
             borderBottom: '1px solid #2d3748',
-            fontSize: '0.75rem',
+            fontSize: '0.6875rem',
             fontWeight: 700,
             color: '#94a3b8',
             textTransform: 'uppercase',
-            letterSpacing: '0.05em',
+            letterSpacing: '0.04em',
             display: 'flex',
-            gap: '1.5rem',
+            gap: '1.25rem',
             flexShrink: 0
           }}>
             <span 
               style={{ 
                 color: activeTab === 'trades' ? '#667eea' : '#94a3b8',
                 borderBottom: activeTab === 'trades' ? '2px solid #667eea' : 'none',
-                paddingBottom: '0.5rem',
+                paddingBottom: '0.35rem',
                 cursor: 'pointer'
               }}
               onClick={() => setActiveTab('trades')}
@@ -634,7 +634,7 @@ export default function MarketDetail() {
               style={{ 
                 color: activeTab === 'orders' ? '#667eea' : '#94a3b8',
                 borderBottom: activeTab === 'orders' ? '2px solid #667eea' : 'none',
-                paddingBottom: '0.5rem',
+                paddingBottom: '0.35rem',
                 cursor: 'pointer'
               }}
               onClick={() => setActiveTab('orders')}
@@ -645,7 +645,7 @@ export default function MarketDetail() {
               style={{ 
                 color: activeTab === 'positions' ? '#667eea' : '#94a3b8',
                 borderBottom: activeTab === 'positions' ? '2px solid #667eea' : 'none',
-                paddingBottom: '0.5rem',
+                paddingBottom: '0.35rem',
                 cursor: 'pointer'
               }}
               onClick={() => {
@@ -657,7 +657,7 @@ export default function MarketDetail() {
               Positions
             </span>
           </div>
-          <div style={{ flex: 1, overflow: 'auto', padding: activeTab === 'orders' ? '0.875rem' : '0' }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: activeTab === 'orders' ? '0.65rem' : '0' }}>
             {activeTab === 'trades' && <TradesTape trades={trades} marketId={marketId} compact={true} />}
             {activeTab === 'orders' && <OpenOrders orders={userOrders} />}
           </div>

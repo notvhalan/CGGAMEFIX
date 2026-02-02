@@ -388,7 +388,7 @@ export default function MarketDetail() {
       <div style={{ 
         display: 'grid',
         gridTemplateColumns: 'minmax(520px, 1fr) 360px 340px',
-        gridTemplateRows: 'calc(100vh - 120px - 240px) 240px',
+        gridTemplateRows: 'calc(100vh - 120px - 180px) 180px',
         gap: '1px',
         background: '#2d3748',
         height: 'calc(100vh - 120px)',
@@ -568,7 +568,7 @@ export default function MarketDetail() {
           gridColumn: '1 / -1',
           background: '#1a1f26',
           borderTop: '1px solid #2d3748',
-          height: '240px',
+          height: '180px',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden'

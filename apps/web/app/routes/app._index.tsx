@@ -1,10 +1,10 @@
-import { json, type LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, Link } from "@remix-run/react";
-import { useState, useEffect } from "react";
-import { getWallet, getMarkets, getMyOrders, getBalanceHistory, getMyPositions } from "~/lib/api.server";
+import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
+import { useLoaderData, Link, Form, useNavigation } from "@remix-run/react";
+import { useState } from "react";
+import { getWallet, getMarkets, getMyOrders, getBalanceHistory, getMyPositions, cancelOrder } from "~/lib/api.server";
 import { formatPence } from "~/lib/format";
 import { BalanceChart } from "~/components/dashboard/BalanceChart";
-import { SearchBar } from "~/components/layout/SearchBar";
+import { X } from "lucide-react";
 import "~/styles/pages/dashboard.css";
 import "~/styles/components/panels.css";
 import "~/styles/components/metrics.css";
@@ -52,8 +52,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const positions = positionsResponse.status === 'fulfilled' ? positionsResponse.value || [] : [];
 
     // Use real history if available, otherwise generate mock data
-    const availablePence = wallet?.balancePence ?? 0;
-    const reservedPence = wallet?.reservedPence ?? 0;
+    const availablePence = wallet?.balance ? Math.round(wallet.balance * 100) : 0;
+    const reservedPence = wallet?.lockedBalance ? Math.round(wallet.lockedBalance * 100) : 0;
     const equityPence = availablePence + reservedPence;
 
     let equityData, availableData, reservedData;
@@ -103,7 +103,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return json({ 
       wallet, 
       markets,
-      orders: orders.filter((o: any) => o.status === 'open' || o.status === 'partial').slice(0, 10),
+      orders: orders.filter((o: any) => {
+        const status = (o.status || '').toLowerCase();
+        return status === 'open' || status === 'partial';
+      }).slice(0, 10),
       positions,
       timestamp: new Date().toISOString(),
       equityData,
@@ -127,48 +130,187 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 }
 
+export async function action({ request }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'cancelOrder') {
+    const orderId = formData.get('orderId') as string;
+    if (orderId) {
+      try {
+        await cancelOrder(request, orderId);
+        return json({ success: true, message: 'Order cancelled' });
+      } catch (error) {
+        return json({ success: false, message: 'Failed to cancel order' }, { status: 500 });
+      }
+    }
+  }
+
+  return json({ success: false, message: 'Invalid action' });
+}
+
 export default function Dashboard() {
   const { wallet, markets, orders, positions, equityData, availableData, reservedData, timeRange } = useLoaderData<typeof loader>();
-  const [watchlist, setWatchlist] = useState<string[]>([]);
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state === 'submitting';
+  const [chartMode, setChartMode] = useState<'equity' | 'available' | 'reserved'>('equity');
   
   if (typeof window !== 'undefined') {
     console.log('[Dashboard Effect] Rerender', { timeRange, equityDataLength: equityData?.length });
   }
 
-  const availablePence = wallet?.balancePence ?? 0;
-  const reservedPence = wallet?.reservedPence ?? 0;
+  const availablePence = wallet?.balance ? Math.round(wallet.balance * 100) : 0;
+  const reservedPence = wallet?.lockedBalance ? Math.round(wallet.lockedBalance * 100) : 0;
   const totalBalance = availablePence + reservedPence;
   const totalPositions = positions.length;
-  // TODO: Calculate real PnL from history or positions
-  const pnlPence = 15_00;
-  const pnlPercent = totalBalance > 0 ? (pnlPence / totalBalance) * 100 : 0;
-
-  // Load watchlist from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('watchlist');
-    if (saved) {
-      try {
-        setWatchlist(JSON.parse(saved));
-      } catch (e) {
-        setWatchlist([]);
-      }
-    }
-  }, []);
-
-  const handleToggleWatch = (marketId: string) => {
-    setWatchlist(prev => {
-      const newList = prev.includes(marketId)
-        ? prev.filter(id => id !== marketId)
-        : [...prev, marketId];
-      localStorage.setItem('watchlist', JSON.stringify(newList));
-      return newList;
-    });
-  };
-
-  const watchedMarkets = markets.filter((m: any) => watchlist.includes(m.id));
+  
+  // Calculate real metrics from positions
+  const openExposure = positions.reduce((sum: number, p: any) => {
+    const micros = BigInt(p.netContractsMicros || '0');
+    const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
+    const avgPrice = (p.avgEntryYesPts || 0) / 100_000;
+    const isLong = micros > 0n;
+    return sum + contracts * (isLong ? avgPrice / 100 : (1 - avgPrice / 100));
+  }, 0);
+  
+  const totalUnrealizedPnl = positions.reduce((sum: number, p: any) => {
+    const micros = BigInt(p.netContractsMicros || '0');
+    const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
+    const avgPrice = (p.avgEntryYesPts || 0) / 100_000;
+    const mark = (p.markYesPts || 0) / 100_000;
+    const isLong = micros > 0n;
+    const pnlPercent = isLong ? (mark - avgPrice) : (avgPrice - mark);
+    return sum + (pnlPercent / 100) * contracts;
+  }, 0);
+  
+  const openOrderCount = orders.length;
+  const partialOrderCount = orders.filter((o: any) => (o.status || '').toLowerCase() === 'partial').length;
+  const waitingOrderCount = orders.filter((o: any) => (o.status || '').toLowerCase() === 'open').length;
 
   return (
     <div className="terminal-dashboard">
+      {/* KPI STRIP - "How am I doing?" */}
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: 'repeat(6, 1fr)', 
+        gap: '0.75rem', 
+        marginBottom: '1rem',
+        padding: '0 0.25rem'
+      }}>
+        {/* Equity */}
+        <Link to="/app/portfolio" style={{ textDecoration: 'none' }}>
+          <div style={{ 
+            background: '#1a1f26', 
+            border: '1px solid #2d3748', 
+            borderRadius: '6px', 
+            padding: '0.875rem 1rem',
+            cursor: 'pointer',
+            transition: 'border-color 0.15s'
+          }}>
+            <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
+              Equity
+            </div>
+            <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#e4e8eb', fontFamily: 'JetBrains Mono' }}>
+              £{(totalBalance / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+        </Link>
+
+        {/* 24h P&L */}
+        <div style={{ 
+          background: '#1a1f26', 
+          border: '1px solid #2d3748', 
+          borderRadius: '6px', 
+          padding: '0.875rem 1rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
+            Unrealized P&L
+          </div>
+          <div style={{ 
+            fontSize: '1.25rem', 
+            fontWeight: 700, 
+            color: totalUnrealizedPnl >= 0 ? '#10b981' : '#ef4444', 
+            fontFamily: 'JetBrains Mono',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.25rem'
+          }}>
+            <span style={{ fontSize: '0.875rem' }}>{totalUnrealizedPnl >= 0 ? '▲' : '▼'}</span>
+            £{Math.abs(totalUnrealizedPnl).toFixed(2)}
+          </div>
+        </div>
+
+        {/* Available */}
+        <div style={{ 
+          background: '#1a1f26', 
+          border: '1px solid #2d3748', 
+          borderRadius: '6px', 
+          padding: '0.875rem 1rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
+            Available
+          </div>
+          <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#10b981', fontFamily: 'JetBrains Mono' }}>
+            £{(availablePence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+          </div>
+        </div>
+
+        {/* Reserved */}
+        <div style={{ 
+          background: '#1a1f26', 
+          border: '1px solid #2d3748', 
+          borderRadius: '6px', 
+          padding: '0.875rem 1rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: '0.05em', marginBottom: '0.25rem' }}>
+            Reserved
+          </div>
+          <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#f59e0b', fontFamily: 'JetBrains Mono' }}>
+            £{(reservedPence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+          </div>
+        </div>
+
+        {/* Open Exposure */}
+        <Link to="/app/positions" style={{ textDecoration: 'none' }}>
+          <div style={{ 
+            background: '#1a1f26', 
+            border: '1px solid #2d3748', 
+            borderRadius: '6px', 
+            padding: '0.875rem 1rem',
+            cursor: 'pointer'
+          }}>
+            <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
+              Open Exposure
+            </div>
+            <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#e4e8eb', fontFamily: 'JetBrains Mono' }}>
+              £{openExposure.toFixed(2)}
+            </div>
+            <div style={{ fontSize: '0.6875rem', color: '#64748b' }}>{totalPositions} positions</div>
+          </div>
+        </Link>
+
+        {/* Open Orders */}
+        <Link to="/app/orders" style={{ textDecoration: 'none' }}>
+          <div style={{ 
+            background: '#1a1f26', 
+            border: '1px solid #2d3748', 
+            borderRadius: '6px', 
+            padding: '0.875rem 1rem',
+            cursor: 'pointer'
+          }}>
+            <div style={{ fontSize: '0.6875rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
+              Open Orders
+            </div>
+            <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#e4e8eb', fontFamily: 'JetBrains Mono' }}>
+              {openOrderCount}
+            </div>
+            <div style={{ fontSize: '0.6875rem', color: '#64748b' }}>
+              {waitingOrderCount} waiting • {partialOrderCount} partial
+            </div>
+          </div>
+        </Link>
+      </div>
+
       <div className="terminal-grid">
         
         {/* HERO CARD: Portfolio Snapshot */}
@@ -176,100 +318,161 @@ export default function Dashboard() {
         <div className="terminal-span-8 terminal-panel" style={{ position: 'relative', overflow: 'hidden' }}>
           <div className="terminal-panel-header" style={{ position: 'relative', zIndex: 10, background: 'transparent', borderBottom: 'none' }}>
             <h2 className="terminal-panel-title">Balance</h2>
-            <div className="toggle-group">
-              <Link to="?range=1D" className={`toggle-item ${timeRange === '1D' ? 'active' : ''}`}>1D</Link>
-              <Link to="?range=1W" className={`toggle-item ${timeRange === '1W' ? 'active' : ''}`}>1W</Link>
-              <Link to="?range=1M" className={`toggle-item ${timeRange === '1M' ? 'active' : ''}`}>1M</Link>
-              <Link to="?range=ALL" className={`toggle-item ${timeRange === 'ALL' ? 'active' : ''}`}>ALL</Link>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              {/* Chart mode toggles */}
+              <div className="toggle-group" style={{ marginRight: '1rem' }}>
+                <button 
+                  onClick={() => setChartMode('equity')} 
+                  className={`toggle-item ${chartMode === 'equity' ? 'active' : ''}`}
+                >
+                  Equity
+                </button>
+                <button 
+                  onClick={() => setChartMode('available')} 
+                  className={`toggle-item ${chartMode === 'available' ? 'active' : ''}`}
+                >
+                  Available
+                </button>
+                <button 
+                  onClick={() => setChartMode('reserved')} 
+                  className={`toggle-item ${chartMode === 'reserved' ? 'active' : ''}`}
+                >
+                  Reserved
+                </button>
+              </div>
+              {/* Time range */}
+              <div className="toggle-group">
+                <Link to="?range=1D" className={`toggle-item ${timeRange === '1D' ? 'active' : ''}`}>1D</Link>
+                <Link to="?range=1W" className={`toggle-item ${timeRange === '1W' ? 'active' : ''}`}>1W</Link>
+                <Link to="?range=1M" className={`toggle-item ${timeRange === '1M' ? 'active' : ''}`}>1M</Link>
+                <Link to="?range=ALL" className={`toggle-item ${timeRange === 'ALL' ? 'active' : ''}`}>ALL</Link>
+              </div>
             </div>
           </div>
-          <div className="terminal-panel-body" style={{ position: 'relative', height: '320px', padding: 0 }}>
-             {/* Graph Legend */}
-             <div style={{ 
-               position: 'absolute', 
-               top: '1.25rem', 
-               left: '1.25rem', 
-               zIndex: 10,
-               display: 'flex',
-               gap: '1.5rem',
-               fontSize: '0.875rem',
-               color: 'var(--terminal-muted)'
-             }}>
-              <span>Balance History</span>
-              <span>Available Funds</span>
-              <span>Reserved Funds</span>
-            </div>
-
+          <div className="terminal-panel-body" style={{ position: 'relative', height: '280px', padding: 0 }}>
             {/* Full Height Chart */}
             <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
               <BalanceChart 
-                equity={equityData}
-                available={availableData}
-                reserved={reservedData}
+                equity={chartMode === 'equity' ? equityData : chartMode === 'available' ? availableData : reservedData}
+                available={chartMode === 'equity' ? availableData : []}
+                reserved={chartMode === 'equity' ? reservedData : []}
                 timeRange={timeRange}
               />
             </div>
           </div>
         </div>
 
-        {/* Top Right - 4 Cols - Risk / Quick Actions */}
-        <div className="terminal-span-4 terminal-panel" style={{ overflow: 'visible' }}>
+        {/* Top Right - 4 Cols - Top Risks */}
+        <div className="terminal-span-4 terminal-panel">
           <div className="terminal-panel-header">
-            <h2 className="terminal-panel-title">Quick Access</h2>
+            <h2 className="terminal-panel-title">Top Risks</h2>
+            <Link to="/app/positions" className="terminal-link">View All</Link>
           </div>
-          <div className="terminal-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'visible' }}>
-            <SearchBar compact markets={markets} />
-
-            <div>
-              <div className="detail-label" style={{marginBottom: '0.5rem'}}>Exposure Breakdown</div>
-              <div className="exposure-bar">
-                <div className="exposure-segment" style={{ width: '40%', background: '#667eea' }}></div>
-                <div className="exposure-segment" style={{ width: '30%', background: '#10b981' }}></div>
-                <div className="exposure-segment" style={{ width: '20%', background: '#f59e0b' }}></div>
-                <div className="exposure-segment" style={{ width: '10%', background: '#374151' }}></div>
+          <div className="terminal-panel-body no-padding">
+            {positions.length === 0 ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b', fontSize: '0.875rem' }}>
+                No open positions
+                <div style={{ marginTop: '0.5rem' }}>
+                  <Link to="/app/markets" style={{ color: '#667eea', textDecoration: 'none', fontSize: '0.8125rem' }}>Start trading →</Link>
+                </div>
               </div>
-              <div className="exposure-legend">
-                <div className="legend-item"><div className="legend-dot" style={{background: '#667eea'}}></div> Football</div>
-                <div className="legend-item"><div className="legend-dot" style={{background: '#10b981'}}></div> Politics</div>
-                <div className="legend-item"><div className="legend-dot" style={{background: '#f59e0b'}}></div> Crypto</div>
-                <div className="legend-item"><div className="legend-dot" style={{background: '#374151'}}></div> Other</div>
+            ) : (
+              <div style={{ maxHeight: '260px', overflow: 'auto' }}>
+                {positions.slice(0, 5).map((p: any, i: number) => {
+                  const micros = BigInt(p.netContractsMicros || '0');
+                  const isLong = micros > 0n;
+                  const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
+                  const avgPrice = (p.avgEntryYesPts || 0) / 100_000;
+                  const mark = (p.markYesPts || 0) / 100_000;
+                  const cost = contracts * (isLong ? avgPrice / 100 : (1 - avgPrice / 100));
+                  const pnlPercent = isLong ? (mark - avgPrice) : (avgPrice - mark);
+                  const pnlValue = (pnlPercent / 100) * contracts;
+                  
+                  return (
+                    <div 
+                      key={i} 
+                      style={{ 
+                        padding: '0.625rem 0.875rem', 
+                        borderBottom: '1px solid #2d3748',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ 
+                          fontSize: '0.75rem', 
+                          color: '#e4e8eb', 
+                          fontWeight: 600,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          marginBottom: '0.125rem'
+                        }}>
+                          {p.marketQuestion || `Position ${i + 1}`}
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.6875rem' }}>
+                          <span className={`pill ${isLong ? 'pill-yes' : 'pill-no'}`} style={{ padding: '0.125rem 0.375rem', fontSize: '0.625rem' }}>
+                            {isLong ? 'YES' : 'NO'}
+                          </span>
+                          <span style={{ color: '#64748b' }}>Risk: £{cost.toFixed(2)}</span>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ 
+                          fontSize: '0.8125rem', 
+                          fontWeight: 700, 
+                          color: pnlValue >= 0 ? '#10b981' : '#ef4444',
+                          fontFamily: 'JetBrains Mono'
+                        }}>
+                          {pnlValue >= 0 ? '+' : '-'}£{Math.abs(pnlValue).toFixed(2)}
+                        </div>
+                        <Link 
+                          to={`/app/markets/${p.marketId}`} 
+                          style={{ 
+                            fontSize: '0.625rem', 
+                            color: '#667eea', 
+                            textDecoration: 'none' 
+                          }}
+                        >
+                          Manage →
+                        </Link>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
+            )}
           </div>
         </div>
 
         {/* Current Bets Table - Full width */}
         <div className="terminal-span-8 terminal-panel">
           <div className="terminal-panel-header">
-            <h2 className="terminal-panel-title">Current Bets</h2>
-            <div className="toggle-group">
-               <button className="toggle-item active">All</button>
-               <button className="toggle-item">Open</button>
-               <button className="toggle-item">Settled</button>
-            </div>
+            <h2 className="terminal-panel-title">Active Positions</h2>
+            <Link to="/app/positions" className="terminal-link">View All →</Link>
           </div>
           <div className="terminal-panel-body no-padding">
-             {/* Use dummy data for now as positions API isn't fully linked in loader yet */}
-             <table className="terminal-table">
+             <table className="terminal-table" style={{ fontSize: '0.8125rem' }}>
                <thead>
                  <tr>
-                   <th>Market</th>
-                   <th>Side</th>
-                   <th className="align-right">Size</th>
-                   <th className="align-right">Avg Entry</th>
-                   <th className="align-right">Mark</th>
-                   <th className="align-right">P&L</th>
-                   <th></th>
+                   <th style={{ padding: '0.5rem 0.75rem' }}>Market</th>
+                   <th style={{ padding: '0.5rem 0.5rem' }}>Side</th>
+                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Size</th>
+                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Entry</th>
+                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Mark</th>
+                   <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>P&L</th>
+                   <th className="align-right" style={{ padding: '0.5rem 0.75rem' }}>Actions</th>
                  </tr>
                </thead>
                <tbody>
                  {positions.length === 0 ? (
                    <tr>
-                     <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--terminal-muted)' }}>
-                       No active positions
+                     <td colSpan={7} style={{ textAlign: 'center', padding: '1.5rem', color: '#64748b' }}>
+                       No active positions — <Link to="/app/markets" style={{ color: '#667eea', textDecoration: 'none' }}>Browse markets</Link>
                      </td>
                    </tr>
-                 ) : (positions.map((p: any, i: number) => {
+                 ) : (positions.slice(0, 6).map((p: any, i: number) => {
                     const micros = BigInt(p.netContractsMicros);
                     const isLong = micros > 0n;
                     const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
@@ -280,123 +483,195 @@ export default function Dashboard() {
                     
                     const pnlPercent = isLong ? (mark - avgPrice) : (avgPrice - mark);
                     const pnlValue = (pnlPercent / 100) * contracts;
-                    
-                    // Cost/Exposure calculation
-                    // For Long: Contracts * Price
-                    // For Short: Contracts * (1 - Price) ? Or is it essentially margin?
-                    // We'll show Risk/Cost for now.
                     const cost = contracts * (isLong ? avgPrice/100 : (1 - avgPrice/100));
 
                     return (
                    <tr key={i}>
-                     <td className="td-mono" style={{ color: 'white' }}>{p.marketQuestion}</td>
-                     <td><span className={`pill ${pillClass}`}>{side}</span></td>
-                     <td className="align-right td-mono">£{cost.toFixed(2)}</td>
-                     <td className="align-right td-mono">{avgPrice.toFixed(1)}%</td>
-                     <td className="align-right td-mono">{mark.toFixed(1)}%</td>
-                     <td className="align-right td-mono" style={{ color: pnlValue >= 0 ? 'var(--terminal-green)' : 'var(--terminal-red)' }}>
+                     <td className="td-mono" style={{ color: '#e4e8eb', padding: '0.5rem 0.75rem', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                       <Link to={`/app/markets/${p.marketId}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                         {p.marketQuestion}
+                       </Link>
+                     </td>
+                     <td style={{ padding: '0.5rem 0.5rem' }}><span className={`pill ${pillClass}`} style={{ fontSize: '0.6875rem', padding: '0.125rem 0.375rem' }}>{side}</span></td>
+                     <td className="align-right td-mono" style={{ padding: '0.5rem 0.5rem' }}>£{cost.toFixed(2)}</td>
+                     <td className="align-right td-mono" style={{ padding: '0.5rem 0.5rem' }}>{avgPrice.toFixed(1)}%</td>
+                     <td className="align-right td-mono" style={{ padding: '0.5rem 0.5rem' }}>{mark.toFixed(1)}%</td>
+                     <td className="align-right td-mono" style={{ color: pnlValue >= 0 ? '#10b981' : '#ef4444', padding: '0.5rem 0.5rem', fontWeight: 600 }}>
                         {pnlValue >= 0 ? '+' : '-'}£{Math.abs(pnlValue).toFixed(2)}
                      </td>
-                     <td className="align-right">
-                        <Link to={`/app/markets/${p.marketId}`} style={{textDecoration: 'none', color: 'inherit'}}>➜</Link>
+                     <td className="align-right" style={{ padding: '0.5rem 0.75rem' }}>
+                        <div style={{ display: 'flex', gap: '0.375rem', justifyContent: 'flex-end' }}>
+                          <Link 
+                            to={`/app/markets/${p.marketId}`} 
+                            style={{
+                              fontSize: '0.6875rem',
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: '3px',
+                              background: 'rgba(102, 126, 234, 0.15)',
+                              color: '#667eea',
+                              textDecoration: 'none',
+                              fontWeight: 600
+                            }}
+                          >
+                            Trade
+                          </Link>
+                        </div>
                      </td>
                    </tr>
                  )}))}
-                 <tr className="empty-row" style={{ height: '100%' }}></tr>
                </tbody>
              </table>
-             <div style={{ padding: '1rem', textAlign: 'center' }}>
-                <Link to="/app/positions" className="terminal-link">View all active positions</Link>
-             </div>
           </div>
         </div>
 
-        {/* Open Orders & Watchlist Tiles */}
-        <div className="terminal-span-4" style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: '1.25rem' }}>
+        {/* Open Orders & Watchlist & Activity */}
+        <div className="terminal-span-4" style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: '0.75rem' }}>
           
-          {/* Tile 1: Open Orders */}
+          {/* Tile 1: Open Orders - Now shows actual orders with cancel */}
           <div className="terminal-panel">
             <div className="terminal-panel-header">
               <h2 className="terminal-panel-title">Open Orders</h2>
               <Link to="/app/orders" className="terminal-link">Manage</Link>
             </div>
-            <div className="terminal-panel-body">
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                <span style={{ fontSize: '2.5rem', fontWeight: 700, color: 'white', fontFamily: 'JetBrains Mono' }}>
-                  {orders.length}
-                </span>
-                <span className="detail-label">Active</span>
-              </div>
-              <div style={{ display: 'flex', gap: '1rem', color: 'var(--terminal-muted)', fontSize: '0.875rem' }}>
-                 <span>2 waiting fill</span>
-                 <span>•</span>
-                 <span>1 partial</span>
-              </div>
-              <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
-                 <div style={{ flex: 1, padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '4px', textAlign: 'center' }}>
-                    <div className="detail-label" style={{ color: 'var(--terminal-green)' }}>FOR</div>
-                    <div className="detail-value">4</div>
-                 </div>
-                 <div style={{ flex: 1, padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '4px', textAlign: 'center' }}>
-                    <div className="detail-label" style={{ color: 'var(--terminal-red)' }}>LAY</div>
-                    <div className="detail-value">1</div>
-                 </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Tile 2: Watchlist */}
-          <div className="terminal-panel">
-            <div className="terminal-panel-header">
-              <h2 className="terminal-panel-title">Watchlist</h2>
-              <Link to="/app/markets" className="terminal-link">Browse</Link>
-            </div>
-            <div className="terminal-panel-body no-padding">
-              {watchedMarkets.length === 0 ? (
-                <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--terminal-muted)', fontSize: '0.875rem' }}>
-                  No markets in watchlist
+            <div className="terminal-panel-body no-padding" style={{ overflow: 'auto' }}>
+              {orders.length === 0 ? (
+                <div style={{ padding: '1.25rem', textAlign: 'center', color: '#64748b', fontSize: '0.8125rem' }}>
+                  No open orders
                   <div style={{ marginTop: '0.5rem' }}>
-                    <Link to="/app/markets" style={{ color: 'var(--terminal-brand)', textDecoration: 'none', fontSize: '0.8125rem' }}>Browse markets →</Link>
+                    <Link to="/app/markets" style={{ color: '#667eea', textDecoration: 'none', fontSize: '0.75rem' }}>
+                      Place an order →
+                    </Link>
                   </div>
                 </div>
               ) : (
-                <table className="terminal-table" style={{ fontSize: '0.75rem' }}>
-                  <tbody>
-                    {watchedMarkets.slice(0, 3).map((m: any) => (
-                    <tr key={m.id}>
-                      <td style={{ padding: '0.5rem 1rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.name}>
-                        {m.name}
-                      </td>
-                      <td className="td-mono align-right" style={{ color: 'var(--terminal-green)', padding: '0.5rem 1rem', fontSize: '0.7rem' }}>
-                        {m.status === 'ACTIVE' ? '🟢 Active' : '⚪ Closed'}
-                      </td>
-                      <td className="align-right" style={{ padding: '0.5rem 1rem' }}>
-                        <Link 
-                          to={`/app/markets/${m.id}`} 
-                          className="pill" 
-                          style={{ 
-                            background: 'rgba(88, 166, 255, 0.15)', 
-                            color: '#58a6ff', 
-                            textDecoration: 'none',
-                            fontSize: '0.7rem',
-                            padding: '0.25rem 0.5rem'
+                <div>
+                  {/* Summary header */}
+                  <div style={{ 
+                    padding: '0.5rem 0.75rem', 
+                    background: 'rgba(102, 126, 234, 0.08)', 
+                    borderBottom: '1px solid #2d3748',
+                    fontSize: '0.6875rem',
+                    color: '#94a3b8',
+                    display: 'flex',
+                    gap: '0.75rem'
+                  }}>
+                    <span><strong style={{ color: '#e4e8eb' }}>{openOrderCount}</strong> Active</span>
+                    <span>•</span>
+                    <span>{waitingOrderCount} waiting</span>
+                    <span>•</span>
+                    <span>{partialOrderCount} partial</span>
+                  </div>
+                  {/* Order list */}
+                  {orders.slice(0, 4).map((o: any, i: number) => (
+                    <div 
+                      key={o.id || i} 
+                      style={{ 
+                        padding: '0.5rem 0.75rem', 
+                        borderBottom: '1px solid #2d3748',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
+                        <span className={`pill ${o.side === 'FOR' ? 'pill-yes' : 'pill-no'}`} style={{ fontSize: '0.5625rem', padding: '0.0625rem 0.25rem', flexShrink: 0 }}>
+                          {o.side === 'FOR' ? 'BUY' : 'SELL'}
+                        </span>
+                        <span style={{ color: '#e4e8eb', fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                          {(o.pPts / 100_000).toFixed(1)}%
+                        </span>
+                        <span style={{ color: '#64748b', fontSize: '0.625rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          £{((o.remainingPence || o.liabilityPence || 0) / 100).toFixed(2)}
+                        </span>
+                      </div>
+                      <Form method="post" style={{ flexShrink: 0 }}>
+                        <input type="hidden" name="intent" value="cancelOrder" />
+                        <input type="hidden" name="orderId" value={o.id} />
+                        <button
+                          type="submit"
+                          disabled={isSubmitting}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: '20px',
+                            height: '20px',
+                            background: 'rgba(239, 68, 68, 0.1)',
+                            border: '1px solid rgba(239, 68, 68, 0.3)',
+                            borderRadius: '4px',
+                            color: '#ef4444',
+                            cursor: 'pointer',
+                            opacity: isSubmitting ? 0.5 : 1,
+                            padding: 0
                           }}
+                          title="Cancel order"
                         >
-                          Trade
-                        </Link>
-                      </td>
-                    </tr>
+                          <X size={10} />
+                        </button>
+                      </Form>
+                    </div>
                   ))}
-                    {watchedMarkets.length > 3 && (
-                      <tr>
-                        <td colSpan={3} style={{ padding: '0.5rem 1rem', textAlign: 'center' }}>
-                          <Link to="/app/markets" style={{ color: 'var(--terminal-muted)', textDecoration: 'none', fontSize: '0.7rem' }}>+{watchedMarkets.length - 3} more</Link>
-                        </td>
-                      </tr>
-                    )}
-                </tbody>
-              </table>
+                  {orders.length > 4 && (
+                    <div style={{ padding: '0.375rem 0.75rem', textAlign: 'center' }}>
+                      <Link to="/app/orders" style={{ color: '#667eea', textDecoration: 'none', fontSize: '0.6875rem' }}>
+                        +{orders.length - 4} more orders →
+                      </Link>
+                    </div>
+                  )}
+                </div>
               )}
+            </div>
+          </div>
+
+          {/* Tile 2: Recent Markets / Watchlist */}
+          <div className="terminal-panel">
+            <div className="terminal-panel-header">
+              <h2 className="terminal-panel-title">Recent Markets</h2>
+              <Link to="/app/markets" className="terminal-link">Browse</Link>
+            </div>
+            <div className="terminal-panel-body no-padding">
+              {markets.slice(0, 4).map((m: any, i: number) => (
+                <div 
+                  key={m.id}
+                  style={{ 
+                    padding: '0.5rem 0.75rem', 
+                    borderBottom: '1px solid #2d3748',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ 
+                      fontSize: '0.75rem', 
+                      color: '#e4e8eb',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }}>
+                      {m.name}
+                    </div>
+                    <div style={{ fontSize: '0.625rem', color: '#64748b' }}>
+                      {m.status === 'ACTIVE' ? '🟢 Active' : '⚪ Closed'}
+                    </div>
+                  </div>
+                  <Link 
+                    to={`/app/markets/${m.id}`} 
+                    style={{ 
+                      fontSize: '0.625rem',
+                      padding: '0.25rem 0.5rem',
+                      borderRadius: '3px',
+                      background: 'rgba(102, 126, 234, 0.15)',
+                      color: '#667eea',
+                      textDecoration: 'none',
+                      fontWeight: 600
+                    }}
+                  >
+                    Trade
+                  </Link>
+                </div>
+              ))}
             </div>
           </div>
 

@@ -1,6 +1,7 @@
 import { Form } from '@remix-run/react';
 import { formatPence, formatPercent, formatProbability } from '~/lib/format';
 import { useState } from 'react';
+import { Eye } from 'lucide-react';
 
 interface TradePosition {
   sizePence: number;
@@ -49,9 +50,62 @@ export function PositionPanel({ position, isLoading, compact = false, onOpenDeta
 
   if (!position || netContractsMicros === 0n) {
     return (
-      <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-        <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1rem' }}>Your Position</h3>
-        <div style={{ color: '#718096' }}>No open position</div>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ 
+          padding: '0.625rem 0.875rem',
+          borderBottom: '1px solid #2d3748',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexShrink: 0
+        }}>
+          <div style={{ 
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            color: '#94a3b8',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em'
+          }}>
+            Position
+          </div>
+          <button
+            type="button"
+            disabled
+            style={{
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.625rem',
+              fontWeight: 700,
+              background: '#374151',
+              color: '#6e7681',
+              border: 'none',
+              borderRadius: '3px',
+              cursor: 'not-allowed',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              opacity: 0.5
+            }}
+          >
+            ▶ Details
+          </button>
+        </div>
+
+        {/* Empty state */}
+        <div style={{ 
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '2rem',
+        }}>
+          <div style={{ 
+            color: '#6e7681', 
+            fontSize: '0.875rem',
+            textAlign: 'center'
+          }}>
+            No open position
+          </div>
+        </div>
       </div>
     );
   }
@@ -117,44 +171,44 @@ export function PositionPanel({ position, isLoading, compact = false, onOpenDeta
 
         {/* Summary */}
         <div style={{ 
-          padding: '0.875rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.625rem',
-          fontSize: '0.75rem',
+          padding: '0.75rem',
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '0.5rem 0.75rem',
+          fontSize: '0.6875rem',
           flexShrink: 0,
-          background: isLong ? '#10b98110' : '#ef444410',
+          background: isLong ? '#10b98108' : '#ef444408',
           borderBottom: showDetails ? '1px solid #2d3748' : 'none'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#94a3b8' }}>Direction:</span>
-            <span style={{ fontWeight: 700, color: isLong ? '#10b981' : '#ef4444', fontSize: '0.875rem' }}>
-              {isLong ? '▲ FOR (YES)' : '▼ LAY (YES)'}
+          {/* Direction - spans full width */}
+          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', paddingBottom: '0.5rem', borderBottom: '1px solid #2d374820' }}>
+            <span style={{ color: '#94a3b8', fontSize: '0.625rem', textTransform: 'uppercase' }}>Direction</span>
+            <span style={{ fontWeight: 700, color: isLong ? '#10b981' : '#ef4444', fontSize: '0.8125rem' }}>
+              {isLong ? '▲ FOR' : '▼ LAY'}
             </span>
           </div>
           
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#94a3b8' }}>Net Size:</span>
-            <span style={{ fontWeight: 700, color: '#e4e8eb' }}>{formatPence(positionSize)}</span>
+          {/* Two column layout for metrics */}
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ color: '#6e7681', fontSize: '0.625rem', marginBottom: '0.125rem' }}>Net Size</span>
+            <span style={{ fontWeight: 600, color: '#e4e8eb', fontSize: '0.75rem' }}>{formatPence(positionSize)}</span>
           </div>
           
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#94a3b8' }}>Avg Entry:</span>
-            <span style={{ fontWeight: 700, color: '#e4e8eb' }}>{avgEntryPercent.toFixed(2)}%</span>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ color: '#6e7681', fontSize: '0.625rem', marginBottom: '0.125rem' }}>Avg Entry</span>
+            <span style={{ fontWeight: 600, color: '#e4e8eb', fontSize: '0.75rem' }}>{avgEntryPercent.toFixed(2)}%</span>
           </div>
           
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#94a3b8' }}>Mark Price:</span>
-            <span style={{ fontWeight: 700, color: '#e4e8eb' }}>{markPercent.toFixed(2)}%</span>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ color: '#6e7681', fontSize: '0.625rem', marginBottom: '0.125rem' }}>Mark</span>
+            <span style={{ fontWeight: 600, color: '#e4e8eb', fontSize: '0.75rem' }}>{markPercent.toFixed(2)}%</span>
           </div>
           
-          <div style={{ height: '1px', background: '#2d3748', margin: '0.5rem 0' }} />
-          
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ color: '#94a3b8', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Unrealized P&L:</span>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ color: '#6e7681', fontSize: '0.625rem', marginBottom: '0.125rem' }}>Unreal. P&L</span>
             <span style={{ 
               fontWeight: 700, 
-              fontSize: '1rem',
+              fontSize: '0.875rem',
               color: unrealizedPnlPence >= 0 ? '#10b981' : '#ef4444' 
             }}>
               {unrealizedPnlPence >= 0 ? '+' : ''}{formatPence(unrealizedPnlPence)}
@@ -244,36 +298,6 @@ export function PositionPanel({ position, isLoading, compact = false, onOpenDeta
           </div>
         )}
         
-        {/* Details Button - Opens Full Position Modal */}
-        <div style={{ 
-          borderTop: '1px solid #2d3748',
-          padding: '0.875rem',
-          flexShrink: 0
-        }}>
-          <button
-            type="button"
-            onClick={() => onOpenDetails && onOpenDetails()}
-            style={{
-              width: '100%',
-              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-              color: 'white',
-              fontWeight: 700,
-              padding: '0.625rem 1rem',
-              borderRadius: '4px',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: '0.8125rem',
-              boxShadow: '0 2px 4px rgba(102, 126, 234, 0.25)',
-              transition: 'all 0.2s',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em'
-            }}
-            onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-1px)'}
-            onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
-          >
-            📊 View Full Details
-          </button>
-        </div>
       </div>
     );
   }

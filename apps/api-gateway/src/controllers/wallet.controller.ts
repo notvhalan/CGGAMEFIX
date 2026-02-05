@@ -21,6 +21,7 @@ export class WalletController {
     try {
       // Extract userId from session
       const userId = req.session?.userId;
+      
       if (!userId) {
         throw new UnauthorizedException('User not authenticated');
       }

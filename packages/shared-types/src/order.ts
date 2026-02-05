@@ -2,8 +2,12 @@ import { z } from 'zod';
 
 // Order Side - Probability Point Pricing
 export enum OrderSide {
-  FOR = 'FOR', // Buying YES at probability points (buying the outcome)
-  LAY = 'LAY', // Buying NO (selling the outcome, equivalent to PRICE_SCALE - pPts)
+  BUY_YES = 'BUY_YES', // Buying YES outcome at probability points
+  SELL_YES = 'SELL_YES', // Selling YES outcome (equivalent to buying NO)
+  
+  // Legacy aliases for backward compatibility during migration
+  FOR = 'BUY_YES',
+  LAY = 'SELL_YES',
 }
 
 // Price constants for 7 decimal place precision
@@ -107,30 +111,38 @@ export const OrderSchema = z.object({
 export type Order = z.infer<typeof OrderSchema>;
 
 // Create Order Request DTOs
-export const CreateForOrderRequestSchema = z.object({
+export const CreateBuyYesOrderRequestSchema = z.object({
   marketId: z.string().uuid(),
-  side: z.literal(OrderSide.FOR),
+  side: z.literal(OrderSide.BUY_YES),
   pPts: z.number().int().min(1).max(PRICE_SCALE - 1), // YES probability
   stakePence: z.number().int().positive(), // Cash to risk
   timeInForce: z.nativeEnum(TimeInForce).optional(),
 });
 
-export const CreateLayOrderRequestSchema = z.object({
+export const CreateSellYesOrderRequestSchema = z.object({
   marketId: z.string().uuid(),
-  side: z.literal(OrderSide.LAY),
+  side: z.literal(OrderSide.SELL_YES),
   pPts: z.number().int().min(1).max(PRICE_SCALE - 1), // NO probability
   liabilityPence: z.number().int().positive(), // Max loss
   timeInForce: z.nativeEnum(TimeInForce).optional(),
 });
 
+// Legacy aliases
+export const CreateForOrderRequestSchema = CreateBuyYesOrderRequestSchema;
+export const CreateLayOrderRequestSchema = CreateSellYesOrderRequestSchema;
+
 export const CreateOrderRequestSchema = z.discriminatedUnion('side', [
-  CreateForOrderRequestSchema,
-  CreateLayOrderRequestSchema,
+  CreateBuyYesOrderRequestSchema,
+  CreateSellYesOrderRequestSchema,
 ]);
 
-export type CreateForOrderRequest = z.infer<typeof CreateForOrderRequestSchema>;
-export type CreateLayOrderRequest = z.infer<typeof CreateLayOrderRequestSchema>;
+export type CreateBuyYesOrderRequest = z.infer<typeof CreateBuyYesOrderRequestSchema>;
+export type CreateSellYesOrderRequest = z.infer<typeof CreateSellYesOrderRequestSchema>;
 export type CreateOrderRequest = z.infer<typeof CreateOrderRequestSchema>;
+
+// Legacy aliases
+export type CreateForOrderRequest = CreateBuyYesOrderRequest;
+export type CreateLayOrderRequest = CreateSellYesOrderRequest;
 
 // Cancel Order Request
 export const CancelOrderRequestSchema = z.object({

@@ -226,20 +226,21 @@ export default function MarketDetail() {
 
   useEffect(() => {
     // Connect to WebSocket
-    // console.log('[Market] Connecting to WebSocket for market:', marketId);
+    console.log('[Market] 🔌 Connecting to WebSocket for market:', marketId);
+    console.log('[Market] 🔌 WebSocket connected?', wsClient.isConnected());
     wsClient.connect();
 
     // Subscribe to market events
     const bookTopic = `book:${marketId}`;
     const tradeTopic = `trades:${marketId}`;
     
-    // console.log('[Market] Subscribing to topics:', { bookTopic, tradeTopic });
+    console.log('[Market] 📡 Subscribing to topics:', { bookTopic, tradeTopic });
     wsClient.subscribe(bookTopic);
     wsClient.subscribe(tradeTopic);
 
     // Handle order book updates
     const handleBookUpdate = (data: any) => {
-      // console.log('[Market] 📊 Real-time book update received:', data);
+      console.log('[Market] 📊 Real-time book update received:', data);
       if (data.orderBook) {
         setOrderBook(data.orderBook);
       } else if (data) {
@@ -250,7 +251,7 @@ export default function MarketDetail() {
 
     // Handle trade events
     const handleTrade = (data: any) => {
-      // console.log('[Market] 💰 Real-time trade received:', data);
+      console.log('[Market] 💰 Real-time trade received:', data);
       setLastTrade(data);
       
       setTrades(prev => {
@@ -261,7 +262,7 @@ export default function MarketDetail() {
       
       // Auto-refresh position after trade (if user is involved)
       if (wallet && (data.maker_id === wallet.userId || data.taker_id === wallet.userId)) {
-        // console.log('[Market] User involved in trade, revalidating...');
+        console.log('[Market] 👤 User involved in trade, revalidating...');
         revalidator.revalidate();
       }
     };
@@ -269,17 +270,17 @@ export default function MarketDetail() {
     wsClient.on('book_update', handleBookUpdate);
     wsClient.on('trade', handleTrade);
 
-    // console.log('[Market] WebSocket handlers registered');
+    console.log('[Market] ✅ WebSocket handlers registered');
 
     // Cleanup
     return () => {
-      // console.log('[Market] Cleaning up WebSocket subscriptions');
+      console.log('[Market] 🧹 Cleaning up WebSocket subscriptions');
       wsClient.off('book_update', handleBookUpdate);
       wsClient.off('trade', handleTrade);
       wsClient.unsubscribe(bookTopic);
       wsClient.unsubscribe(tradeTopic);
     };
-  }, [marketId]);
+  }, [marketId, wallet, revalidator]);
 
   // Handle clicking price in orderbook to auto-fill ticket
   const handlePriceClick = (pPts: number) => {

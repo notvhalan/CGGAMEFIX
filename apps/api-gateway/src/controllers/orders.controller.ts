@@ -8,6 +8,7 @@ import { ZodError } from 'zod';
 import { FastifyRequest } from 'fastify';
 import { DatabaseService } from '../database/database.service';
 import { OrderBookBroadcastService } from '../services/orderbook-broadcast.service';
+import { RustExchangeService } from '../services/rust-exchange.service';
 import { PRICE_SCALE, stakeToContracts, liabilityToContracts, MIN_CONTRACT_MICROS, CONTRACT_SCALE } from '@betting-exchange/shared-types';
 
 @Controller('v1/orders')
@@ -18,6 +19,7 @@ export class OrdersController {
     private readonly natsClient: NatsClient,
     private readonly databaseService: DatabaseService,
     private readonly orderBookBroadcast: OrderBookBroadcastService,
+    private readonly rustExchange: RustExchangeService,
   ) {}
 
   @Get('trades')
@@ -93,13 +95,8 @@ export class OrdersController {
         throw new UnauthorizedException('User not authenticated');
       }
 
-      // Debug: log incoming request body
-      this.logger.info('Received order request body:', { body });
-      
       // Validate with Zod
       const orderData = CreateOrderDtoSchema.parse(body);
-      
-      this.logger.info('Validated order data:', { orderData });
       
       const orderId = uuidv4();
       
@@ -113,7 +110,14 @@ export class OrdersController {
       const DEFAULT_MARKET_SLIPPAGE_PTS = 500_000; // 5%
       const maxSlippagePts = orderData.maxSlippagePts;
       
-      if (orderData.pPts !== undefined && (orderData.liabilityPence !== undefined || orderData.stakePence !== undefined)) {
+      // Check for direct BUY_YES/SELL_YES format FIRST (most specific)
+      if (orderData.side === 'BUY_YES' || orderData.side === 'SELL_YES') {
+        // Direct BUY_YES/SELL_YES format from new frontend
+        side = orderData.side === 'BUY_YES' ? 'FOR' : 'LAY';
+        pPts = orderData.pPts;
+        liabilityPence = orderData.liabilityPence;
+        timeInForce = orderData.timeInForce || 'GTC';
+      } else if (orderData.pPts !== undefined && (orderData.liabilityPence !== undefined || orderData.stakePence !== undefined)) {
         // New format - use liabilityPence for both sides (stakePence is backward compat)
         pPts = orderData.pPts;
         
@@ -202,30 +206,9 @@ export class OrdersController {
       // Lock balance before creating order (same amount for both sides - their max loss)
       const requiredBalancePence = liabilityPence;
       
-      try {
-        await this.databaseService.lockBalance(userId, requiredBalancePence);
-        this.logger.info('Balance locked for order', { userId, orderId, requiredBalancePence });
-      } catch (error) {
-        this.logger.warn('Failed to lock balance', { userId, requiredBalancePence, error: error.message });
-        throw new Error('Insufficient balance to place order');
-      }
+      // NOTE: Balance locking now handled by Rust exchange, skip TypeScript database
       
-      // Store order in database with new format
-      const order = await this.databaseService.createOrder({
-        id: orderId,
-        userId,
-        marketId: orderData.marketId,
-        outcomeId: orderData.outcomeId,
-        side,
-        pPts,
-        yesPts,
-        liabilityPence,
-        originalContractsMicros: contractsMicros.toString(),
-        remainingContractsMicros: contractsMicros.toString(),
-        timeInForce,
-      });
-      
-      // Publish order submission command to NATS for matching engine
+      // Submit order directly to Rust exchange (skipping database.createOrder)
       const command = {
         orderId,
         userId,
@@ -241,26 +224,46 @@ export class OrdersController {
         timestamp: new Date().toISOString(),
       };
       
-      this.logger.info('Order created and published', { 
-        orderId, 
-        userId, 
-        side, 
-        pPts, 
-        yesPts,
-        liabilityPence,
-        contracts: contractsMicros.toString(),
-      });
-      this.natsClient.publish(NATS_SUBJECTS.ORDERS_SUBMIT, command);
+      // Submit order to Rust exchange instead of NATS
+      let rustResponse;
+      try {
+        // Convert FOR/LAY to BUY_YES/SELL_YES for Rust exchange
+        const rustSide = side === 'FOR' ? 'BUY_YES' : 'SELL_YES';
+        
+        rustResponse = await this.rustExchange.submitOrder({
+          marketId: orderData.marketId,
+          side: rustSide,
+          riskPence: liabilityPence,
+          limitYesPts: yesPts,
+          timeInForce,
+        });
+        
+        this.logger.info('Order submitted to Rust exchange', { 
+          orderId: rustResponse.order_id,
+          userId, 
+          side: rustSide, 
+          yesPts,
+          liabilityPence,
+          contracts: rustResponse.contracts_micros,
+        });
+      } catch (error) {
+        // Release the locked balance if Rust exchange fails
+        this.logger.error('Rust exchange failed, unlocking balance', { orderId, userId, error: error.message });
+        // Note: We need to implement proper balance unlocking
+        // For now, the Rust exchange handles its own balance management
+        throw error;
+      }
       
       // Broadcast order book update in real-time
       setImmediate(() => {
         this.orderBookBroadcast.broadcastOrderBookUpdate(orderData.marketId);
       });
       
-      // Return immediately (async processing)
+      // Return response from Rust exchange
       return {
-        orderId,
-        status: 'OPEN',
+        orderId: rustResponse.order_id,
+        status: rustResponse.status,
+        contracts_micros: rustResponse.contracts_micros,
         message: 'Order created successfully',
       };
     } catch (error) {

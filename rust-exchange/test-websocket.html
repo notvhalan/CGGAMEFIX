@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rust WebSocket Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        #status {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 400px;
+            overflow-y: auto;
+            background: #f5f5f5;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #666;
+            background: white;
+        }
+        .trade {
+            border-left-color: #22c55e;
+        }
+        .orderbook {
+            border-left-color: #3b82f6;
+        }
+        .subscribe {
+            border-left-color: #a855f7;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Rust WebSocket Test</h1>
+    <div id="status">Not Connected</div>
+    
+    <div class="controls">
+        <input type="text" id="marketId" placeholder="Market ID (UUID)" value="">
+        <button onclick="subscribe()">Subscribe to Market</button>
+        <button onclick="unsubscribe()">Unsubscribe</button>
+        <button onclick="clearMessages()">Clear Messages</button>
+    </div>
+    
+    <h3>Messages:</h3>
+    <div id="messages"></div>
+    
+    <script>
+        let ws = null;
+        let messageCount = 0;
+        
+        const log = (msg, className = 'message') => {
+            messageCount++;
+            const div = document.createElement('div');
+            div.className = className;
+            div.innerHTML = `<strong>[${messageCount}] ${new Date().toLocaleTimeString()}:</strong> ${msg}`;
+            const container = document.getElementById('messages');
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        };
+        
+        const connect = () => {
+            // Connect to local Rust server
+            ws = new WebSocket('ws://localhost:3001/ws');
+            
+            ws.onopen = () => {
+                document.getElementById('status').textContent = 'Connected ✅';
+                document.getElementById('status').style.color = 'green';
+                log('WebSocket connection established', 'message subscribe');
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('status').textContent = 'Disconnected ❌';
+                document.getElementById('status').style.color = 'red';
+                log('WebSocket connection closed', 'message');
+                
+                // Reconnect after 2 seconds
+                setTimeout(() => {
+                    log('Attempting to reconnect...', 'message');
+                    connect();
+                }, 2000);
+            };
+            
+            ws.onerror = (error) => {
+                log('WebSocket error: ' + error.message, 'message');
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'trade') {
+                        log(`<strong>TRADE:</strong> Market ${data.market_id}<br/>
+                             Price: ${data.price_yes_pts / 10000000 * 100}%, 
+                             Qty: ${(data.qty_micros / 1000000).toFixed(2)} contracts, 
+                             Side: ${data.taker_side}`, 'message trade');
+                    } else if (data.type === 'orderbook_snapshot') {
+                        log(`<strong>ORDERBOOK SNAPSHOT:</strong> Market ${data.market_id}<br/>
+                             Bids: ${data.bids.length} levels, 
+                             Asks: ${data.asks.length} levels`, 'message orderbook');
+                    } else if (data.type === 'orderbook_delta') {
+                        log(`<strong>ORDERBOOK DELTA:</strong> ${data.side} @ ${data.price_yes_pts / 10000000 * 100}%, 
+                             Delta: ${(data.size_delta_micros / 1000000).toFixed(2)} contracts`, 'message orderbook');
+                    } else if (data.type === 'pong') {
+                        log('Received pong', 'message');
+                    } else {
+                        log('Received: ' + JSON.stringify(data), 'message');
+                    }
+                } catch (e) {
+                    log('Received raw message: ' + event.data, 'message');
+                }
+            };
+        };
+        
+        const subscribe = () => {
+            const marketId = document.getElementById('marketId').value;
+            if (!marketId) {
+                alert('Please enter a market ID');
+                return;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const msg = {
+                    type: 'subscribe',
+                    market_id: marketId
+                };
+                ws.send(JSON.stringify(msg));
+                log(`Sent subscription request for market: ${marketId}`, 'message subscribe');
+            } else {
+                alert('WebSocket not connected');
+            }
+        };
+        
+        const unsubscribe = () => {
+            const marketId = document.getElementById('marketId').value;
+            if (!marketId) {
+                alert('Please enter a market ID');
+                return;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const msg = {
+                    type: 'unsubscribe',
+                    market_id: marketId
+                };
+                ws.send(JSON.stringify(msg));
+                log(`Sent unsubscribe request for market: ${marketId}`, 'message subscribe');
+            } else {
+                alert('WebSocket not connected');
+            }
+        };
+        
+        const clearMessages = () => {
+            document.getElementById('messages').innerHTML = '';
+            messageCount = 0;
+        };
+        
+        // Auto-connect on page load
+        connect();
+    </script>
+</body>
+</html>

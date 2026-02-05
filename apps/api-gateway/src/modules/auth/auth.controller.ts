@@ -202,12 +202,27 @@ export class AuthController {
 
       // Store user ID in session
       req.session.userId = user.id;
+      
+      this.logger.info(`[LOGIN] Setting userId in session:`, {
+        userId: user.id,
+        sessionId: req.session.sessionId,
+        sessionBefore: { ...req.session }
+      });
 
       // Save session and wait for it to complete
       await new Promise<void>((resolve, reject) => {
         req.session.save((err: any) => {
-          if (err) reject(err);
-          else resolve();
+          if (err) {
+            this.logger.error(`[LOGIN] Session save failed:`, err);
+            reject(err);
+          } else {
+            this.logger.info(`[LOGIN] Session saved successfully:`, {
+              sessionId: req.session.sessionId,
+              sessionAfter: { ...req.session },
+              cookies: res.getHeader('set-cookie')
+            });
+            resolve();
+          }
         });
       });
 

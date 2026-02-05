@@ -367,8 +367,8 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     ...groupedBuyPositions.map(g => ({ ...g, side: 'FOR' as const })),
     ...groupedSellPositions.map(g => ({ ...g, side: 'LAY' as const }))
   ].filter(g => {
-    if (sideFilter === 'for') return g.side === 'FOR';
-    if (sideFilter === 'lay') return g.side === 'LAY';
+    if (sideFilter === 'for') return g.side === 'BUY_YES';
+    if (sideFilter === 'lay') return g.side === 'SELL_YES';
     return true;
   }).sort((a, b) => b.yesPricePts - a.yesPricePts);
 
@@ -651,7 +651,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 const contracts = Math.abs(Number(group.totalContractsMicros) / 1_000_000);
                 const cost = group.totalSizePence;
                 const markValue = contracts * (markPercent / 100) * 100; // Value at mark
-                const pnl = group.side === 'FOR' 
+                const pnl = group.side === 'BUY_YES' 
                   ? (markValue - cost)
                   : (cost - markValue);
 

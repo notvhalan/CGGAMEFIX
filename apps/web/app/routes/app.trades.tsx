@@ -52,7 +52,7 @@ export default function Trades() {
       const cost = (t.cost_pence || 0) / 100;
       const fee = (t.user_fee_pence || 0) / 100;
       const pnl = (t.realized_pnl_pence || 0) / 100;
-      const isBuy = t.side === 'FOR';
+      const isBuy = t.side === 'BUY_YES';
       const time = new Date(t.executed_at);
       const isOpen = t.lot_remaining_micros && Number(t.lot_remaining_micros) > 0;
       const isClosed = t.lot_opened_micros && Number(t.lot_remaining_micros) === 0;

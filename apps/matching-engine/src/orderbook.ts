@@ -23,19 +23,19 @@ export interface Match {
 }
 
 /**
- * Canonicalization helper: converts FOR/LAY orders into canonical YES-price space
+ * Canonicalization helper: converts BUY_YES/SELL_YES orders into canonical YES-price space
  * 
- * FOR side: Buying YES at pPts => yesPts = pPts
- * LAY side: Buying NO (selling YES) => yesPts = PRICE_SCALE - pPts
+ * BUY_YES side: Buying YES at pPts => yesPts = pPts
+ * SELL_YES side: Buying NO (selling YES) => yesPts = PRICE_SCALE - pPts
  * 
  * This allows us to maintain a single book where:
  * - Bids = higher yesPts (better for buyers)
  * - Asks = lower yesPts (better for sellers)
  */
 export function canonicalizePrice(side: OrderSide, pPts: number): number {
-  if (side === OrderSide.FOR) {
+  if (side === OrderSide.BUY_YES || side === OrderSide.FOR) {
     return pPts;
-  } else { // OrderSide.LAY
+  } else { // OrderSide.SELL_YES or OrderSide.LAY
     return PRICE_SCALE - pPts;
   }
 }
@@ -44,8 +44,8 @@ export function canonicalizePrice(side: OrderSide, pPts: number): number {
  * In-memory orderbook for a single market using probability point pricing.
  * 
  * All orders are converted to canonical YES-price space:
- * - FOR orders: yesPts = pPts (buying YES)
- * - LAY orders: yesPts = PRICE_SCALE - pPts (selling YES, buying NO)
+ * - BUY_YES orders: yesPts = pPts (buying YES)
+ * - SELL_YES orders: yesPts = PRICE_SCALE - pPts (selling YES, buying NO)
  * 
  * Matching rules (after canonicalization):
  * - Bids (higher yesPts) match with asks (lower yesPts)
@@ -104,7 +104,7 @@ export class Orderbook {
     const isBid = this.isBid(order);
     
     if (isBid) {
-      // This order is a BID (FOR): try to match with asks (LAY)
+      // This order is a BID (BUY_YES): try to match with asks (SELL_YES)
       while (order.remainingContractsMicros > 0n && this.asks.length > 0) {
         // SELF-MATCH PREVENTION: Find first non-self order (don't delete user's own orders)
         const idx = this.asks.findIndex(a => a.userId !== order.userId);
@@ -180,8 +180,8 @@ export class Orderbook {
         logger.debug(`Order ${order.id} has ${order.remainingContractsMicros} microcontracts remaining (below minimum ${MIN_CONTRACT_MICROS}) - not adding to book`);
       }
     } else {
-      // This order is an ASK (LAY): try to match with bids (FOR)
-      logger.debug(`LAY order: checking ${this.bids.length} bids for matches`);
+      // This order is an ASK (SELL_YES): try to match with bids (BUY_YES)
+      logger.debug(`SELL_YES order: checking ${this.bids.length} bids for matches`);
       while (order.remainingContractsMicros > 0n && this.bids.length > 0) {
         // SELF-MATCH PREVENTION: Find first non-self order (don't delete user's own orders)
         const idx = this.bids.findIndex(b => b.userId !== order.userId);
@@ -266,15 +266,15 @@ export class Orderbook {
    * Determine if an order is a bid (buying YES) or ask (selling YES).
    * 
    * Correct rule based on user intent:
-   * - FOR side: User wants to buy YES → BID
-   * - LAY side: User wants to sell YES (buy NO) → ASK
+   * - BUY_YES side: User wants to buy YES → BID
+   * - SELL_YES side: User wants to sell YES (buy NO) → ASK
    * 
    * This is based on the original side, NOT the canonicalized yesPts.
    */
   private isBid(order: OrderbookOrder): boolean {
-    // FOR orders are always bids (buying YES)
-    // LAY orders are always asks (selling YES)
-    return order.side === OrderSide.FOR;
+    // BUY_YES orders are always bids (buying YES)
+    // SELL_YES orders are always asks (selling YES)
+    return order.side === OrderSide.BUY_YES || order.side === OrderSide.FOR;
   }
 
   /**

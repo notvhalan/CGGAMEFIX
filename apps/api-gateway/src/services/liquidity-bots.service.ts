@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { PRICE_SCALE, CONTRACT_SCALE, stakeToContracts, liabilityToContracts } from '@betting-exchange/shared-types';
 import { OrderBookBroadcastService } from './orderbook-broadcast.service';
 
-type Side = 'FOR' | 'LAY';
+type Side = 'BUY_YES' | 'SELL_YES';
 
 interface BotConfig {
   marketId: string;
@@ -300,8 +300,8 @@ export class LiquidityBotsService {
       const variedSize = config.sizeContracts * sizeVariance;
       const contractsMicros = BigInt(Math.round(variedSize * 1_000_000));
 
-      // Place FOR (bid)
-      await this.placeOrder(bot, config.marketId, 'FOR', bidYes, contractsMicros);
+      // Place BUY_YES (bid)
+      await this.placeOrder(bot, config.marketId, 'BUY_YES', bidYes, contractsMicros);
       
       // Delay before placing next order
       if (config.orderDelayMs > 0) {
@@ -312,8 +312,8 @@ export class LiquidityBotsService {
         await this.sleep(orderDelay);
       }
 
-      // Place LAY (ask)
-      await this.placeOrder(bot, config.marketId, 'LAY', askYes, contractsMicros);
+      // Place SELL_YES (ask)
+      await this.placeOrder(bot, config.marketId, 'SELL_YES', askYes, contractsMicros);
       
       // Delay before next level
       if (i < config.levels - 1 && config.orderDelayMs > 0) {
@@ -333,10 +333,10 @@ export class LiquidityBotsService {
     if (Math.random() > config.takerChance) return;
 
     // Random side
-    const side: Side = Math.random() < 0.5 ? 'FOR' : 'LAY';
+    const side: Side = Math.random() < 0.5 ? 'BUY_YES' : 'SELL_YES';
     
     // Aggressive but valid prices: 99% for FOR (buying high), 1% for LAY (selling low)
-    const yesPts = side === 'FOR' ? 9900000n : 100000n; // 99% or 1%
+    const yesPts = side === 'BUY_YES' ? 9900000n : 100000n; // 99% or 1%
     
     // Smaller size for takers
     const contractsMicros = BigInt(Math.round(config.sizeContracts * 0.5 * 1_000_000));
@@ -353,7 +353,7 @@ export class LiquidityBotsService {
     timeInForce: 'GTC' | 'IOC' = 'GTC'
   ) {
     const orderId = uuidv4();
-    const pPts = side === 'FOR' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
+    const pPts = side === 'BUY_YES' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
 
     // Log the prices being used
     if (yesPts < 10000n || yesPts > 9990000n) {
@@ -361,7 +361,7 @@ export class LiquidityBotsService {
     }
 
     // Calculate liability
-    const maxLossPerContract = side === 'FOR' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
+    const maxLossPerContract = side === 'BUY_YES' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
     const liabilityPence = Number(
       (maxLossPerContract * contractsMicros) / (BigInt(PRICE_SCALE) * BigInt(1_000_000))
     );
@@ -391,8 +391,8 @@ export class LiquidityBotsService {
         side,
         pPts: Number(pPts),
         yesPts: Number(yesPts),
-        stakePence: side === 'FOR' ? liabilityPence : undefined,
-        liabilityPence: side === 'LAY' ? liabilityPence : undefined,
+        stakePence: side === 'BUY_YES' ? liabilityPence : undefined,
+        liabilityPence: side === 'SELL_YES' ? liabilityPence : undefined,
         originalContractsMicros: contractsMicros.toString(),
         remainingContractsMicros: contractsMicros.toString(),
         timeInForce,

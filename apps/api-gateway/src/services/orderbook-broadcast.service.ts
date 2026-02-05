@@ -21,8 +21,8 @@ export class OrderBookBroadcastService {
       const orders = await this.databaseService.getOrdersByMarketId(marketId);
       
       // Separate into bids (FOR) and asks (LAY)
-      const forOrders = orders.filter(o => o.side === 'FOR');
-      const layOrders = orders.filter(o => o.side === 'LAY');
+      const forOrders = orders.filter(o => o.side === 'BUY_YES');
+      const layOrders = orders.filter(o => o.side === 'SELL_YES');
       
       // Group by yesPts and sum remaining contracts
       const groupByYesPts = (ordersList: typeof forOrders) => {

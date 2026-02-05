@@ -32,7 +32,8 @@ async function bootstrap() {
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
       sameSite: 'lax', // Allows cookies on same-site navigation
-      domain: process.env.COOKIE_DOMAIN || 'localhost', // Use .gamefix.fun for production
+      // Don't set domain in development to allow cookies across localhost ports
+      ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
     },
     saveUninitialized: false,
     rolling: true,

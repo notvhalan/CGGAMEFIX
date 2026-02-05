@@ -57,7 +57,7 @@ export class PositionLotsService {
     );
 
     // Maker is opposite side
-    const makerSide = takerSide === 'FOR' ? 'LAY' : 'FOR';
+    const makerSide = takerSide === 'BUY_YES' ? 'SELL_YES' : 'BUY_YES';
     this.logger.info('Processing maker trade', { userId: makerUserId, side: makerSide, qtyMicros: qtyMicros.toString() });
     await this.processUserTrade(
       makerUserId,
@@ -110,7 +110,7 @@ export class PositionLotsService {
     }
 
     // Determine if this trade increases or decreases exposure
-    const tradeSigned = side === 'FOR' ? contractsMicros : -contractsMicros;
+    const tradeSigned = side === 'BUY_YES' ? contractsMicros : -contractsMicros;
     const newNetPosition = netContractsMicros + tradeSigned;
 
     this.logger.info(`User ${userId}: current=${netContractsMicros}, trade=${tradeSigned} ${side}, new=${newNetPosition}`);
@@ -123,7 +123,7 @@ export class PositionLotsService {
     }
 
     // Case 2: Opposite direction (closing/reducing position)
-    const oppositeSide = side === 'FOR' ? 'LAY' : 'FOR';
+    const oppositeSide = side === 'BUY_YES' ? 'SELL_YES' : 'BUY_YES';
     const lotsToClose = await this.databaseService.query(
       `SELECT lot_id, side, entry_price_yes_pts, qty_remaining_micros, opened_at
        FROM position_lots
@@ -151,7 +151,7 @@ export class PositionLotsService {
       const CONTRACT_SCALE_NUM = 1_000_000;
       
       const contractsDecimal = Number(closeQty) / CONTRACT_SCALE_NUM;
-      const pnlPerContract = lot.side === 'FOR'
+      const pnlPerContract = lot.side === 'BUY_YES'
         ? (exitYesPts - lotEntryYesPts) * CONTRACT_PAYOUT_PENCE_NUM / PRICE_SCALE_NUM
         : (lotEntryYesPts - exitYesPts) * CONTRACT_PAYOUT_PENCE_NUM / PRICE_SCALE_NUM;
       const realizedPnl = Math.floor(pnlPerContract * contractsDecimal);
@@ -238,7 +238,7 @@ export class PositionLotsService {
       const remaining = BigInt(lot.qty_remaining_micros);
       const entryYesPts = BigInt(lot.entry_price_yes_pts);
       
-      if (lot.side === 'FOR') {
+      if (lot.side === 'BUY_YES') {
         netContractsMicros += remaining;
         totalWeightedEntry += remaining * entryYesPts;
         totalContracts += remaining;

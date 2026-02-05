@@ -148,7 +148,7 @@ export class PositionsController {
       // Calculate notional for display
       const notionalPence = Number((BigInt(priceYesPts) * qtyMicros * BigInt(CONTRACT_PAYOUT_PENCE)) / (BigInt(PRICE_SCALE) * BigInt(CONTRACT_SCALE)));
       
-      if (side === 'FOR') {
+      if (side === 'BUY_YES' || side === 'FOR') {
         buyPositions.push({
           sizePence: notionalPence,
           yesPricePts: priceYesPts,
@@ -162,7 +162,7 @@ export class PositionsController {
           yesPricePts: priceYesPts,
           feePence: 0, // Fees already tracked in snapshot
           executedAt: openedAt,
-          contractsMicros: '-' + qtyMicros.toString(), // Negative for LAY
+          contractsMicros: '-' + qtyMicros.toString(), // Negative for SELL_YES
         });
       }
     }
@@ -177,14 +177,14 @@ export class PositionsController {
        WHERE market_id = $1 
        AND status IN ('OPEN', 'PARTIALLY_MATCHED')
        ORDER BY 
-         CASE WHEN side = 'FOR' THEN limit_price_yes_pts ELSE (10000000 - limit_price_yes_pts) END DESC,
+         CASE WHEN side::text IN ('BUY_YES', 'FOR') THEN limit_price_yes_pts ELSE (10000000 - limit_price_yes_pts) END DESC,
          created_at ASC
        LIMIT 20`,
       [marketId]
     );
 
     // Calculate mark price (midpoint of best bid/ask in yesPts)
-    // FOR orders = bids (buying YES), LAY orders = asks (selling YES)
+    // BUY_YES orders = bids (buying YES), SELL_YES orders = asks (selling YES)
     let bestBidYesPts = 0;
     let bestAskYesPts = PRICE_SCALE;
 
@@ -192,7 +192,7 @@ export class PositionsController {
       const yesPts = parseInt(order.yes_pts);
       const side = order.side as string;
       
-      if (side === 'FOR' || side === 'BACK') {
+      if (side === 'BUY_YES' || side === 'FOR' || side === 'BACK') {
         // This is a bid (buying YES)
         bestBidYesPts = Math.max(bestBidYesPts, yesPts);
       } else {

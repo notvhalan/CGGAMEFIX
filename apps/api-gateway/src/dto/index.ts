@@ -5,7 +5,7 @@ import { PRICE_SCALE } from '@betting-exchange/shared-types';
 export const CreateOrderDtoSchema = z.object({
   marketId: z.string().uuid(),
   outcomeId: z.string().uuid().optional(),
-  side: z.enum(['BACK', 'LAY', 'FOR']),
+  side: z.enum(['BACK', 'LAY', 'FOR', 'BUY_YES', 'SELL_YES']),
   // Old format (deprecated) - nullable for backward compatibility
   odds: z.coerce.number().gt(1, 'Odds must be greater than 1').nullable().optional(),
   stake: z.coerce.number().positive('Stake must be greater than 0').nullable().optional(),

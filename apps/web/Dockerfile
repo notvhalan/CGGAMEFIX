@@ -14,8 +14,13 @@ COPY apps/web ./apps/web
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Build the web app
+# Build the web app with environment variables
 WORKDIR /app/apps/web
+
+# Set build-time environment variables for Vite
+ENV VITE_API_URL=https://api.gamefix.fun
+ENV VITE_WS_URL=https://api.gamefix.fun
+
 RUN pnpm run build
 
 # Stage 2: Production
@@ -40,11 +45,14 @@ COPY --from=builder /app/apps/web/public ./apps/web/public
 
 WORKDIR /app/apps/web
 
-# Expose port 80 for standard HTTP
-EXPOSE 80
+# Expose port 3001
+EXPOSE 3001
 
-# Set port via environment variable
-ENV PORT=80
+# Set runtime environment variables
+ENV PORT=3001
+ENV API_BASE_URL=https://api.gamefix.fun
+ENV VITE_API_URL=https://api.gamefix.fun
+ENV VITE_WS_URL=https://api.gamefix.fun
 
 # Start the app
 CMD ["pnpm", "start"]

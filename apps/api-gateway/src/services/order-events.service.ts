@@ -147,7 +147,7 @@ export class OrderEventsService implements OnModuleInit {
     const notional = BigInt(notionalPence);
 
     // Maker side is opposite of taker
-    const makerSide: 'FOR' | 'LAY' = takerSide === 'FOR' ? 'LAY' : 'FOR';
+    const makerSide: 'BUY_YES' | 'SELL_YES' = takerSide === 'BUY_YES' ? 'SELL_YES' : 'BUY_YES';
 
     try {
       // Settle both legs atomically in a single transaction
@@ -188,7 +188,7 @@ export class OrderEventsService implements OnModuleInit {
       tradeId: string;
       orderId: string;
       userId: string;
-      side: 'FOR' | 'LAY';
+      side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY'; // Support both new and legacy values
       filledQtyMicros: bigint;
       notionalPence: bigint;
       feePence: bigint;
@@ -252,7 +252,7 @@ export class OrderEventsService implements OnModuleInit {
     const CONTRACT_PAYOUT_PENCE = 100n; // £1.00 per contract
     const totalPayoutPence = (filledQtyMicros * CONTRACT_PAYOUT_PENCE) / CONTRACT_SCALE;
     
-    if (side === 'FOR') {
+    if (side === 'BUY_YES' || side === 'FOR') {
       // BUY YES: Contribute YES cost (notional + fee) into escrow
       const yesContributionPence = notionalPence + feePence;
       const yesContributionPounds = this.penceToPoundsStr(yesContributionPence);

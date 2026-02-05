@@ -1,0 +1,2 @@
+fn(State<AppState>, uuid::Uuid, axum::Json<CreateOrderRequest>) -> impl std::future::Future<Output = Result<axum::Json<CreateOrderResponse>, AppError>> {create_order}
+fn(State<AppState>, uuid::Uuid, axum::Json<CreateOrderRequest>) -> impl std::future::Future<Output = Result<axum::Json<CreateOrderResponse>, AppError>> {create_order}: Handler<_, _>

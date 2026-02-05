@@ -370,13 +370,13 @@ export class MatchingEngine {
           continue;
         }
         
-        // Convert BACK/LAY to FOR/LAY for backward compatibility during migration
+        // Convert BACK/LAY/FOR to BUY_YES/SELL_YES
         const rawSide = dbOrder.side as string;
         let side: OrderSide;
-        if (rawSide === 'FOR' || rawSide === 'BACK') {
-          side = OrderSide.FOR;
+        if (rawSide === 'BUY_YES' || rawSide === 'FOR' || rawSide === 'BACK') {
+          side = OrderSide.BUY_YES;
         } else {
-          side = OrderSide.LAY;
+          side = OrderSide.SELL_YES;
         }
         
         // Get pPts and yesPts from DB

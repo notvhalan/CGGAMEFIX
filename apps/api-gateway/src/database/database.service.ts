@@ -28,7 +28,7 @@ export interface Order {
   userId: string;
   marketId: string;
   outcomeId: string | null;
-  side: 'FOR' | 'LAY';
+  side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY'; // Support both new and legacy values
   pPts: number;
   yesPts: number;
   stakePence: number | null;
@@ -490,7 +490,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     marketId: string;
     outcomeId?: string;
-    side: 'FOR' | 'LAY';
+    side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY'; // Support both new and legacy values
     pPts: number;
     yesPts: number;
     liabilityPence: number;

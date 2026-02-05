@@ -13,6 +13,7 @@ import { OrderBookBroadcastService } from './services/orderbook-broadcast.servic
 import { LiquidityBotsService } from './services/liquidity-bots.service';
 import { PositionLotsService } from './services/position-lots.service';
 import { OrderEventsService } from './services/order-events.service';
+import { RustExchangeService } from './services/rust-exchange.service';
 
 @Module({
   imports: [
@@ -28,6 +29,6 @@ import { OrderEventsService } from './services/order-events.service';
     CashoutController,
     AdminController,
   ],
-  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService, OrderEventsService],
+  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService, OrderEventsService, RustExchangeService],
 })
 export class AppModule {}

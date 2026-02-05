@@ -52,7 +52,7 @@ export function OrderTicket({
   const [maxSlippagePercent, setMaxSlippagePercent] = useState('5.00'); // Default 5% slippage
   const [showDetails, setShowDetails] = useState(false);
 
-  const isBuy = side === 'FOR';
+  const isBuy = side === 'BUY_YES';
 
   const theme = isBuy
     ? {
@@ -86,11 +86,11 @@ export function OrderTicket({
   const amountPence = Math.round(amountValue * 100);
   
   // Determine effective price based on order type
-  const marketYesPPts = side === 'FOR' ? bestAskPPts : bestBidPPts; // Buy YES takes asks, Sell YES takes bids
+  const marketYesPPts = side === 'BUY_YES' ? bestAskPPts : bestBidPPts; // Buy YES takes asks, Sell YES takes bids
   const effectiveYesPPts = orderType === 'MARKET' && marketYesPPts ? marketYesPPts : yesInputPPts;
   
   // Price submitted to API (YES for FOR, NO for LAY)
-  const pPtsSubmitted = side === 'FOR' ? effectiveYesPPts : (PRICE_SCALE - effectiveYesPPts);
+  const pPtsSubmitted = side === 'BUY_YES' ? effectiveYesPPts : (PRICE_SCALE - effectiveYesPPts);
   
   // Time in force based on order type
   const timeInForce: 'GTC' | 'IOC' = orderType === 'MARKET' ? 'IOC' : 'GTC';
@@ -105,7 +105,7 @@ export function OrderTicket({
   let potentialProfit: number;
   let maxLoss: number;
   
-  if (side === 'FOR') {
+  if (side === 'BUY_YES') {
     // FOR (Buy YES): submit YES price as-is
     yesPts = effectiveYesPPts;
     contractsMicros = stakeToContracts(amountPence, yesPts);
@@ -165,7 +165,7 @@ export function OrderTicket({
   const fillRangeHighPPts = clampPPts(effectiveYesPPts + maxSlippagePPts);
 
   const canSubmit = Boolean(wallet) && (orderType === 'LIMIT' || marketYesPPts);
-  const ctaLabel = side === 'FOR' ? 'Buy YES' : 'Sell YES';
+  const ctaLabel = side === 'BUY_YES' ? 'Buy YES' : 'Sell YES';
 
   const surfaceStyle: React.CSSProperties = compact
     ? { background: 'transparent' }
@@ -292,13 +292,13 @@ export function OrderTicket({
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
           <button
             type="button"
-            onClick={() => setSide('FOR')}
+            onClick={() => setSide('BUY_YES')}
             style={{
               height: 72,
               borderRadius: radius,
-              border: side === 'FOR' ? `2px solid ${theme.accentSolid}` : `1px solid ${borderColor}`,
-              background: side === 'FOR' ? theme.accentSolid : inputBg,
-              color: side === 'FOR' ? 'white' : primaryText,
+              border: side === 'BUY_YES' ? `2px solid ${theme.accentSolid}` : `1px solid ${borderColor}`,
+              background: side === 'BUY_YES' ? theme.accentSolid : inputBg,
+              color: side === 'BUY_YES' ? 'white' : primaryText,
               cursor: 'pointer',
               padding: '0.5rem 0.6rem',
               display: 'flex',
@@ -326,13 +326,13 @@ export function OrderTicket({
 
           <button
             type="button"
-            onClick={() => setSide('LAY')}
+            onClick={() => setSide('SELL_YES')}
             style={{
               height: 72,
               borderRadius: radius,
-              border: side === 'LAY' ? `2px solid ${theme.accentSolid}` : `1px solid ${borderColor}`,
-              background: side === 'LAY' ? theme.accentSolid : inputBg,
-              color: side === 'LAY' ? 'white' : primaryText,
+              border: side === 'SELL_YES' ? `2px solid ${theme.accentSolid}` : `1px solid ${borderColor}`,
+              background: side === 'SELL_YES' ? theme.accentSolid : inputBg,
+              color: side === 'SELL_YES' ? 'white' : primaryText,
               cursor: 'pointer',
               padding: '0.5rem 0.6rem',
               display: 'flex',

@@ -1,99 +1,247 @@
-import { io, Socket } from 'socket.io-client';
-
+// Native WebSocket client for Rust exchange
 const WS_URL = typeof window !== 'undefined' 
-  ? (window.ENV?.WS_URL || 'ws://localhost:3000')
-  : 'ws://localhost:3000';
+  ? (window.ENV?.RUST_WS_URL || 'ws://localhost:3001/ws')
+  : 'ws://localhost:3001/ws';
 
-export type WSMessage = 
-  | { type: 'subscribe'; topic: string }
-  | { type: 'unsubscribe'; topic: string };
+export type RustWSMessage = 
+  | { type: 'Subscribe'; market_id: string }
+  | { type: 'Unsubscribe'; market_id: string }
+  | { type: 'Ping' }
+  | { type: 'Pong' };
 
-export type WSEvent =
-  | { type: 'book_update'; data: any }
-  | { type: 'trade'; data: any }
-  | { type: 'order_accepted'; data: any }
-  | { type: 'order_matched'; data: any }
-  | { type: 'order_cancelled'; data: any };
+export type RustWSEvent =
+  | { 
+      type: 'Trade'; 
+      trade_id: string;
+      market_id: string;
+      maker_order_id: string;
+      taker_order_id: string;
+      maker_user_id: string;
+      taker_user_id: string;
+      price_yes_pts: number;
+      qty_micros: number;
+      notional_pence: number;
+      taker_side: string;
+      maker_fee_pence: number;
+      taker_fee_pence: number;
+    }
+  | { type: 'OrderbookSnapshot'; market_id: string; bids: any[]; asks: any[] }
+  | { type: 'OrderbookDelta'; market_id: string; changes: any[] }
+  | { type: 'Pong' };
 
 export class WSClient {
-  private socket: Socket | null = null;
+  private ws: WebSocket | null = null;
   private listeners = new Map<string, Set<(data: any) => void>>();
+  private subscribedMarkets = new Set<string>();
+  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 10;
+  private reconnectDelay = 1000;
+  private pingInterval: NodeJS.Timeout | null = null;
 
   connect(): void {
-    if (this.socket?.connected) return;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      console.log('[Rust WS] ℹ️ Already connected');
+      return;
+    }
+    
+    if (this.ws?.readyState === WebSocket.CONNECTING) {
+      console.log('[Rust WS] ℹ️ Connection already in progress');
+      return;
+    }
 
-    this.socket = io(WS_URL, {
-      path: '/ws',
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 10,
-    });
+    try {
+      console.log('[Rust WS] 🔌 Creating new WebSocket connection to', WS_URL);
+      this.ws = new WebSocket(WS_URL);
 
-    this.socket.on('connected', (data) => {
-      console.log('[WS] Connected:', data);
-    });
+      this.ws.onopen = () => {
+        console.log('[Rust WS] ✅ Connected to', WS_URL, 'ReadyState:', this.ws?.readyState);
+        this.reconnectAttempts = 0;
+        this.emit('connected', { url: WS_URL });
+        
+        // Use requestAnimationFrame to ensure WebSocket is fully open
+        requestAnimationFrame(() => {
+          // Resubscribe to all markets
+          this.subscribedMarkets.forEach(marketId => {
+            console.log('[Rust WS] 📡 Resubscribing to market:', marketId);
+            const message = { type: 'subscribe', market_id: marketId };
+            const payload = JSON.stringify(message);
+            console.log('[Rust WS] 📤 Attempting to send from onopen:', payload, 'ReadyState:', this.ws?.readyState);
+            
+            try {
+              if (this.ws?.readyState === WebSocket.OPEN) {
+                this.ws.send(payload);
+                console.log('[Rust WS] ✅ Message sent successfully');
+              } else {
+                console.error('[Rust WS] ❌ WebSocket not ready in onopen callback, state:', this.ws?.readyState);
+              }
+            } catch (error) {
+              console.error('[Rust WS] ❌ Error sending message:', error);
+            }
+          });
 
-    this.socket.on('subscribed', (data) => {
-      console.log('[WS] Subscribed:', data.topic);
-    });
+          // Start ping/pong heartbeat
+          this.startPingInterval();
+        });
+      };
 
-    this.socket.on('unsubscribed', (data) => {
-      console.log('[WS] Unsubscribed:', data.topic);
-    });
+      this.ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data) as RustWSEvent;
+          console.log('[Rust WS] 📨 Message received:', message.type, message);
 
-    this.socket.on('error', (data) => {
-      console.error('[WS] Error:', data);
-    });
+          if (message.type === 'trade') {
+            // Convert Rust format to frontend format
+            const trade = {
+              id: message.trade_id,
+              market_id: message.market_id,
+              maker_order_id: message.maker_order_id,
+              taker_order_id: message.taker_order_id,
+              maker_id: message.maker_user_id,
+              taker_id: message.taker_user_id,
+              yes_pts: message.price_yes_pts,
+              qty_micros: message.qty_micros,
+              cost_pence: message.notional_pence,
+              side: message.taker_side === 'BuyYes' ? 'BUY_YES' : 'SELL_YES',
+              maker_fee_pence: message.maker_fee_pence,
+              taker_fee_pence: message.taker_fee_pence,
+              executed_at: new Date().toISOString(),
+            };
+            this.emit('trade', trade);
+          } else if (message.type === 'orderbook_snapshot' || message.type === 'orderbook_delta') {
+            console.log('[Rust WS] 📖 Orderbook update:', message.type, 'bids:', message.bids?.length, 'asks:', message.asks?.length);
+            // Convert Rust orderbook format to frontend format
+            const orderBook = {
+              bids: message.bids?.map((bid: any) => ({
+                pPts: bid.price_yes_pts,
+                yesPts: bid.price_yes_pts,
+                contractsMicros: bid.qty_micros, // Keep as micros for component
+                contracts: bid.qty_micros / 1000000,
+                orders: bid.num_orders || 1
+              })) || [],
+              asks: message.asks?.map((ask: any) => ({
+                pPts: ask.price_yes_pts,
+                yesPts: ask.price_yes_pts,
+                contractsMicros: ask.qty_micros, // Keep as micros for component
+                contracts: ask.qty_micros / 1000000,
+                orders: ask.num_orders || 1
+              })) || []
+            };
+            console.log('[Rust WS] 📊 Emitting book_update with', orderBook.bids.length, 'bids,', orderBook.asks.length, 'asks');
+            this.emit('book_update', orderBook);
+          } else if (message.type === 'pong') {
+            // Heartbeat response
+          } else {
+            console.log('[Rust WS] ⚠️ Unknown message type:', message.type);
+          }
+        } catch (error) {
+          console.error('[Rust WS] Failed to parse message:', error);
+        }
+      };
 
-    this.socket.on('book_update', (data) => {
-      this.emit('book_update', data);
-    });
+      this.ws.onerror = (error) => {
+        console.error('[Rust WS] ❌ WebSocket Error:', error);
+        console.error('[Rust WS] ❌ ReadyState:', this.ws?.readyState);
+        console.error('[Rust WS] ❌ URL:', this.ws?.url);
+      };
 
-    this.socket.on('trade', (data) => {
-      this.emit('trade', data);
-    });
+      this.ws.onclose = () => {
+        console.log('[Rust WS] Disconnected');
+        this.stopPingInterval();
+        this.attemptReconnect();
+      };
+    } catch (error) {
+      console.error('[Rust WS] Connection failed:', error);
+      this.attemptReconnect();
+    }
+  }
 
-    this.socket.on('order_accepted', (data) => {
-      this.emit('order_accepted', data);
-    });
+  private attemptReconnect(): void {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error('[Rust WS] Max reconnection attempts reached');
+      return;
+    }
 
-    this.socket.on('order_matched', (data) => {
-      this.emit('order_matched', data);
-    });
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelay * this.reconnectAttempts;
+    console.log(`[Rust WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
-    this.socket.on('order_cancelled', (data) => {
-      this.emit('order_cancelled', data);
-    });
+    this.reconnectTimeout = setTimeout(() => {
+      this.connect();
+    }, delay);
+  }
 
-    this.socket.on('disconnect', () => {
-      console.log('[WS] Disconnected');
-    });
+  private startPingInterval(): void {
+    this.pingInterval = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.sendMessage({ type: 'Ping' });
+      }
+    }, 30000); // Ping every 30 seconds
+  }
 
-    this.socket.on('reconnect', (attemptNumber) => {
-      console.log('[WS] Reconnected after', attemptNumber, 'attempts');
-    });
+  private stopPingInterval(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  private sendMessage(message: RustWSMessage): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      // Convert to lowercase for Rust serde
+      const payload = JSON.stringify({
+        type: message.type.toLowerCase(),
+        ...('market_id' in message && { market_id: message.market_id })
+      });
+      console.log('[Rust WS] 📤 Sending:', payload);
+      this.ws.send(payload);
+    } else {
+      console.warn('[Rust WS] ⚠️ Cannot send message, WebSocket not open. State:', this.ws?.readyState);
+    }
   }
 
   disconnect(): void {
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
+    this.stopPingInterval();
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
     }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.subscribedMarkets.clear();
     this.listeners.clear();
   }
 
   subscribe(topic: string): void {
-    if (!this.socket) {
-      console.warn('[WS] Not connected, cannot subscribe to', topic);
+    // Parse topic format: "book:marketId" or "trades:marketId"
+    const marketId = topic.split(':')[1];
+    if (!marketId) {
+      console.warn('[Rust WS] ⚠️ Invalid topic format:', topic);
       return;
     }
-    this.socket.emit('message', { type: 'subscribe', topic });
+
+    console.log('[Rust WS] 📡 Subscribe request for topic:', topic, '→ market:', marketId);
+    
+    if (!this.subscribedMarkets.has(marketId)) {
+      this.subscribedMarkets.add(marketId);
+      console.log('[Rust WS] ✉️ Sending Subscribe message to Rust for market:', marketId);
+      this.sendMessage({ type: 'Subscribe', market_id: marketId });
+    } else {
+      console.log('[Rust WS] ℹ️ Already subscribed to market:', marketId);
+    }
   }
 
   unsubscribe(topic: string): void {
-    if (!this.socket) return;
-    this.socket.emit('message', { type: 'unsubscribe', topic });
+    const marketId = topic.split(':')[1];
+    if (!marketId) return;
+
+    if (this.subscribedMarkets.has(marketId)) {
+      this.subscribedMarkets.delete(marketId);
+      console.log('[Rust WS] Unsubscribing from market:', marketId);
+      this.sendMessage({ type: 'Unsubscribe', market_id: marketId });
+    }
   }
 
   on(event: string, handler: (data: any) => void): void {
@@ -115,7 +263,7 @@ export class WSClient {
   }
 
   isConnected(): boolean {
-    return this.socket?.connected ?? false;
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 }
 

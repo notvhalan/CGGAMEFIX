@@ -612,8 +612,8 @@ export default function Dashboard() {
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
-                        <span className={`pill ${o.side === 'FOR' ? 'pill-yes' : 'pill-no'}`} style={{ fontSize: '0.5625rem', padding: '0.0625rem 0.25rem', flexShrink: 0 }}>
-                          {o.side === 'FOR' ? 'BUY' : 'SELL'}
+                        <span className={`pill ${o.side === 'BUY_YES' ? 'pill-yes' : 'pill-no'}`} style={{ fontSize: '0.5625rem', padding: '0.0625rem 0.25rem', flexShrink: 0 }}>
+                          {o.side === 'BUY_YES' ? 'BUY' : 'SELL'}
                         </span>
                         <span style={{ color: '#e4e8eb', fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
                           {(o.pPts / 100_000).toFixed(1)}%

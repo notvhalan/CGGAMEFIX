@@ -45,6 +45,8 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
     ws.subscribe(`book:${marketId}`);
 
     const handler = (data: any) => {
+      console.log('[OrderBook] 📖 Received book_update:', data);
+      console.log('[OrderBook] Bids:', data?.bids?.length, 'Asks:', data?.asks?.length);
       setOrderBook(data);
     };
 

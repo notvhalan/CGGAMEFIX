@@ -214,6 +214,11 @@ export class AdminController {
       const CONTRACT_PAYOUT_PENCE = 100n; // £1.00 per contract
       const PRICE_SCALE = 10_000_000n;
 
+      let totalPayoutGbp = 0;
+      let winnersCount = 0;
+      let losersCount = 0;
+      const userSettlements: any[] = [];
+
       for (const lot of positionLots) {
         // Determine if this position is a winner
         const isWinner = (body.winningOutcome === 'YES' && lot.side === 'FOR') ||
@@ -242,10 +247,14 @@ export class AdminController {
           // Winner: Release position lock, credit full payout to available balance
           const payoutAmount = Number(totalPayoutPence);
           const lockedAmount = Number(lockedPence);
+          const profitPence = payoutAmount - lockedAmount;
+
+          winnersCount++;
+          totalPayoutGbp += payoutAmount / 100;
 
           this.logger.info(
             `Winner: user=${lot.user_id}, side=${lot.side}, qty=${lot.qty_remaining_micros}, ` +
-            `locked=${lockedAmount}p, payout=${payoutAmount}p, profit=${payoutAmount - lockedAmount}p`
+            `locked=${lockedAmount}p, payout=${payoutAmount}p, profit=${profitPence}p`
           );
 
           await this.databaseService.query(
@@ -256,9 +265,23 @@ export class AdminController {
              WHERE user_id = $3 AND currency = 'GBP'`,
             [lockedAmount / 100, payoutAmount / 100, lot.user_id]
           );
+
+          // Track for settlement record
+          userSettlements.push({
+            userId: lot.user_id,
+            marketId: lot.market_id,
+            positionSide: lot.side,
+            contractsSettled: lot.qty_remaining_micros,
+            entryPriceYesPts: lot.entry_price_yes_pts,
+            isWinner: true,
+            payoutGbp: payoutAmount / 100,
+            profitLossGbp: profitPence / 100,
+          });
         } else {
           // Loser: Just release the position lock (funds go to winners)
           const lockedAmount = Number(lockedPence);
+
+          losersCount++;
 
           this.logger.info(
             `Loser: user=${lot.user_id}, side=${lot.side}, qty=${lot.qty_remaining_micros}, ` +
@@ -272,10 +295,65 @@ export class AdminController {
              WHERE user_id = $2 AND currency = 'GBP'`,
             [lockedAmount / 100, lot.user_id]
           );
+
+          // Track for settlement record
+          userSettlements.push({
+            userId: lot.user_id,
+            marketId: lot.market_id,
+            positionSide: lot.side,
+            contractsSettled: lot.qty_remaining_micros,
+            entryPriceYesPts: lot.entry_price_yes_pts,
+            isWinner: false,
+            payoutGbp: 0,
+            profitLossGbp: -(lockedAmount / 100),
+          });
         }
       }
 
-      // 4. Close all position lots (set remaining quantity to 0)
+      // 4. Create settlement record
+      const settlementResult = await this.databaseService.query(
+        `INSERT INTO market_settlements 
+         (market_id, resolved_by_user_id, winning_outcome, settlement_reason, 
+          positions_settled, orders_cancelled, total_payout_gbp, winners_count, losers_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id`,
+        [
+          body.marketId,
+          userId,
+          body.winningOutcome,
+          body.reason || null,
+          positionLots.length,
+          cancelledOrdersResult.rows.length,
+          totalPayoutGbp,
+          winnersCount,
+          losersCount,
+        ]
+      );
+
+      const settlementId = settlementResult.rows[0].id;
+
+      // 5. Create individual user settlement records
+      for (const userSettlement of userSettlements) {
+        await this.databaseService.query(
+          `INSERT INTO user_settlements 
+           (settlement_id, user_id, market_id, position_side, contracts_settled, 
+            entry_price_yes_pts, is_winner, payout_gbp, profit_loss_gbp)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            settlementId,
+            userSettlement.userId,
+            userSettlement.marketId,
+            userSettlement.positionSide,
+            userSettlement.contractsSettled,
+            userSettlement.entryPriceYesPts,
+            userSettlement.isWinner,
+            userSettlement.payoutGbp,
+            userSettlement.profitLossGbp,
+          ]
+        );
+      }
+
+      // 6. Close all position lots (set remaining quantity to 0)
       await this.databaseService.query(
         `UPDATE position_lots
          SET qty_remaining_micros = 0,
@@ -284,7 +362,7 @@ export class AdminController {
         [body.marketId]
       );
 
-      // 5. Clear positions table (set net quantity to 0)
+      // 7. Clear positions table (set net quantity to 0)
       await this.databaseService.query(
         `UPDATE positions
          SET net_qty_micros = 0,
@@ -295,7 +373,7 @@ export class AdminController {
 
       this.logger.info(`Market ${body.marketId} settlement complete`);
 
-      // 6. Broadcast orderbook update to clear frontend
+      // 8. Broadcast orderbook update to clear frontend
       this.natsClient.publish(NATS_SUBJECTS.MARKET_BOOK_UPDATED, {
         marketId: body.marketId,
         timestamp: Date.now(),

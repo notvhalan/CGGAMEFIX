@@ -43,17 +43,21 @@ export class PositionsController {
       throw new Error('User not authenticated');
     }
 
+    // Query position_lots instead of positions table to show all markets with open lots
     const result = await this.databaseService.query(
       `SELECT 
-        p.market_id,
-        p.net_qty_micros,
-        p.avg_open_price_yes_pts,
-        p.realized_pnl_pence,
-        p.fees_paid_pence,
+        pl.market_id,
+        COALESCE(SUM(CASE WHEN pl.side = 'BUY_YES' THEN pl.qty_remaining_micros ELSE -pl.qty_remaining_micros END), 0) as net_qty_micros,
+        COALESCE(p.avg_open_price_yes_pts, 0) as avg_open_price_yes_pts,
+        COALESCE(p.realized_pnl_pence, 0) as realized_pnl_pence,
+        COALESCE(p.fees_paid_pence, 0) as fees_paid_pence,
         m.name as market_question
-       FROM positions p
-       JOIN markets m ON p.market_id = m.id
-       WHERE p.user_id = $1 AND p.net_qty_micros != 0`,
+       FROM position_lots pl
+       JOIN markets m ON pl.market_id = m.id
+       LEFT JOIN positions p ON p.market_id = pl.market_id AND p.user_id = pl.user_id
+       WHERE pl.user_id = $1 AND pl.qty_remaining_micros > 0
+       GROUP BY pl.market_id, m.name, p.avg_open_price_yes_pts, p.realized_pnl_pence, p.fees_paid_pence
+       HAVING SUM(pl.qty_remaining_micros) > 0`,
       [userId]
     );
 
@@ -87,7 +91,21 @@ export class PositionsController {
       throw new Error('User not authenticated');
     }
 
-    // Get position snapshot from positions table (NOT trades)
+    // Get open lots first to determine if there's an active position
+    const lotsResult = await this.databaseService.query(
+      `SELECT 
+        side,
+        entry_price_yes_pts,
+        qty_remaining_micros,
+        realized_pnl_pence,
+        opened_at
+       FROM position_lots
+       WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0
+       ORDER BY opened_at ASC`,
+      [userId, marketId]
+    );
+
+    // Get position snapshot from positions table (for net position, fees, realized PnL)
     const positionResult = await this.databaseService.query(
       `SELECT 
         net_qty_micros,
@@ -99,8 +117,8 @@ export class PositionsController {
       [marketId, userId]
     );
     
-    // If no position, return early with zero position
-    if (positionResult.rows.length === 0) {
+    // If no open lots and no position record, return early with zero position
+    if (lotsResult.rows.length === 0 && positionResult.rows.length === 0) {
       return {
         marketId,
         netYesPence: 0,
@@ -115,26 +133,12 @@ export class PositionsController {
       };
     }
 
-    // Use snapshot data from positions table
-    const position = positionResult.rows[0];
+    // Use snapshot data from positions table (may be null if only lots exist)
+    const position = positionResult.rows[0] || {};
     const netContractsMicros = BigInt(position.net_qty_micros || '0');
     const avgEntryYesPts = parseInt(position.avg_open_price_yes_pts || '0');
     const realizedPnlPence = parseInt(position.realized_pnl_pence || '0');
     const totalFeesPence = parseInt(position.fees_paid_pence || '0');
-
-    // Get open lots for UI breakdown
-    const lotsResult = await this.databaseService.query(
-      `SELECT 
-        side,
-        entry_price_yes_pts,
-        qty_remaining_micros,
-        realized_pnl_pence,
-        opened_at
-       FROM position_lots
-       WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0
-       ORDER BY opened_at ASC`,
-      [userId, marketId]
-    );
 
     const buyPositions: TradePosition[] = [];
     const sellPositions: TradePosition[] = [];
@@ -205,11 +209,11 @@ export class PositionsController {
       ? Math.floor((bestBidYesPts + bestAskYesPts) / 2)
       : avgEntryYesPts || Math.floor(PRICE_SCALE / 2);
 
-    // Position is open if netContractsMicros !== 0 (not based on cashflow!)
-    const absContractsMicros = netContractsMicros < 0n ? -netContractsMicros : netContractsMicros;
-    const isOpen = netContractsMicros !== 0n;
+    // Position is open if there are any open lots (not based on net_qty_micros!)
+    const isOpen = lotsResult.rows.length > 0;
     
-    // Notional exposure in pence (at payout), independent of entry prices
+    // Notional exposure in pence based on open lots
+    const absContractsMicros = netContractsMicros < 0n ? -netContractsMicros : netContractsMicros;
     const notionalPence = Number(
       (absContractsMicros * BigInt(CONTRACT_PAYOUT_PENCE)) / BigInt(CONTRACT_SCALE)
     );

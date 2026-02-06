@@ -160,6 +160,7 @@ pub async fn create_order(
     // 3. Send command to matching engine
     app.match_tx.send(MatchCommand {
         order_id,
+        user_id,
         market_id: req.market_id,
         side: req.side,
         limit_yes_pts: req.limit_yes_pts,

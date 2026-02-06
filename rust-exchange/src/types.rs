@@ -81,6 +81,7 @@ pub struct Order {
 #[derive(Debug, Clone)]
 pub struct MatchCommand {
     pub order_id: Uuid,
+    pub user_id: Uuid,
     pub market_id: Uuid,
     pub side: Side,
     pub limit_yes_pts: i64,

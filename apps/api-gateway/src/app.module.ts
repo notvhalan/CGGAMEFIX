@@ -8,6 +8,7 @@ import { WalletController } from './controllers/wallet.controller';
 import { PositionsController } from './controllers/positions.controller';
 import { CashoutController } from './controllers/cashout.controller';
 import { AdminController } from './controllers/admin.controller';
+import { SettlementsController } from './controllers/settlements.controller';
 import { EventsGateway } from './gateways/events.gateway';
 import { OrderBookBroadcastService } from './services/orderbook-broadcast.service';
 import { LiquidityBotsService } from './services/liquidity-bots.service';
@@ -28,6 +29,7 @@ import { RustExchangeService } from './services/rust-exchange.service';
     PositionsController,
     CashoutController,
     AdminController,
+    SettlementsController,
   ],
   providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService, OrderEventsService, RustExchangeService],
 })

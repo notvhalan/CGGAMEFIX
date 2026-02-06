@@ -85,7 +85,7 @@ export class LiquidityBotsService {
     // Fetch existing bot users from database
     try {
       const botUsersResult = await this.databaseService.query(
-        `SELECT id, email FROM users WHERE email LIKE '%@bot.local' ORDER BY email LIMIT $1`,
+        `SELECT id, email FROM users WHERE email LIKE '%@bot.local' ORDER BY RANDOM() LIMIT $1`,
         [params.userCount]
       );
 
@@ -97,9 +97,18 @@ export class LiquidityBotsService {
         this.logger.warn(`Only found ${botUsersResult.rows.length} bot users, requested ${params.userCount}`);
       }
 
-      // Use existing bot users
+      const usedBotIds = new Set<string>();
+
+      // Use existing bot users (ensuring uniqueness)
       for (const row of botUsersResult.rows) {
         const userId = row.id;
+
+        // Skip if already used (should not happen with RANDOM, but safety check)
+        if (usedBotIds.has(userId)) {
+          this.logger.warn(`Skipping duplicate bot user ${userId}`);
+          continue;
+        }
+        usedBotIds.add(userId);
 
         // Ensure wallet exists and is funded
         await this.databaseService.ensureWallet(userId, 'GBP');
@@ -128,6 +137,8 @@ export class LiquidityBotsService {
 
         this.logger.info(`Using bot user: ${row.email} (${userId}) with balance £${fundResult.rows[0].balance}`);
       }
+
+      this.logger.info(`✓ Selected ${this.bots.length} unique bot users from pool of ${botUsersResult.rows.length}`);
     } catch (error) {
       this.logger.error('Failed to fetch bot users:', error);
       throw error;

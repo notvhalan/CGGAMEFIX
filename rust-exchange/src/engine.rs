@@ -149,7 +149,7 @@ impl MatchingEngine {
         
         let (fills, remaining) = book.match_order(
             cmd.order_id,
-            Uuid::nil(), // Will be filled by DB lookup in clearing
+            cmd.user_id,
             cmd.side,
             cmd.limit_yes_pts,
             cmd.qty_micros,
@@ -175,7 +175,7 @@ impl MatchingEngine {
             book.add_order(
                 crate::orderbook::BookOrder {
                     order_id: cmd.order_id,
-                    user_id: Uuid::nil(), // Will be looked up
+                    user_id: cmd.user_id,
                     qty_remaining_micros: remaining,
                     created_at: chrono::Utc::now().timestamp_millis(),
                 },

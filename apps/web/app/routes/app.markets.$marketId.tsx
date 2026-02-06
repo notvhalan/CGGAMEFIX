@@ -314,8 +314,8 @@ export default function MarketDetail() {
             </h1>
             <span style={{ 
               fontSize: '0.6875rem', 
-              color: market.status === 'ACTIVE' ? '#10b981' : '#64748b',
-              background: market.status === 'ACTIVE' ? '#10b98120' : '#64748b20',
+              color: market.status === 'ACTIVE' ? '#10b981' : market.status === 'SETTLED' ? '#3b82f6' : '#64748b',
+              background: market.status === 'ACTIVE' ? '#10b98120' : market.status === 'SETTLED' ? '#3b82f620' : '#64748b20',
               padding: '0.25rem 0.5rem',
               borderRadius: '3px',
               fontWeight: 600,
@@ -324,6 +324,21 @@ export default function MarketDetail() {
             }}>
               {market.status}
             </span>
+            {market.status === 'SETTLED' && (
+              <a 
+                href={`/app/settlements/market/${marketId}`}
+                style={{
+                  fontSize: '0.75rem',
+                  color: '#3b82f6',
+                  textDecoration: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.25rem'
+                }}
+              >
+                View Settlement Details →
+              </a>
+            )}
             {market.endTime && (
               <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
                 Ends: {new Date(market.endTime).toLocaleString()}
@@ -632,7 +647,7 @@ export default function MarketDetail() {
       </div>
 
       {/* Positions Modal */}
-      {position && BigInt(position.netContractsMicros || '0') !== 0n && (
+      {position && ((position.buyPositions && position.buyPositions.length > 0) || (position.sellPositions && position.sellPositions.length > 0)) && (
         <PositionsModal
           position={position}
           isOpen={isPositionsModalOpen}

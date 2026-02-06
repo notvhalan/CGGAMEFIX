@@ -41,14 +41,19 @@ export function PositionPanel({ position, isLoading, compact = false, onOpenDeta
     );
   }
 
-  // Position exists if netContractsMicros !== 0 (not based on cashflow!)
+  // Position exists if there are any open buy or sell positions (not based on net contracts!)
   const netContractsMicros = position 
     ? (typeof position.netContractsMicros === 'string' 
         ? BigInt(position.netContractsMicros) 
         : position.netContractsMicros)
     : 0n;
 
-  if (!position || netContractsMicros === 0n) {
+  const hasOpenPositions = position && (
+    (position.buyPositions && position.buyPositions.length > 0) ||
+    (position.sellPositions && position.sellPositions.length > 0)
+  );
+
+  if (!position || !hasOpenPositions) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
         {/* Header */}

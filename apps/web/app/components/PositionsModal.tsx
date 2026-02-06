@@ -74,9 +74,12 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const avgEntryPercent = avgEntryYesPts / 100_000;
   const markPercent = markYesPts / 100_000;
 
+  // Check if there are any open positions
+  const hasOpenPositions = (buyPositions && buyPositions.length > 0) || (sellPositions && sellPositions.length > 0);
+
   // Fetch cashout quote
   const fetchCashoutQuote = useCallback(async () => {
-    if (!netContractsMicros || netContractsMicros === 0n) {
+    if (!hasOpenPositions) {
       return;
     }
 
@@ -104,7 +107,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     } finally {
       setLoadingQuote(false);
     }
-  }, [marketId, netContractsMicros]);
+  }, [marketId, hasOpenPositions]);
 
   // Fetch quote on mount and refresh every 5 seconds
   useEffect(() => {
@@ -364,8 +367,8 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
   // Combine all positions for table view
   const allGroups = [
-    ...groupedBuyPositions.map(g => ({ ...g, side: 'FOR' as const })),
-    ...groupedSellPositions.map(g => ({ ...g, side: 'LAY' as const }))
+    ...groupedBuyPositions.map(g => ({ ...g, side: 'BUY_YES' as const })),
+    ...groupedSellPositions.map(g => ({ ...g, side: 'SELL_YES' as const }))
   ].filter(g => {
     if (sideFilter === 'for') return g.side === 'BUY_YES';
     if (sideFilter === 'lay') return g.side === 'SELL_YES';
@@ -679,10 +682,10 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                       }}
                     >
                       <div style={{
-                        color: group.side === 'FOR' ? '#3fb950' : '#f85149',
+                        color: group.side === 'BUY_YES' ? '#3fb950' : '#f85149',
                         fontWeight: 600
                       }}>
-                        {group.side === 'FOR' ? '▲ FOR' : '▼ LAY'}
+                        {group.side === 'BUY_YES' ? '▲ FOR' : '▼ LAY'}
                       </div>
                       <div style={{ color: '#c9d1d9' }}>
                         {avgEntry.toFixed(2)}%

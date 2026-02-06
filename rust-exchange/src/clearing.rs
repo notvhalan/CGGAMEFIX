@@ -173,8 +173,8 @@ impl ClearingService {
             .await?;
 
             // 8. Update positions
-            self.update_position(&mut tx, fill.maker_user_id, fill.maker_side, fill.exec_yes_pts, fill.qty_micros).await?;
-            self.update_position(&mut tx, fill.taker_user_id, taker_order.side, fill.exec_yes_pts, fill.qty_micros).await?;
+            self.update_position(&mut tx, taker_order.market_id, fill.maker_user_id, fill.maker_side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id).await?;
+            self.update_position(&mut tx, taker_order.market_id, fill.taker_user_id, taker_order.side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id).await?;
 
             tx.commit().await?;
 
@@ -217,37 +217,58 @@ impl ClearingService {
     async fn update_position(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        market_id: uuid::Uuid,
         user_id: uuid::Uuid,
         side: Side,
         exec_yes_pts: i64,
         qty_micros: i64,
+        trade_id: uuid::Uuid,
     ) -> anyhow::Result<()> {
         let delta = match side {
             Side::BuyYes => qty_micros,
             Side::SellYes => -qty_micros,
         };
 
+        // Update positions table
         sqlx::query!(
             r#"
             INSERT INTO positions (user_id, market_id, net_qty_micros, avg_open_price_yes_pts, updated_at)
-            SELECT user_id, market_id, $2::BIGINT, $3::BIGINT, NOW()
-            FROM orders
-            WHERE id = $1
+            VALUES ($1, $2, $3::BIGINT, $4::BIGINT, NOW())
             ON CONFLICT (user_id, market_id) DO UPDATE
-            SET net_qty_micros = positions.net_qty_micros + $2::BIGINT,
+            SET net_qty_micros = positions.net_qty_micros + $3::BIGINT,
                 avg_open_price_yes_pts = CASE
-                    WHEN positions.net_qty_micros + $2::BIGINT = 0 THEN 0
-                    ELSE (positions.avg_open_price_yes_pts * positions.net_qty_micros + $3::BIGINT * $2::BIGINT) / (positions.net_qty_micros + $2::BIGINT)
+                    WHEN positions.net_qty_micros + $3::BIGINT = 0 THEN 0
+                    ELSE (positions.avg_open_price_yes_pts * positions.net_qty_micros + $4::BIGINT * $3::BIGINT) / (positions.net_qty_micros + $3::BIGINT)
                 END,
                 updated_at = NOW()
             "#,
-            // This is a placeholder - you'd get market_id from the fill/order
-            uuid::Uuid::nil(),
+            user_id,
+            market_id,
             delta,
             exec_yes_pts
         )
         .execute(&mut **tx)
         .await?;
+
+        // Create position_lot for buy orders
+        if matches!(side, Side::BuyYes) {
+            sqlx::query!(
+                r#"
+                INSERT INTO position_lots (
+                    user_id, market_id, entry_price_yes_pts, opened_from_trade_id,
+                    opened_at, qty_opened_micros, qty_remaining_micros, side
+                )
+                VALUES ($1, $2, $3, $4, NOW(), $5, $5, 'BUY_YES')
+                "#,
+                user_id,
+                market_id,
+                exec_yes_pts as i32,
+                trade_id,
+                qty_micros
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
 
         Ok(())
     }

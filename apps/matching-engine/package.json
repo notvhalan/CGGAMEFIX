@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "echo 'Node matching engine disabled - using Rust exchange'",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "echo \"Tests not implemented yet\"",

@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     Json,
     response::IntoResponse,
 };
@@ -75,18 +75,27 @@ pub struct CreateOrderResponse {
 
 pub async fn create_order(
     State(app): State<AppState>,
-    // TODO: Extract user_id from auth token/session
-    // Extension(user_id): Extension<Uuid>,
+    headers: HeaderMap,
     Json(req): Json<CreateOrderRequest>,
 ) -> Result<Json<CreateOrderResponse>, AppError> {
-    // For now, use a real user ID with balance
-    let user_id = Uuid::parse_str("97344faa-ff14-498e-af84-88639c24edf6").unwrap();
+    // Extract user_id from X-User-Id header or use default
+    let user_id = headers
+        .get("X-User-Id")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or_else(|| Uuid::parse_str("97344faa-ff14-498e-af84-88639c24edf6").unwrap());
+    
+    tracing::info!("Creating order for user_id: {}, market: {}, side: {:?}, risk: {} pence, price: {} pts", 
+        user_id, req.market_id, req.side, req.risk_pence, req.limit_yes_pts);
+    
     // Validate
     if req.risk_pence < 100 {
-        return Err(AppError::BadRequest("Minimum risk is £1.00".to_string()));
+        tracing::warn!("Order rejected: risk {} pence < minimum 100 pence", req.risk_pence);
+        return Err(AppError::BadRequest(format!("Minimum risk is £1.00, got {} pence", req.risk_pence)));
     }
     if req.limit_yes_pts < 1 || req.limit_yes_pts >= PRICE_SCALE {
-        return Err(AppError::InvalidPrice);
+        tracing::warn!("Order rejected: invalid price {} (must be 1 <= price < {})", req.limit_yes_pts, PRICE_SCALE);
+        return Err(AppError::BadRequest(format!("Invalid price: {} (must be between 1 and {})", req.limit_yes_pts, PRICE_SCALE - 1)));
     }
 
     // Calculate contracts

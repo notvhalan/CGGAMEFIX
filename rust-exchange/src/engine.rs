@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use sqlx::PgPool;
+use std::time::{Duration, Instant};
 use crate::types::*;
 use crate::orderbook::{OrderBook, BookOrder};
+use crate::websocket::WsBroadcaster;
 
 /// Matching engine that owns orderbooks and processes commands deterministically
 pub struct MatchingEngine {
@@ -11,6 +13,8 @@ pub struct MatchingEngine {
     command_rx: mpsc::UnboundedReceiver<MatchCommand>,
     fill_tx: mpsc::UnboundedSender<Vec<Fill>>,
     db: PgPool,
+    ws_broadcaster: WsBroadcaster,
+    last_broadcast: HashMap<Uuid, Instant>,
 }
 
 impl MatchingEngine {
@@ -18,12 +22,15 @@ impl MatchingEngine {
         command_rx: mpsc::UnboundedReceiver<MatchCommand>,
         fill_tx: mpsc::UnboundedSender<Vec<Fill>>,
         db: PgPool,
+        ws_broadcaster: WsBroadcaster,
     ) -> Self {
         Self {
             books: HashMap::new(),
             command_rx,
             fill_tx,
             db,
+            ws_broadcaster,
+            last_broadcast: HashMap::new(),
         }
     }
 
@@ -96,6 +103,27 @@ impl MatchingEngine {
         Ok(())
     }
 
+    /// Request orderbook broadcast with throttling (minimum 100ms between updates)
+    fn request_orderbook_broadcast(&mut self, market_id: Uuid) {
+        const MIN_INTERVAL: Duration = Duration::from_millis(100);
+        
+        let now = Instant::now();
+        let should_broadcast = self.last_broadcast
+            .get(&market_id)
+            .map(|last| now.duration_since(*last) >= MIN_INTERVAL)
+            .unwrap_or(true);
+        
+        if should_broadcast {
+            self.last_broadcast.insert(market_id, now);
+            let ws = self.ws_broadcaster.clone();
+            tokio::spawn(async move {
+                if let Err(e) = ws.broadcast_orderbook_update(market_id).await {
+                    tracing::error!("Failed to broadcast orderbook update: {}", e);
+                }
+            });
+        }
+    }
+
     /// Run the matching engine (single-threaded per market for determinism)
     pub async fn run(mut self) {
         // Load existing orders first
@@ -112,9 +140,10 @@ impl MatchingEngine {
         tracing::info!("Processing order: order_id={}, market_id={}, side={:?}, limit_yes_pts={}, qty_micros={}", 
             cmd.order_id, cmd.market_id, cmd.side, cmd.limit_yes_pts, cmd.qty_micros);
         
+        let market_id = cmd.market_id;
         let book = self.books
-            .entry(cmd.market_id)
-            .or_insert_with(|| OrderBook::new(cmd.market_id));
+            .entry(market_id)
+            .or_insert_with(|| OrderBook::new(market_id));
 
         tracing::info!("Book state before match: bids={}, asks={}", book.bids_count(), book.asks_count());
         
@@ -126,10 +155,14 @@ impl MatchingEngine {
             cmd.qty_micros,
         );
 
+        // Track if orderbook changed
+        let mut orderbook_changed = false;
+
         // Send fills to clearing
         if !fills.is_empty() {
             tracing::info!("Order matched! Generated {} fills", fills.len());
             let _ = self.fill_tx.send(fills);
+            orderbook_changed = true;
         } else {
             tracing::info!("No matches found for order");
         }
@@ -150,8 +183,14 @@ impl MatchingEngine {
                 cmd.limit_yes_pts,
             );
             tracing::info!("Book state after add: bids={}, asks={}", book.bids_count(), book.asks_count());
+            orderbook_changed = true;
         } else if remaining > 0 && remaining < MIN_CONTRACT_MICROS {
             tracing::info!("Dust remaining {} micros treated as trading fee", remaining);
+        }
+
+        // Broadcast orderbook update if it changed (throttled)
+        if orderbook_changed {
+            self.request_orderbook_broadcast(market_id);
         }
     }
 }

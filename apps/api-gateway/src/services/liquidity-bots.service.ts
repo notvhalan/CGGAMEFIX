@@ -1,11 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Logger } from '@betting-exchange/shared-config';
 import { DatabaseService } from '../database/database.service';
-import { NatsClient } from '../nats/nats.client';
-import { NATS_SUBJECTS } from '../nats/subjects';
 import { v4 as uuidv4 } from 'uuid';
 import { PRICE_SCALE, CONTRACT_SCALE, stakeToContracts, liabilityToContracts } from '@betting-exchange/shared-types';
-import { OrderBookBroadcastService } from './orderbook-broadcast.service';
+import axios from 'axios';
 
 type Side = 'BUY_YES' | 'SELL_YES';
 
@@ -38,12 +36,10 @@ export class LiquidityBotsService {
   private bots: BotState[] = [];
   private config: BotConfig | null = null;
   private stopping = false;
-  private pendingBroadcasts: Map<string, NodeJS.Timeout> = new Map();
+  private readonly RUST_EXCHANGE_URL = process.env.RUST_EXCHANGE_URL || 'http://localhost:3001';
 
   constructor(
     private readonly databaseService: DatabaseService,
-    private readonly natsClient: NatsClient,
-    private readonly orderBookBroadcast: OrderBookBroadcastService,
   ) {}
 
   async startBots(params: {
@@ -68,19 +64,6 @@ export class LiquidityBotsService {
     // Reset stopping flag
     this.stopping = false;
 
-    // Clean up old bot users and their wallets
-    try {
-      await this.databaseService.query(
-        `DELETE FROM wallets WHERE user_id IN (SELECT id FROM users WHERE email LIKE '%@bot.local')`
-      );
-      await this.databaseService.query(
-        `DELETE FROM users WHERE email LIKE '%@bot.local'`
-      );
-      this.logger.info('Cleaned up old bot users');
-    } catch (err) {
-      this.logger.warn('Failed to clean up old bot users:', err);
-    }
-
     this.config = {
       marketId: params.marketId,
       midYesPts: BigInt(params.midYesPts),
@@ -97,26 +80,28 @@ export class LiquidityBotsService {
       volatility: params.volatility || 0,
     };
 
-    this.logger.info(`Creating ${params.userCount} bot users...`);
+    this.logger.info(`Fetching ${params.userCount} existing bot users...`);
 
-    // Create bot users
-    for (let i = 0; i < params.userCount; i++) {
-      const email = `liquiditybot_${Date.now()}_${i}@bot.local`;
-      const name = `Bot ${i}`;
+    // Fetch existing bot users from database
+    try {
+      const botUsersResult = await this.databaseService.query(
+        `SELECT id, email FROM users WHERE email LIKE '%@bot.local' ORDER BY email LIMIT $1`,
+        [params.userCount]
+      );
 
-      try {
-        // Create user
-        const user = await this.databaseService.query(
-          `INSERT INTO users (id, email, name, google_sub, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, NOW(), NOW())
-           ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
-           RETURNING id`,
-          [uuidv4(), email, name, `bot_${Date.now()}_${i}`]
-        );
+      if (botUsersResult.rows.length === 0) {
+        throw new Error('No bot users found in database. Please create bot users with @bot.local emails first.');
+      }
 
-        const userId = user.rows[0].id;
+      if (botUsersResult.rows.length < params.userCount) {
+        this.logger.warn(`Only found ${botUsersResult.rows.length} bot users, requested ${params.userCount}`);
+      }
 
-        // Ensure wallet with plenty of funds (use GBP to match lockBalance default)
+      // Use existing bot users
+      for (const row of botUsersResult.rows) {
+        const userId = row.id;
+
+        // Ensure wallet exists and is funded
         await this.databaseService.ensureWallet(userId, 'GBP');
         
         // Fund the wallet generously
@@ -141,13 +126,11 @@ export class LiquidityBotsService {
           currentMidPts: BigInt(params.midYesPts),
         });
 
-        this.logger.info(`Created bot user: ${email} (${userId}) with balance £${fundResult.rows[0].balance}`);
-      } catch (error) {
-        this.logger.error(`Failed to create bot user ${i}`, error);
+        this.logger.info(`Using bot user: ${row.email} (${userId}) with balance £${fundResult.rows[0].balance}`);
       }
-
-      // Small delay to avoid hammering the DB
-      await this.sleep(50);
+    } catch (error) {
+      this.logger.error('Failed to fetch bot users:', error);
+      throw error;
     }
 
     this.logger.info(`Starting ${this.bots.length} bots with config:`, {
@@ -182,12 +165,6 @@ export class LiquidityBotsService {
         bot.timeoutId = undefined;
       }
     }
-    
-    // Clear all pending broadcasts
-    for (const timeout of this.pendingBroadcasts.values()) {
-      clearTimeout(timeout);
-    }
-    this.pendingBroadcasts.clear();
     
     this.bots = [];
     this.config = null;
@@ -247,12 +224,12 @@ export class LiquidityBotsService {
     
     for (const orderId of orderIds) {
       try {
-        // Publish cancel command to matching engine
-        this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, {
-          orderId,
-          userId: bot.userId,
-          timestamp: new Date().toISOString(),
-        });
+        // Call Rust exchange cancel endpoint (would need to be implemented)
+        // For now, just mark orders as cancelled in DB
+        await this.databaseService.query(
+          `UPDATE orders SET status = 'CANCELLED' WHERE id = $1`,
+          [orderId]
+        );
       } catch (error) {
         this.logger.warn(`Failed to cancel bot order ${orderId}:`, error);
       }
@@ -324,9 +301,6 @@ export class LiquidityBotsService {
         await this.sleep(orderDelay);
       }
     }
-    
-    // Broadcast orderbook update once after all orders placed (debounced)
-    this.requestBroadcast(config.marketId);
   }
 
   private async maybeTaker(bot: BotState, config: BotConfig) {
@@ -352,61 +326,61 @@ export class LiquidityBotsService {
     contractsMicros: bigint,
     timeInForce: 'GTC' | 'IOC' = 'GTC'
   ) {
-    const orderId = uuidv4();
-    const pPts = side === 'BUY_YES' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
-
     // Log the prices being used
     if (yesPts < 10000n || yesPts > 9990000n) {
       this.logger.warn(`Bot ${bot.userId} placing ${side} order with extreme yesPts: ${yesPts} (${(Number(yesPts) / PRICE_SCALE * 100).toFixed(4)}%)`);
     }
 
-    // Calculate liability
-    const maxLossPerContract = side === 'BUY_YES' ? yesPts : BigInt(PRICE_SCALE) - yesPts;
-    const liabilityPence = Number(
-      (maxLossPerContract * contractsMicros) / (BigInt(PRICE_SCALE) * BigInt(1_000_000))
-    );
+    // Calculate risk (liability) using Rust exchange logic
+    const limit_yes_pts = Number(yesPts);
+    const contracts = Number(contractsMicros);
+    const risk_pence = side === 'BUY_YES'
+      ? Math.floor((contracts * limit_yes_pts * 100) / (PRICE_SCALE * 1_000_000))
+      : Math.floor((contracts * (PRICE_SCALE - limit_yes_pts) * 100) / (PRICE_SCALE * 1_000_000));
+
+    // Validate minimum risk
+    if (risk_pence < 100) {
+      this.logger.debug(`Bot ${bot.userId} order skipped: risk_pence ${risk_pence} is below minimum £1.00 (contracts: ${contracts / 1_000_000}, price: ${limit_yes_pts / 10_000_000 * 100}%)`);
+      return;
+    }
+
+    const orderPayload = {
+      market_id: marketId,
+      side: side === 'BUY_YES' ? 'BuyYes' : 'SellYes',
+      risk_pence,
+      limit_yes_pts,
+      time_in_force: timeInForce.toUpperCase(), // Rust expects "GTC" or "IOC"
+    };
+
+    this.logger.debug(`Bot ${bot.userId} placing order:`, orderPayload);
 
     try {
-      // Lock balance
-      await this.databaseService.lockBalance(bot.userId, liabilityPence);
-
-      // Store order
-      await this.databaseService.createOrder({
-        id: orderId,
-        marketId,
-        userId: bot.userId,
-        side,
-        pPts: Number(pPts),
-        yesPts: Number(yesPts),
-        liabilityPence,
-        originalContractsMicros: contractsMicros.toString(),
-        remainingContractsMicros: contractsMicros.toString(),
+      // Call Rust exchange HTTP API to create order
+      const response = await axios.post(`${this.RUST_EXCHANGE_URL}/api/orders`, orderPayload, {
+        timeout: 5000,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': bot.userId,
+        }
       });
 
-      // Publish to matching engine
-      this.natsClient.publish(NATS_SUBJECTS.ORDERS_SUBMIT, {
-        orderId,
-        userId: bot.userId,
-        marketId,
-        side,
-        pPts: Number(pPts),
-        yesPts: Number(yesPts),
-        stakePence: side === 'BUY_YES' ? liabilityPence : undefined,
-        liabilityPence: side === 'SELL_YES' ? liabilityPence : undefined,
-        originalContractsMicros: contractsMicros.toString(),
-        remainingContractsMicros: contractsMicros.toString(),
-        timeInForce,
-        timestamp: new Date().toISOString(),
-      });
+      const createdOrderId = response.data.order_id;
 
       if (timeInForce === 'GTC') {
-        bot.liveOrders.push({ id: orderId, side, yesPts });
+        bot.liveOrders.push({ id: createdOrderId, side, yesPts });
       }
-      
-      // Broadcast orderbook update for each bot order
-      this.requestBroadcast(marketId);
+
+      this.logger.debug(`Bot ${bot.userId} placed ${side} order ${createdOrderId} at ${(Number(yesPts) / PRICE_SCALE * 100).toFixed(2)}%`);
     } catch (error) {
-      this.logger.error(`Failed to place bot order:`, error);
+      if (axios.isAxiosError(error) && error.response) {
+        this.logger.error(`Failed to place bot order (${error.response.status}):`, {
+          status: error.response.status,
+          data: error.response.data,
+          payload: orderPayload,
+        });
+      } else {
+        this.logger.error(`Failed to place bot order:`, error);
+      }
     }
   }
 
@@ -417,23 +391,6 @@ export class LiquidityBotsService {
     if (yesPts < MIN_PRICE) return MIN_PRICE;
     if (yesPts > MAX_PRICE) return MAX_PRICE;
     return yesPts;
-  }
-
-  private requestBroadcast(marketId: string) {
-    // Debounce broadcasts: coalesce multiple bot updates into max 10/sec
-    const existing = this.pendingBroadcasts.get(marketId);
-    if (existing) {
-      clearTimeout(existing);
-    }
-
-    const timeout = setTimeout(() => {
-      this.pendingBroadcasts.delete(marketId);
-      this.orderBookBroadcast.broadcastOrderBookUpdate(marketId).catch(err =>
-        this.logger.error(`Failed to broadcast orderbook for ${marketId}:`, err)
-      );
-    }, 100); // 100ms debounce = max 10 broadcasts/sec per market
-
-    this.pendingBroadcasts.set(marketId, timeout);
   }
 
   private sleep(ms: number): Promise<void> {

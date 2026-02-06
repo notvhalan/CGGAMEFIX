@@ -7,6 +7,14 @@ dist/
 build/
 *.tsbuildinfo
 
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+debug/
+release/
+
 # Environment
 .env
 .env.local

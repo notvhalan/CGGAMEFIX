@@ -134,10 +134,10 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
         <input
           type="number"
           name="sizeContracts"
-          min="0.1"
+          min="2.0"
           max="20"
           step="0.5"
-          defaultValue="5.0"
+          defaultValue="10.0"
           disabled={disabled}
           style={{
             width: '100%',
@@ -155,7 +155,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
           marginTop: '0.25rem',
           lineHeight: '1.4'
         }}>
-          Number of contracts per order. Higher = more liquidity at each price level.
+          Number of contracts per order. Minimum 2.0 to ensure orders meet £1.00 minimum risk. Higher = more liquidity.
         </p>
       </div>
 
@@ -481,17 +481,41 @@ export async function loader({ request }: LoaderFunctionArgs) {
   
   try {
     const data = await getMarkets();
+    
+    // Fetch available bot users if admin
+    let botUsers = [];
+    if (isAdmin) {
+      try {
+        const botUsersResponse = await fetch(`${API_BASE_URL}/v1/admin/bot-users`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cookie': request.headers.get('Cookie') || '',
+          },
+        });
+        
+        if (botUsersResponse.ok) {
+          const botData = await botUsersResponse.json();
+          botUsers = botData.botUsers || [];
+        }
+      } catch (error) {
+        console.error('Failed to load bot users:', error);
+      }
+    }
+    
     return json({ 
       markets: data.markets || [], 
       user,
-      isAdmin 
+      isAdmin,
+      botUsers,
     });
   } catch (error) {
     console.error('Failed to load markets:', error);
     return json({ 
       markets: [], 
       user,
-      isAdmin 
+      isAdmin,
+      botUsers: [],
     });
   }
 }
@@ -658,15 +682,131 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
+  if (action === 'resolveMarket') {
+    const winningOutcome = formData.get('winningOutcome') as 'YES' | 'NO';
+    const reason = formData.get('reason') as string;
+
+    if (!marketId || !winningOutcome) {
+      return json({ success: false, error: 'Missing required fields' }, { status: 400 });
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/markets/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookieHeader || '',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          marketId,
+          winningOutcome,
+          reason,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return json({ success: false, error }, { status: response.status });
+      }
+
+      const result = await response.json();
+      return json({ 
+        success: true, 
+        message: `${result.message} - Settled ${result.positionsSettled} positions` 
+      });
+    } catch (error) {
+      return json({ 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to resolve market' 
+      }, { status: 500 });
+    }
+  }
+
+  if (action === 'voidMarket') {
+    const reason = formData.get('reason') as string;
+
+    if (!marketId || !reason) {
+      return json({ success: false, error: 'Market ID and reason required' }, { status: 400 });
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/markets/void`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookieHeader || '',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          marketId,
+          reason,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return json({ success: false, error }, { status: response.status });
+      }
+
+      const result = await response.json();
+      return json({ 
+        success: true, 
+        message: `${result.message} - Voided ${result.positionsVoided} positions` 
+      });
+    } catch (error) {
+      return json({ 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to void market' 
+      }, { status: 500 });
+    }
+  }
+
+  if (action === 'resetMarketStatus') {
+    if (!marketId) {
+      return json({ success: false, error: 'Market ID required' }, { status: 400 });
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/markets/reset-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookieHeader || '',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          marketId,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return json({ success: false, error }, { status: response.status });
+      }
+
+      const result = await response.json();
+      return json({ 
+        success: true, 
+        message: result.message
+      });
+    } catch (error) {
+      return json({ 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to reset market status' 
+      }, { status: 500 });
+    }
+  }
+
   return json({ success: false, error: 'Invalid action' }, { status: 400 });
 }
 
 export default function Admin() {
-  const { markets, user, isAdmin } = useLoaderData<typeof loader>();
+  const { markets, user, isAdmin, botUsers } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const [selectedMarket, setSelectedMarket] = useState(markets[0]?.id || '');
-  const [userCount, setUserCount] = useState(20);
+  const [userCount, setUserCount] = useState(Math.min(20, botUsers?.length || 20));
 
   const isStarting = navigation.state === 'submitting' && navigation.formData?.get('action') === 'start-bots';
   const isStopping = navigation.state === 'submitting' && navigation.formData?.get('action') === 'stop-bots';
@@ -818,8 +958,8 @@ export default function Admin() {
               <input
                 type="number"
                 name="userCount"
-                min="5"
-                max="50"
+                min="1"
+                max={botUsers?.length || 50}
                 value={userCount}
                 onChange={(e) => setUserCount(Number(e.target.value))}
                 disabled={!isAdmin}
@@ -838,8 +978,38 @@ export default function Admin() {
                 color: '#64748b', 
                 marginTop: '0.25rem' 
               }}>
-                Recommended: 15-25 bots
+                {botUsers && botUsers.length > 0 
+                  ? `${botUsers.length} bot users available (@bot.local emails)`
+                  : 'No bot users found. Create users with @bot.local emails first.'}
               </p>
+              {botUsers && botUsers.length > 0 && (
+                <details style={{ marginTop: '0.5rem' }}>
+                  <summary style={{ 
+                    cursor: 'pointer', 
+                    fontSize: '0.75rem', 
+                    color: '#667eea',
+                    userSelect: 'none'
+                  }}>
+                    View available bots ({botUsers.length})
+                  </summary>
+                  <div style={{ 
+                    marginTop: '0.5rem',
+                    padding: '0.5rem',
+                    background: '#1e293b',
+                    borderRadius: '4px',
+                    maxHeight: '150px',
+                    overflowY: 'auto',
+                    fontSize: '0.7rem',
+                    color: '#94a3b8'
+                  }}>
+                    {botUsers.map((bot: any, idx: number) => (
+                      <div key={bot.id} style={{ marginBottom: '0.25rem' }}>
+                        {idx + 1}. {bot.name || 'Bot'} ({bot.email})
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
 
             <BotControlInputs disabled={!isAdmin} />
@@ -1147,6 +1317,301 @@ export default function Admin() {
               📝 Create Batch Orders
             </button>
           </Form>
+        </div>
+
+        {/* Market Settlement Section */}
+        <div style={{ 
+          background: '#1e293b',
+          borderRadius: '8px',
+          padding: '1.5rem',
+          border: '1px solid #334155'
+        }}>
+          <h2 style={{ 
+            fontSize: '1.125rem', 
+            fontWeight: 600, 
+            marginBottom: '1rem',
+            color: '#f1f5f9'
+          }}>
+            🏁 Market Settlement
+          </h2>
+
+          <Form method="post" style={{ marginBottom: '1.5rem' }}>
+            <input type="hidden" name="action" value="resolveMarket" />
+            
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ 
+                display: 'block', 
+                marginBottom: '0.5rem',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#cbd5e1'
+              }}>
+                Market to Resolve
+              </label>
+              <select
+                name="marketId"
+                required
+                disabled={!isAdmin}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  color: '#e2e8f0',
+                  fontSize: '0.875rem'
+                }}
+              >
+                <option value="">Select a market...</option>
+                {markets.map((market: any) => (
+                  <option key={market.id} value={market.id}>
+                    {market.name} ({market.status})
+                  </option>
+                ))}
+              </select>
+              <p style={{ 
+                fontSize: '0.75rem', 
+                color: '#64748b', 
+                marginTop: '0.25rem',
+                lineHeight: '1.4'
+              }}>
+                Shows all markets. If a market failed to settle, use "Reset Status" section below.
+              </p>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ 
+                display: 'block', 
+                marginBottom: '0.5rem',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#cbd5e1'
+              }}>
+                Winning Outcome
+              </label>
+              <select
+                name="winningOutcome"
+                required
+                disabled={!isAdmin}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  color: '#e2e8f0',
+                  fontSize: '0.875rem'
+                }}
+              >
+                <option value="">Select winner...</option>
+                <option value="YES">YES</option>
+                <option value="NO">NO</option>
+              </select>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ 
+                display: 'block', 
+                marginBottom: '0.5rem',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#cbd5e1'
+              }}>
+                Reason (optional)
+              </label>
+              <input
+                type="text"
+                name="reason"
+                placeholder="e.g., Match ended 2-1"
+                disabled={!isAdmin}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  color: '#e2e8f0',
+                  fontSize: '0.875rem'
+                }}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={!isAdmin}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: isAdmin ? '#f59e0b' : '#374151',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                cursor: isAdmin ? 'pointer' : 'not-allowed',
+                width: '100%'
+              }}
+            >
+              ✅ Resolve Market
+            </button>
+          </Form>
+
+          <Form method="post">
+            <input type="hidden" name="action" value="voidMarket" />
+            
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ 
+                display: 'block', 
+                marginBottom: '0.5rem',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#cbd5e1'
+              }}>
+                Market to Void (returns all funds)
+              </label>
+              <select
+                name="marketId"
+                required
+                disabled={!isAdmin}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  color: '#e2e8f0',
+                  fontSize: '0.875rem'
+                }}
+              >
+                <option value="">Select a market...</option>
+                {markets.map((market: any) => (
+                  <option key={market.id} value={market.id}>
+                    {market.name} ({market.status})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ 
+                display: 'block', 
+                marginBottom: '0.5rem',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#cbd5e1'
+              }}>
+                Reason (required)
+              </label>
+              <input
+                type="text"
+                name="reason"
+                placeholder="e.g., Match cancelled due to weather"
+                required
+                disabled={!isAdmin}
+                style={{
+                  width: '100%',
+                  padding: '0.625rem',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  color: '#e2e8f0',
+                  fontSize: '0.875rem'
+                }}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={!isAdmin}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: isAdmin ? '#ef4444' : '#374151',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                cursor: isAdmin ? 'pointer' : 'not-allowed',
+                width: '100%'
+              }}
+            >
+              ❌ Void Market
+            </button>
+          </Form>
+
+          <div style={{ 
+            marginTop: '1.5rem',
+            paddingTop: '1.5rem',
+            borderTop: '1px solid #334155'
+          }}>
+            <h3 style={{ 
+              fontSize: '0.875rem', 
+              fontWeight: 600, 
+              marginBottom: '1rem',
+              color: '#cbd5e1'
+            }}>Reset Failed Settlement</h3>
+            <p style={{ 
+              fontSize: '0.75rem', 
+              color: '#64748b', 
+              marginBottom: '1rem',
+              lineHeight: '1.4'
+            }}>
+              If a settlement failed but the market status was updated, use this to reset it back to ACTIVE.
+            </p>
+            <Form method="post">
+              <input type="hidden" name="action" value="resetMarketStatus" />
+              
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ 
+                  display: 'block', 
+                  marginBottom: '0.5rem',
+                  fontWeight: 600,
+                  fontSize: '0.875rem',
+                  color: '#cbd5e1'
+                }}>
+                  Market to Reset
+                </label>
+                <select
+                  name="marketId"
+                  required
+                  disabled={!isAdmin}
+                  style={{
+                    width: '100%',
+                    padding: '0.625rem',
+                    background: '#0f172a',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    color: '#e2e8f0',
+                    fontSize: '0.875rem'
+                  }}
+                >
+                  <option value="">Select a market...</option>
+                  {markets.filter((m: any) => m.status === 'SETTLED' || m.status === 'CLOSED').map((market: any) => (
+                    <option key={market.id} value={market.id}>
+                      {market.name} ({market.status})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                type="submit"
+                disabled={!isAdmin}
+                style={{
+                  padding: '0.75rem 1.5rem',
+                  background: isAdmin ? '#3b82f6' : '#374151',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 600,
+                  fontSize: '0.875rem',
+                  cursor: isAdmin ? 'pointer' : 'not-allowed',
+                  width: '100%'
+                }}
+              >
+                🔄 Reset to ACTIVE
+              </button>
+            </Form>
+          </div>
         </div>
       </div>
     </div>

@@ -26,8 +26,9 @@ if (typeof document !== 'undefined' && !document.getElementById('open-orders-scr
 interface Order {
   id: string;
   marketId: string;
-  side: 'FOR' | 'LAY';
-  yesPts: number;
+  side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY';
+  yesPts?: number;
+  pPts?: number;
   remainingContracts: string;
   status: string;
   createdAt: string;
@@ -35,7 +36,7 @@ interface Order {
 
 interface GroupedOrder {
   yesPts: number;
-  side: 'FOR' | 'LAY';
+  side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY';
   orders: Order[];
   totalContracts: number;
 }
@@ -52,9 +53,10 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
     if (!orders?.length) return { forGroups: [], layGroups: [] };
 
     const grouped = orders.reduce((acc, order) => {
-      const key = `${order.yesPts}-${order.side}`;
+      const pts = order.yesPts ?? order.pPts ?? 0;
+      const key = `${pts}-${order.side}`;
       if (!acc[key]) {
-        acc[key] = { yesPts: Number(order.yesPts), side: order.side, orders: [], totalContracts: 0 };
+        acc[key] = { yesPts: Number(pts), side: order.side, orders: [], totalContracts: 0 };
       }
       acc[key].orders.push(order);
       acc[key].totalContracts += Math.round(Number(order.remainingContracts) / 1_000_000);
@@ -62,10 +64,10 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
     }, {} as Record<string, GroupedOrder>);
 
     const allGroups = Object.values(grouped).sort((a, b) => b.yesPts - a.yesPts);
-    return {
-      forGroups: allGroups.filter(g => g.side === 'FOR'),
-      layGroups: allGroups.filter(g => g.side === 'LAY')
-    };
+    const forGroups = allGroups.filter(g => g.side === 'BUY_YES' || g.side === 'FOR');
+    const layGroups = allGroups.filter(g => g.side === 'SELL_YES' || g.side === 'LAY');
+    
+    return { forGroups, layGroups };
   }, [orders]);
 
   if (!orders?.length) {
@@ -216,7 +218,7 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
             letterSpacing: '0.05em',
             background: 'rgba(96, 165, 250, 0.05)'
           }}>
-            <div style={{ color: '#60a5fa', fontWeight: 700 }}>FOR</div>
+            <div style={{ color: '#60a5fa', fontWeight: 700 }}>BUY YES</div>
             <div>Contracts</div>
             <div>Orders</div>
             <div style={{ textAlign: 'right' }}>Cancel</div>
@@ -232,7 +234,7 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
           className="custom-scrollbar">
             {visibleFor.length === 0 ? (
               <div style={{ padding: '1rem 0.5rem', color: '#64748b', fontSize: '0.7rem', textAlign: 'center' }}>
-                No FOR orders
+                No BUY YES orders
               </div>
             ) : (
               visibleFor.map(renderOrderGroup)
@@ -257,7 +259,7 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
             letterSpacing: '0.05em',
             background: 'rgba(248, 113, 113, 0.05)'
           }}>
-            <div style={{ color: '#f87171', fontWeight: 700 }}>LAY</div>
+            <div style={{ color: '#f87171', fontWeight: 700 }}>SELL YES</div>
             <div>Contracts</div>
             <div>Orders</div>
             <div style={{ textAlign: 'right' }}>Cancel</div>
@@ -273,7 +275,7 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
           className="custom-scrollbar">
             {visibleLay.length === 0 ? (
               <div style={{ padding: '1rem 0.5rem', color: '#64748b', fontSize: '0.7rem', textAlign: 'center' }}>
-                No LAY orders
+                No SELL YES orders
               </div>
             ) : (
               visibleLay.map(renderOrderGroup)

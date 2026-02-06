@@ -293,6 +293,12 @@ impl WsBroadcaster {
 
         Ok(())
     }
+
+    /// Broadcast orderbook update to all subscribed clients
+    /// This is a convenience wrapper for send_orderbook_snapshot
+    pub async fn broadcast_orderbook_update(&self, market_id: Uuid) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.send_orderbook_snapshot(market_id).await
+    }
 }
 
 /// WebSocket upgrade handler

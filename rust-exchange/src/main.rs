@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let ws_broadcaster = WsBroadcaster::new(pool.clone());
     
     // Spawn matching engine task
-    let engine = MatchingEngine::new(match_rx, fill_tx, pool.clone());
+    let engine = MatchingEngine::new(match_rx, fill_tx, pool.clone(), ws_broadcaster.clone());
     tokio::spawn(async move {
         tracing::info!("Matching engine started");
         engine.run().await;

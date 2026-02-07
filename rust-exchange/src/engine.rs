@@ -168,8 +168,8 @@ impl MatchingEngine {
         }
 
         // Add remaining to book (if GTC and above minimum size)
-        // Dust (< 1 contract) is treated as trading fee, not added to book
-        const MIN_CONTRACT_MICROS: i64 = 1_000_000;
+        // Dust (< 0.001 contracts) is treated as trading fee, not added to book
+        const MIN_CONTRACT_MICROS: i64 = 1_000;
         if remaining >= MIN_CONTRACT_MICROS && cmd.time_in_force == TimeInForce::Gtc {
             tracing::info!("Adding remaining qty {} to book at price {}", remaining, cmd.limit_yes_pts);
             book.add_order(

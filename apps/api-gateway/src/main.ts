@@ -44,6 +44,10 @@ async function bootstrap() {
     'http://localhost:5173',
     'http://localhost:3001',
     'http://betting-exchange-frontend-474668399531.s3-website-us-east-1.amazonaws.com',
+    'https://gamefix.fun',
+    'http://gamefix.fun',
+    'https://www.gamefix.fun',
+    'http://www.gamefix.fun',
     process.env.AUTH_SUCCESS_REDIRECT?.replace(/\/app$/, '') || 'http://localhost:3001'
   ];
   

@@ -29,6 +29,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     ENV: {
       API_URL: process.env.VITE_API_URL || process.env.API_BASE_URL || 'http://localhost:3000',
       WS_URL: process.env.VITE_WS_URL || 'ws://localhost:3000',
+      RUST_WS_URL: process.env.VITE_RUST_WS_URL || process.env.RUST_WS_URL || 'ws://localhost:3001/ws',
     },
   });
 }

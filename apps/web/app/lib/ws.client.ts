@@ -1,7 +1,18 @@
 // Native WebSocket client for Rust exchange
-const WS_URL = typeof window !== 'undefined' 
-  ? (window.ENV?.RUST_WS_URL || 'ws://localhost:3001/ws')
-  : 'ws://localhost:3001/ws';
+const getWSUrl = () => {
+  if (typeof window === 'undefined') return 'ws://localhost:3001/ws';
+  
+  // Check for environment variable first
+  if (window.ENV?.RUST_WS_URL) return window.ENV.RUST_WS_URL;
+  
+  // Auto-detect for production
+  if (window.location.hostname === 'gamefix.fun' || window.location.hostname === 'www.gamefix.fun') {
+    return 'wss://ws.gamefix.fun/ws';
+  }
+  
+  // Default to localhost
+  return 'ws://localhost:3001/ws';
+};
 
 export type RustWSMessage = 
   | { type: 'Subscribe'; market_id: string }
@@ -51,13 +62,14 @@ export class WSClient {
     }
 
     try {
-      console.log('[Rust WS] 🔌 Creating new WebSocket connection to', WS_URL);
-      this.ws = new WebSocket(WS_URL);
+      const wsUrl = getWSUrl();
+      console.log('[Rust WS] 🔌 Creating new WebSocket connection to', wsUrl);
+      this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[Rust WS] ✅ Connected to', WS_URL, 'ReadyState:', this.ws?.readyState);
+        console.log('[Rust WS] ✅ Connected to', wsUrl, 'ReadyState:', this.ws?.readyState);
         this.reconnectAttempts = 0;
-        this.emit('connected', { url: WS_URL });
+        this.emit('connected', { url: wsUrl });
         
         // Use requestAnimationFrame to ensure WebSocket is fully open
         requestAnimationFrame(() => {

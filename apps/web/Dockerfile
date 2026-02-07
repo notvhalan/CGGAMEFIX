@@ -17,9 +17,15 @@ RUN pnpm install --frozen-lockfile
 # Build the web app with environment variables
 WORKDIR /app/apps/web
 
+# Accept build arguments
+ARG VITE_API_URL=http://gamefix.fun:3000
+ARG VITE_WS_URL=http://gamefix.fun:3000
+ARG VITE_RUST_WS_URL=wss://ws.gamefix.fun/ws
+
 # Set build-time environment variables for Vite
-ENV VITE_API_URL=https://api.gamefix.fun
-ENV VITE_WS_URL=https://api.gamefix.fun
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_WS_URL=$VITE_WS_URL
+ENV VITE_RUST_WS_URL=$VITE_RUST_WS_URL
 
 RUN pnpm run build
 

@@ -1,5 +1,6 @@
 # Update Cloudflare Tunnel Configuration with new ECS IP
 # Use this after each deployment to update tunnel routing
+# NOTE: For hybrid setup (frontend AWS, backend local), use fix-tunnel-config.ps1 instead!
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Update Cloudflare Tunnel Configuration" -ForegroundColor Cyan
@@ -27,17 +28,21 @@ tunnel: $TUNNEL_ID
 credentials-file: $env:USERPROFILE\.cloudflared\$TUNNEL_ID.json
 
 ingress:
-  # Web frontend
+  # Web frontend (AWS ECS)
   - hostname: $DOMAIN
     service: http://${ECS_IP}:3001
   
-  # Web frontend www subdomain
+  # Web frontend www subdomain (AWS ECS)
   - hostname: www.$DOMAIN
     service: http://${ECS_IP}:3001
   
-  # API backend
+  # API backend (LOCAL MACHINE)
   - hostname: api.$DOMAIN
-    service: http://${ECS_IP}:3000
+    service: http://localhost:3000
+  
+  # WebSocket endpoint (LOCAL MACHINE) - Rust matching engine
+  - hostname: ws.$DOMAIN
+    service: ws://localhost:3001
   
   # Catch-all rule (required)
   - service: http_status:404

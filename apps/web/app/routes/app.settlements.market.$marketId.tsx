@@ -1,9 +1,9 @@
 import { json, LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, Link } from "@remix-run/react";
-import { requireAuth } from "~/lib/auth.server";
+import { getAuthenticatedUser } from "~/lib/auth.server";
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
-  const user = await requireAuth(request);
+  const user = await getAuthenticatedUser(request);
   const { marketId } = params;
 
   const response = await fetch(

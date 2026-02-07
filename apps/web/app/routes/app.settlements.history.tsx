@@ -1,6 +1,6 @@
 import { json, LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, Link } from "@remix-run/react";
-import { requireAuth } from "~/lib/auth.server";
+import { getAuthenticatedUser } from "~/lib/auth.server";
 
 interface Settlement {
   id: string;
@@ -18,7 +18,7 @@ interface Settlement {
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const user = await requireAuth(request);
+  const user = await getAuthenticatedUser(request);
   
   const url = new URL(request.url);
   const limit = url.searchParams.get('limit') || '20';

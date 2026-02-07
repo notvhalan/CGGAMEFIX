@@ -82,6 +82,12 @@ impl OrderBook {
                             None => break,
                         };
 
+                        // Skip self-trade: don't match with own orders
+                        if maker.user_id == taker_user_id {
+                            makers.pop_front();
+                            continue;
+                        }
+
                         let fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
 
                         fills.push(Fill {
@@ -125,6 +131,12 @@ impl OrderBook {
                             Some(m) => m,
                             None => break,
                         };
+
+                        // Skip self-trade: don't match with own orders
+                        if maker.user_id == taker_user_id {
+                            makers.pop_front();
+                            continue;
+                        }
 
                         let fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
 

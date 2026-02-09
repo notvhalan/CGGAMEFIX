@@ -4,6 +4,25 @@ import { useState, useEffect, useCallback } from 'react';
 import type { Position } from './PositionPanel';
 import { getWSClient } from '~/lib/ws.client';
 
+// Get API URL from window.ENV or default to localhost
+const getApiUrl = () => {
+  if (typeof window !== 'undefined') {
+    // First try window.ENV
+    if ((window as any).ENV?.API_URL) {
+      console.log('[getApiUrl] Using window.ENV.API_URL:', (window as any).ENV.API_URL);
+      return (window as any).ENV.API_URL;
+    }
+    // Fall back to current origin if on gamefix.fun
+    if (window.location.hostname.includes('gamefix.fun')) {
+      const apiUrl = `${window.location.protocol}//gamefix.fun:3000`;
+      console.log('[getApiUrl] Using gamefix.fun URL:', apiUrl);
+      return apiUrl;
+    }
+  }
+  console.log('[getApiUrl] Using localhost default');
+  return 'http://localhost:3000';
+};
+
 interface PositionsModalProps {
   position: Position;
   isOpen: boolean;
@@ -79,35 +98,58 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
   // Fetch cashout quote
   const fetchCashoutQuote = useCallback(async () => {
+    console.log('[fetchCashoutQuote] hasOpenPositions:', hasOpenPositions, 'buyPositions:', buyPositions?.length, 'sellPositions:', sellPositions?.length);
+    
     if (!hasOpenPositions) {
+      console.log('[fetchCashoutQuote] No open positions, skipping quote fetch');
       return;
     }
 
+    if (!marketId) {
+      console.error('[fetchCashoutQuote] marketId is undefined');
+      return;
+    }
+
+    if (netContractsMicros === undefined || netContractsMicros === null) {
+      console.error('[fetchCashoutQuote] netContractsMicros is undefined or null');
+      return;
+    }
+
+    console.log('[fetchCashoutQuote] Fetching quote for marketId:', marketId, 'netContractsMicros:', netContractsMicros.toString());
     setLoadingQuote(true);
     try {
-      const response = await fetch('/v1/cashout/quote', {
+      const body = {
+        marketId,
+        netContractsMicros: netContractsMicros.toString(),
+      };
+      console.log('[fetchCashoutQuote] Request body:', JSON.stringify(body));
+      
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/v1/cashout/quote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({
-          marketId,
-          netContractsMicros: netContractsMicros.toString(),
-        }),
+        body: JSON.stringify(body),
       });
 
+      console.log('[fetchCashoutQuote] Response status:', response.status, response.statusText);
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[fetchCashoutQuote] Error response:', errorText);
         throw new Error(`Failed to fetch quote: ${response.statusText}`);
       }
 
       const quote = await response.json();
+      console.log('[fetchCashoutQuote] Quote received:', JSON.stringify(quote, null, 2));
       setCashoutQuote(quote);
     } catch (error) {
-      console.error('Failed to fetch cashout quote:', error);
+      console.error('[fetchCashoutQuote] Failed to fetch cashout quote:', error);
       setCashoutQuote(null);
     } finally {
       setLoadingQuote(false);
     }
-  }, [marketId, hasOpenPositions]);
+  }, [marketId, hasOpenPositions, netContractsMicros, buyPositions, sellPositions]);
 
   // Fetch quote on mount and refresh every 5 seconds
   useEffect(() => {
@@ -150,6 +192,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
   // Fetch cashout quote for a specific group
   const fetchGroupQuote = useCallback(async (yesPricePts: number, totalContractsMicros: bigint) => {
+    console.log('[fetchGroupQuote] yesPricePts:', yesPricePts, 'totalContractsMicros:', totalContractsMicros.toString());
     setLoadingGroupQuotes(prev => new Set(prev).add(yesPricePts));
     try {
       // Sign group contracts to match overall position direction for close side detection
@@ -159,7 +202,10 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       const sign = posNet === 0n ? 0n : (posNet > 0n ? 1n : -1n);
       const groupSigned = sign * (totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros);
       
-      const response = await fetch('/v1/cashout/quote', {
+      console.log('[fetchGroupQuote] Sending request with groupSigned:', groupSigned.toString());
+      
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/v1/cashout/quote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -169,15 +215,19 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         }),
       });
 
+      console.log('[fetchGroupQuote] Response status:', response.status, response.statusText);
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[fetchGroupQuote] Error response:', errorText);
         throw new Error(`Failed to fetch quote: ${response.statusText}`);
       }
 
       const quote = await response.json();
-      console.log('Group quote response:', JSON.stringify(quote, null, 2));
+      console.log('[fetchGroupQuote] Group quote received:', JSON.stringify(quote, null, 2));
       setGroupQuotes(prev => new Map(prev).set(yesPricePts, quote));
     } catch (error) {
-      console.error('Failed to fetch group quote:', error);
+      console.error('[fetchGroupQuote] Failed to fetch group quote:', error);
     } finally {
       setLoadingGroupQuotes(prev => {
         const next = new Set(prev);
@@ -185,7 +235,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         return next;
       });
     }
-  }, [marketId]);
+  }, [marketId, netContractsMicrosStr]);
 
   // Group positions by yesPricePts
   const groupPositions = (positions: any[]) => {
@@ -248,7 +298,8 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
     setExecutingCashout(true);
     try {
-      const response = await fetch('/v1/cashout/execute', {
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/v1/cashout/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -328,7 +379,8 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       };
       console.log('[GroupCashout] Request body:', requestBody);
       
-      const response = await fetch('/v1/cashout/execute', {
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/v1/cashout/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

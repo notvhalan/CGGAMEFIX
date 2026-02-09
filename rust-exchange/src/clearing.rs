@@ -47,7 +47,7 @@ impl ClearingService {
             let mut tx = self.pool.begin().await?;
 
             // 1. Update maker order quantity - treat dust as fully matched
-            sqlx::query!(
+            let maker_update = sqlx::query!(
                 r#"
                 UPDATE orders
                 SET qty_remaining_micros = qty_remaining_micros - $1,
@@ -63,9 +63,17 @@ impl ClearingService {
             )
             .execute(&mut *tx)
             .await?;
+            if maker_update.rows_affected() == 0 {
+                anyhow::bail!(
+                    "Maker order not found for fill: maker_order_id={}, taker_order_id={}, trade_id={}",
+                    fill.maker_order_id,
+                    fill.taker_order_id,
+                    fill.trade_id
+                );
+            }
 
             // 2. Update taker order quantity - treat dust as fully matched
-            sqlx::query!(
+            let taker_update = sqlx::query!(
                 r#"
                 UPDATE orders
                 SET qty_remaining_micros = qty_remaining_micros - $1,
@@ -81,6 +89,14 @@ impl ClearingService {
             )
             .execute(&mut *tx)
             .await?;
+            if taker_update.rows_affected() == 0 {
+                anyhow::bail!(
+                    "Taker order not found for fill: taker_order_id={}, maker_order_id={}, trade_id={}",
+                    fill.taker_order_id,
+                    fill.maker_order_id,
+                    fill.trade_id
+                );
+            }
 
             // 3. Get order details for wallet settlement
             let maker_order = sqlx::query!(
@@ -91,8 +107,14 @@ impl ClearingService {
                 "#,
                 fill.maker_order_id
             )
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!(
+                "Maker order row missing after update: maker_order_id={}, taker_order_id={}, trade_id={}",
+                fill.maker_order_id,
+                fill.taker_order_id,
+                fill.trade_id
+            ))?;
 
             let taker_order = sqlx::query!(
                 r#"
@@ -102,8 +124,14 @@ impl ClearingService {
                 "#,
                 fill.taker_order_id
             )
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!(
+                "Taker order row missing after update: taker_order_id={}, maker_order_id={}, trade_id={}",
+                fill.taker_order_id,
+                fill.maker_order_id,
+                fill.trade_id
+            ))?;
             
             affected_markets.insert(taker_order.market_id);
 
@@ -169,6 +197,29 @@ impl ClearingService {
                 cost_pence,
                 fee as i32
             )
+            .execute(&mut *tx)
+            .await?;
+
+            // 7.5 Record 100ms price bar (open/close + volume)
+            sqlx::query(
+                r#"
+                INSERT INTO price_bars_100ms (
+                    market_id, bucket_start, open_yes_pts, close_yes_pts, volume_micros
+                )
+                VALUES (
+                    $1,
+                    to_timestamp(floor(extract(epoch from NOW()) * 10) / 10)::timestamp,
+                    $2, $2, $3
+                )
+                ON CONFLICT (market_id, bucket_start) DO UPDATE
+                SET close_yes_pts = EXCLUDED.close_yes_pts,
+                    volume_micros = price_bars_100ms.volume_micros + EXCLUDED.volume_micros,
+                    updated_at = NOW()
+                "#,
+            )
+            .bind(taker_order.market_id)
+            .bind(fill.exec_yes_pts)
+            .bind(fill.qty_micros)
             .execute(&mut *tx)
             .await?;
 
@@ -238,7 +289,8 @@ impl ClearingService {
             SET net_qty_micros = positions.net_qty_micros + $3::BIGINT,
                 avg_open_price_yes_pts = CASE
                     WHEN positions.net_qty_micros + $3::BIGINT = 0 THEN 0
-                    ELSE (positions.avg_open_price_yes_pts * positions.net_qty_micros + $4::BIGINT * $3::BIGINT) / (positions.net_qty_micros + $3::BIGINT)
+                    ELSE (positions.avg_open_price_yes_pts::BIGINT * positions.net_qty_micros::BIGINT + $4::BIGINT * $3::BIGINT) 
+                         / (positions.net_qty_micros::BIGINT + $3::BIGINT)
                 END,
                 updated_at = NOW()
             "#,

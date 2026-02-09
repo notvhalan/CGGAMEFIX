@@ -88,4 +88,18 @@ export class NatsClient implements OnModuleInit, OnModuleDestroy {
     }
     return this.connection;
   }
+
+  isConnected(): boolean {
+    return this.connection !== null;
+  }
+
+  async waitForConnection(timeoutMs = 10000): Promise<void> {
+    const startTime = Date.now();
+    while (!this.connection) {
+      if (Date.now() - startTime > timeoutMs) {
+        throw new Error('Timeout waiting for NATS connection');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
 }

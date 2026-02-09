@@ -83,7 +83,7 @@ function OAuthButton({
 
 export default function Login() {
   const API_BASE_URL = getApiUrl();
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [mode, setMode] = useState<"login" | "signup">("signup"); // Default to signup
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -301,7 +301,7 @@ export default function Login() {
               type="email"
               name="email"
               required
-              placeholder="your@email.com"
+              placeholder="you@example.com"
               style={{
                 width: '100%',
                 padding: '0.875rem 1rem',

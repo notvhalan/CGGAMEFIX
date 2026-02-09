@@ -79,7 +79,7 @@ export async function cashOutPosition(request: Request, marketId: string, percen
 export async function createOrder(request: Request, data: {
   marketId: string;
   outcomeId?: string;
-  side: 'FOR' | 'LAY';
+  side: 'FOR' | 'LAY' | 'BUY_YES' | 'SELL_YES';
   pPts?: number;  // Probability points (new pricing model)
   liabilityPence?: number;  // Liability in pence (max loss for both FOR and LAY)
   stakePence?: number;  // Deprecated - backward compatibility only
@@ -116,7 +116,7 @@ export async function getUserOrders(request: Request, marketId?: string) {
     orders: Array<{
       id: string;
       marketId: string;
-      side: 'FOR' | 'LAY';
+      side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY';
       pPts: number;
       yesPts: number;
       liabilityPence: number;

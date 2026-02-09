@@ -16,6 +16,7 @@ interface PriceChartProps {
   lastTrade?: Trade | null;
   timeframe?: Timeframe;
   marketId: string;
+  chartType?: 'line' | 'candle';
 }
 
 function pPtsToPercent(pPts: number): number {
@@ -202,11 +203,13 @@ export function PriceChart({
   trades,
   lastTrade,
   timeframe = "15m",
+  chartType = "line",
 }: PriceChartProps) {
   // console.log('[PriceChart] Render - trades count:', trades?.length, 'timeframe:', timeframe, 'isLoading:', 'initializing');
   
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [chartLib, setChartLib] = useState<any>(null);
 
   const chartRef = useRef<any>(null);
   const candleRef = useRef<any>(null);
@@ -214,7 +217,7 @@ export function PriceChart({
 
   const aggRef = useRef<CandleAgg | null>(null);
 
-  // Create chart once with dynamic import
+  // Create chart once - only recreate on unmount
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -222,20 +225,14 @@ export function PriceChart({
 
     const initChart = async () => {
       try {
-        // console.log('[PriceChart] Starting chart initialization...');
         const imported = await import("lightweight-charts");
-        // console.log('[PriceChart] lightweight-charts imported, keys:', Object.keys(imported));
-        // console.log('[PriceChart] createChart:', typeof imported.createChart);
-        // console.log('[PriceChart] ColorType:', typeof imported.ColorType);
+        if (!mounted) return;
         
+        setChartLib(imported);
         const { createChart, ColorType } = imported;
         
-        if (!mounted || !containerRef.current) {
-          // console.log('[PriceChart] Component unmounted before chart creation');
-          return;
-        }
+        if (!mounted || !containerRef.current) return;
 
-        // console.log('[PriceChart] Creating chart...');
         const chart = createChart(containerRef.current, {
           autoSize: true,
           layout: {
@@ -250,32 +247,8 @@ export function PriceChart({
           timeScale: { borderColor: "#1f2937", rightOffset: 2 },
           crosshair: { mode: 1 },
         });
-        // console.log('[PriceChart] Chart created successfully, type:', typeof chart, 'methods:', Object.keys(chart).slice(0, 10));
-
-        // console.log('[PriceChart] Adding candlestick series...');
-        // console.log('[PriceChart] chart.addCandlestickSeries:', typeof chart.addCandlestickSeries);
-        
-        // v5 API: use addSeries with type
-        const candles = chart.addSeries(imported.CandlestickSeries, {
-          priceFormat: {
-            type: "custom",
-            formatter: (p: number) => `${p.toFixed(2)}%`,
-          },
-        });
-        // console.log('[PriceChart] Candlestick series added');
-
-        // console.log('[PriceChart] Adding volume histogram...');
-        const volume = chart.addSeries(imported.HistogramSeries, {
-          priceFormat: { type: "volume" },
-          priceScaleId: "",
-          scaleMargins: { top: 0.8, bottom: 0.0 },
-        });
-        // console.log('[PriceChart] Volume histogram added');
 
         chartRef.current = chart;
-        candleRef.current = candles;
-        volRef.current = volume;
-        // console.log('[PriceChart] Chart initialization complete, setting isLoading to false');
         setIsLoading(false);
       } catch (error) {
         console.error("[PriceChart] Failed to initialize chart:", error);
@@ -296,14 +269,55 @@ export function PriceChart({
     };
   }, []);
 
+  // Update series when chartType changes
+  useEffect(() => {
+    if (!chartRef.current || !chartLib || isLoading) return;
+
+    // Remove old series
+    if (candleRef.current) {
+      chartRef.current.removeSeries(candleRef.current);
+      candleRef.current = null;
+    }
+    if (volRef.current) {
+      chartRef.current.removeSeries(volRef.current);
+      volRef.current = null;
+    }
+
+    // Add new series based on chartType
+    const candles = chartType === 'line' 
+      ? chartRef.current.addSeries(chartLib.LineSeries, {
+          priceFormat: {
+            type: "custom",
+            formatter: (p: number) => `${p.toFixed(2)}%`,
+          },
+          color: '#667eea',
+          lineWidth: 2,
+        })
+      : chartRef.current.addSeries(chartLib.CandlestickSeries, {
+          priceFormat: {
+            type: "custom",
+            formatter: (p: number) => `${p.toFixed(2)}%`,
+          },
+        });
+
+    const volume = chartRef.current.addSeries(chartLib.HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "",
+      scaleMargins: { top: 0.8, bottom: 0.0 },
+    });
+
+    candleRef.current = candles;
+    volRef.current = volume;
+  }, [chartType, chartLib, isLoading]);
+
   // Re-seed chart when timeframe changes OR initial trades change materially
   // (for exchange UIs, you normally re-seed on tf change; and keep incremental updates after)
   const seedKey = useMemo(() => {
     // cheap key; if you pull history via loader, it changes rarely
     const first = trades[trades.length - 1]?.id ?? "";
     const last = trades[0]?.id ?? "";
-    return `${timeframe}:${first}:${last}:${trades.length}`;
-  }, [timeframe, trades]);
+    return `${timeframe}:${chartType}:${first}:${last}:${trades.length}`;
+  }, [timeframe, chartType, trades]);
 
   useEffect(() => {
     // Don't try to seed data while chart is still loading
@@ -344,15 +358,26 @@ export function PriceChart({
     // console.log('[PriceChart] After dedup:', deduped.length, 'first:', deduped[0], 'last:', deduped[deduped.length-1]);
 
     // console.log('[PriceChart] Setting candle data, first:', deduped[0], 'last:', deduped[deduped.length-1]);
-    candleSeries.setData(
-      deduped.map(c => ({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      }))
-    );
+    if (chartType === 'line') {
+      // For line chart, just set time and value (close price)
+      candleSeries.setData(
+        deduped.map(c => ({
+          time: c.time,
+          value: c.close,
+        }))
+      );
+    } else {
+      // For candlestick chart, set OHLC
+      candleSeries.setData(
+        deduped.map(c => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }))
+      );
+    }
 
     volSeries.setData(
       deduped.map(c => ({
@@ -363,7 +388,7 @@ export function PriceChart({
     );
 
     chart.timeScale().fitContent();
-  }, [seedKey, isLoading, timeframe, trades]);
+  }, [seedKey, isLoading, timeframe, trades, chartType]);
 
   // Incremental live update when a trade arrives
   useEffect(() => {
@@ -378,13 +403,20 @@ export function PriceChart({
     if (updates.length === 0) return;
 
     for (const c of updates) {
-      candleSeries.update({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      });
+      if (chartType === 'line') {
+        candleSeries.update({
+          time: c.time,
+          value: c.close,
+        });
+      } else {
+        candleSeries.update({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        });
+      }
 
       volSeries.update({
         time: c.time,
@@ -392,7 +424,7 @@ export function PriceChart({
         color: c.close >= c.open ? "rgba(16,185,129,0.30)" : "rgba(239,68,68,0.30)",
       });
     }
-  }, [lastTrade]);
+  }, [lastTrade, chartType]);
   
   if (!trades || trades.length === 0) {
     return (

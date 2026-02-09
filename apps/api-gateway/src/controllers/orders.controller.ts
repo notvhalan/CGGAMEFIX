@@ -58,24 +58,16 @@ export class OrdersController {
       }
 
       const orderLimit = limit ? parseInt(limit) : 50;
-      const orders = await this.databaseService.getOrdersByUserId(userId, orderLimit);
-      
-      // Filter by marketId if provided
-      let filteredOrders = marketId 
-        ? orders.filter(order => order.marketId === marketId)
-        : orders;
-      
-      // Filter by status based on includeHistory parameter
       const showHistory = includeHistory === 'true';
-      if (!showHistory) {
-        // Only return OPEN and PARTIALLY_MATCHED orders (exclude CANCELLED, MATCHED, EXPIRED, REJECTED)
-        filteredOrders = filteredOrders.filter(order => 
-          order.status === 'OPEN' || order.status === 'PARTIALLY_MATCHED'
-        );
-      }
-      // else: return all orders including history
-      
-      return { orders: filteredOrders };
+
+      const orders = await this.rustExchange.getUserOrders({
+        userId,
+        marketId,
+        includeHistory: showHistory,
+        limit: orderLimit,
+      });
+
+      return { orders };
     } catch (error) {
       this.logger.error('Failed to fetch orders', error);
       throw error;
@@ -104,27 +96,39 @@ export class OrdersController {
       let pPts: number;
       let liabilityPence: number;
       let side: 'FOR' | 'LAY';
+      let pPtsIsYes = false; // true when pPts is already in YES space (BUY_YES/SELL_YES)
       let timeInForce: 'GTC' | 'IOC' = orderData.timeInForce || 'GTC';
       
       // Default slippage for IOC market orders: 5% (500,000 probability points)
       const DEFAULT_MARKET_SLIPPAGE_PTS = 500_000; // 5%
       const maxSlippagePts = orderData.maxSlippagePts;
+      const MIN_ALLOWED_PPTS = 1000; // 0.01%
+      const MAX_ALLOWED_PPTS = 9999000; // 99.99%
       
       // Check for direct BUY_YES/SELL_YES format FIRST (most specific)
       if (orderData.side === 'BUY_YES' || orderData.side === 'SELL_YES') {
         // Direct BUY_YES/SELL_YES format from new frontend
         side = orderData.side === 'BUY_YES' ? 'FOR' : 'LAY';
-        pPts = orderData.pPts;
-        liabilityPence = orderData.liabilityPence;
+        pPts = orderData.pPts!;
+        // Use liabilityPence if provided, otherwise fall back to stakePence (backward compat)
+        liabilityPence = orderData.liabilityPence ?? orderData.stakePence!;
         timeInForce = orderData.timeInForce || 'GTC';
+        pPtsIsYes = true;
+
+        if (pPts === undefined) {
+          throw new Error('pPts is required for BUY_YES/SELL_YES orders');
+        }
+        if (pPts < MIN_ALLOWED_PPTS || pPts > MAX_ALLOWED_PPTS) {
+          throw new Error(`Invalid probability: ${(pPts / 100000).toFixed(4)}%. Must be between 0.01% and 99.99%`);
+        }
+        if (!liabilityPence || liabilityPence <= 0) {
+          throw new Error('liabilityPence must be positive');
+        }
       } else if (orderData.pPts !== undefined && (orderData.liabilityPence !== undefined || orderData.stakePence !== undefined)) {
         // New format - use liabilityPence for both sides (stakePence is backward compat)
         pPts = orderData.pPts;
         
         // Reject orders at extreme probabilities (< 0.01% or > 99.99%)
-        const MIN_ALLOWED_PPTS = 1000; // 0.01%
-        const MAX_ALLOWED_PPTS = 9999000; // 99.99%
-        
         if (pPts < MIN_ALLOWED_PPTS || pPts > MAX_ALLOWED_PPTS) {
           throw new Error(`Invalid probability: ${(pPts / 100000).toFixed(4)}%. Must be between 0.01% and 99.99%`);
         }
@@ -173,13 +177,12 @@ export class OrdersController {
           contractsMicros = stakeToContracts(liabilityPence, yesPts);
           this.logger.info(`Market order FOR: pPts=${pPts} + slippage=${slippagePts} => yesPts=${yesPts}`);
         } else {
-          // LAY market order: willing to sell YES down to (pPts - slippage) in NO space
-          // In YES space: PRICE_SCALE - pPts, but allow lower prices (higher YES probabilities)
-          // Example: market sell NO at 50% (YES 50%) with 5% slippage = willing to sell YES up to 55%
-          const basYesPts = PRICE_SCALE - pPts;
-          yesPts = Math.max(basYesPts - slippagePts, 1); // Allow selling at higher YES prob (lower NO prob)
+          // LAY market order: pPts may be NO space (legacy) or YES space (BUY_YES/SELL_YES input)
+          // Convert to YES space if needed, then allow worse price via slippage (lower YES price)
+          const baseYesPts = pPtsIsYes ? pPts : PRICE_SCALE - pPts;
+          yesPts = Math.max(baseYesPts - slippagePts, 1);
           contractsMicros = liabilityToContracts(liabilityPence, yesPts);
-          this.logger.info(`Market order LAY: NO pPts=${pPts} => YES base=${basYesPts} - slippage=${slippagePts} => yesPts=${yesPts}`);
+          this.logger.info(`Market order LAY: baseYesPts=${baseYesPts} - slippage=${slippagePts} => yesPts=${yesPts}`);
         }
       } else {
         // GTC limit orders: use exact price specified
@@ -189,10 +192,10 @@ export class OrdersController {
           yesPts = pPts;
           contractsMicros = stakeToContracts(liabilityPence, yesPts);
         } else {
-          // LAY: user backs NO at pPts -> they sell YES at (1 - pPts)
-          // If they back NO at 67%, they're selling YES at 33%
-          // yesPts = PRICE_SCALE - pPts (convert NO probability to YES space)
-          yesPts = PRICE_SCALE - pPts;
+          // LAY: pPts may be NO space (legacy) or YES space (BUY_YES/SELL_YES input)
+          // If legacy NO space: yesPts = PRICE_SCALE - pPts
+          // If YES space: yesPts = pPts
+          yesPts = pPtsIsYes ? pPts : PRICE_SCALE - pPts;
           contractsMicros = liabilityToContracts(liabilityPence, yesPts);
         }
       }
@@ -232,6 +235,7 @@ export class OrdersController {
         
         rustResponse = await this.rustExchange.submitOrder({
           marketId: orderData.marketId,
+          userId,
           side: rustSide,
           riskPence: liabilityPence,
           limitYesPts: yesPts,

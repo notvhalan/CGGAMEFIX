@@ -7,7 +7,7 @@ mod clearing;
 mod websocket;
 
 use axum::{
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use sqlx::PgPool;
@@ -76,7 +76,9 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     let app = Router::new()
         .route("/api/markets/:market_id/quote", get(api::get_quote))
-        .route("/api/orders", post(api::create_order))
+        .route("/api/orders", get(api::get_orders).post(api::create_order))
+        .route("/api/positions/me", get(api::get_positions))
+        .route("/api/positions/markets/:market_id/me", get(api::get_position_for_market))
         .route("/ws", get(websocket::ws_handler))
         .with_state(state);
 

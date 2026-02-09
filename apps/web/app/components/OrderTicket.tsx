@@ -45,7 +45,7 @@ export function OrderTicket({
   lastTradePPts,
   compact = false 
 }: OrderTicketProps) {
-  const [side, setSide] = useState<'FOR' | 'LAY'>('FOR');
+  const [side, setSide] = useState<'BUY_YES' | 'SELL_YES'>('BUY_YES'); // Default to BUY YES
   const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT');
   const [probability, setProbability] = useState('50.00'); // Always YES percentage 0-100
   const [amount, setAmount] = useState('10.00'); // Max cost in pounds
@@ -89,8 +89,8 @@ export function OrderTicket({
   const marketYesPPts = side === 'BUY_YES' ? bestAskPPts : bestBidPPts; // Buy YES takes asks, Sell YES takes bids
   const effectiveYesPPts = orderType === 'MARKET' && marketYesPPts ? marketYesPPts : yesInputPPts;
   
-  // Price submitted to API (YES for FOR, NO for LAY)
-  const pPtsSubmitted = side === 'BUY_YES' ? effectiveYesPPts : (PRICE_SCALE - effectiveYesPPts);
+  // Price submitted to API (always YES space for BUY_YES / SELL_YES)
+  const pPtsSubmitted = effectiveYesPPts;
   
   // Time in force based on order type
   const timeInForce: 'GTC' | 'IOC' = orderType === 'MARKET' ? 'IOC' : 'GTC';

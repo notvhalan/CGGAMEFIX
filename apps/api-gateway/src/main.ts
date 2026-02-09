@@ -28,12 +28,12 @@ async function bootstrap() {
   await fastifyInstance.register(fastifySession.default, {
     secret: process.env.SESSION_SECRET || 'replace-with-secure-secret-in-production',
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
+      secure: false, // Set to false since we're using HTTP not HTTPS
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
       sameSite: 'lax', // Allows cookies on same-site navigation
-      // Don't set domain in development to allow cookies across localhost ports
-      ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+      // Set domain to share cookies across subdomains and ports
+      domain: process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.gamefix.fun' : undefined),
     },
     saveUninitialized: false,
     rolling: true,

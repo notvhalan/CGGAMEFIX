@@ -45,16 +45,16 @@ export class EventsGateway
     private readonly positionLotsService: PositionLotsService,
   ) {}
 
-  afterInit() {
+  async afterInit() {
     this.logger.info('WebSocket Gateway initialized');
     // Wait for NATS connection before setting up subscriptions
-    setTimeout(() => {
-      try {
-        this.setupNatsSubscriptions();
-      } catch (error) {
-        this.logger.error('Failed to setup NATS subscriptions', error);
-      }
-    }, 2000);
+    try {
+      await this.natsClient.waitForConnection();
+      this.setupNatsSubscriptions();
+      this.logger.info('NATS subscriptions setup successfully');
+    } catch (error) {
+      this.logger.error('Failed to setup NATS subscriptions', error);
+    }
   }
 
   handleConnection(client: ExtendedSocket) {

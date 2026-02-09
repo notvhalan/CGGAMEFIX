@@ -15,6 +15,10 @@ interface RustOrderResponse {
   status: string;
 }
 
+interface RustOrdersResponse {
+  orders: any[];
+}
+
 @Injectable()
 export class RustExchangeService {
   private readonly logger = new Logger(RustExchangeService.name);
@@ -29,6 +33,7 @@ export class RustExchangeService {
    */
   async submitOrder(params: {
     marketId: string;
+    userId?: string;
     side: 'BUY_YES' | 'SELL_YES';
     riskPence: number;
     limitYesPts: number;
@@ -51,6 +56,7 @@ export class RustExchangeService {
         {
           headers: {
             'Content-Type': 'application/json',
+            ...(params.userId ? { 'X-User-Id': params.userId } : {}),
           },
           timeout: 5000,
         }
@@ -96,6 +102,97 @@ export class RustExchangeService {
         response: error.response?.data,
       });
       throw new Error(`Quote error: ${error.response?.data?.error || error.message}`);
+    }
+  }
+
+  /**
+   * Get user orders from Rust exchange
+   */
+  async getUserOrders(params: {
+    userId: string;
+    marketId?: string;
+    includeHistory?: boolean;
+    limit?: number;
+  }): Promise<any[]> {
+    try {
+      const response = await axios.get<RustOrdersResponse>(
+        `${this.rustExchangeUrl}/api/orders`,
+        {
+          params: {
+            market_id: params.marketId,
+            include_history: params.includeHistory,
+            limit: params.limit,
+          },
+          headers: {
+            'X-User-Id': params.userId,
+          },
+          timeout: 5000,
+        }
+      );
+
+      return response.data.orders || [];
+    } catch (error) {
+      this.logger.error('Failed to fetch orders from Rust exchange', {
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+      });
+      throw new Error(`Rust exchange error: ${error.response?.data?.error || error.message}`);
+    }
+  }
+
+  /**
+   * Get user position for a market from Rust exchange
+   */
+  async getPositionForMarket(params: {
+    userId: string;
+    marketId: string;
+  }): Promise<any> {
+    try {
+      const response = await axios.get(
+        `${this.rustExchangeUrl}/api/positions/markets/${params.marketId}/me`,
+        {
+          headers: {
+            'X-User-Id': params.userId,
+          },
+          timeout: 5000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      this.logger.error('Failed to fetch position from Rust exchange', {
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+      });
+      throw new Error(`Rust exchange error: ${error.response?.data?.error || error.message}`);
+    }
+  }
+
+  /**
+   * Get all user positions from Rust exchange
+   */
+  async getPositions(params: { userId: string }): Promise<any[]> {
+    try {
+      const response = await axios.get(
+        `${this.rustExchangeUrl}/api/positions/me`,
+        {
+          headers: {
+            'X-User-Id': params.userId,
+          },
+          timeout: 5000,
+        }
+      );
+
+      return response.data || [];
+    } catch (error) {
+      this.logger.error('Failed to fetch positions from Rust exchange', {
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+      });
+      throw new Error(`Rust exchange error: ${error.response?.data?.error || error.message}`);
     }
   }
 }

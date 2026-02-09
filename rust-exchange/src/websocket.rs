@@ -16,6 +16,8 @@ use crate::types::*;
 pub enum WsMessage {
     Subscribe { market_id: Uuid },
     Unsubscribe { market_id: Uuid },
+    Ping,
+    Pong,
     OrderbookSnapshot { market_id: Uuid, bids: Vec<Level>, asks: Vec<Level> },
     OrderbookDelta { market_id: Uuid, side: Side, price_yes_pts: i64, size_delta_micros: i64 },
     Trade { 
@@ -32,7 +34,6 @@ pub enum WsMessage {
         maker_fee_pence: i32,
         taker_fee_pence: i32,
     },
-    Pong,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,6 +343,15 @@ async fn handle_socket(socket: WebSocket, broadcaster: WsBroadcaster) {
                             }
                             WsMessage::Unsubscribe { market_id } => {
                                 broadcaster_clone.unsubscribe(&client_id, &market_id).await;
+                            }
+                            WsMessage::Ping => {
+                                // Send pong response
+                                let pong = WsMessage::Pong;
+                                if let Ok(json) = serde_json::to_string(&pong) {
+                                    if let Some(client) = broadcaster_clone.clients.read().await.get(&client_id) {
+                                        let _ = client.sender.send(Message::Text(json));
+                                    }
+                                }
                             }
                             _ => {}
                         }

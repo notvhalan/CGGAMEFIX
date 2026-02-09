@@ -4,6 +4,7 @@ use axum::{
     Json,
     response::IntoResponse,
 };
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::types::*;
@@ -18,13 +19,15 @@ pub struct QuoteRequest {
 }
 
 pub async fn get_quote(
-    State(app): State<AppState>,
-    Path(market_id): Path<Uuid>,
+    State(_app): State<AppState>,
+    Path(_market_id): Path<Uuid>,
     Query(req): Query<QuoteRequest>,
 ) -> Result<Json<QuoteResponse>, AppError> {
     // Validate price
+    const MIN_PRICE_PTS: i64 = 10_000;      // 0.1%
+    const MAX_PRICE_PTS: i64 = 9_990_000;   // 99.9%
     let limit_yes_pts = req.limit_yes_pts.unwrap_or(5_000_000); // Default 50%
-    if limit_yes_pts < 1 || limit_yes_pts >= PRICE_SCALE {
+    if limit_yes_pts < MIN_PRICE_PTS || limit_yes_pts > MAX_PRICE_PTS {
         return Err(AppError::InvalidPrice);
     }
 
@@ -93,9 +96,12 @@ pub async fn create_order(
         tracing::warn!("Order rejected: risk {} pence < minimum 100 pence", req.risk_pence);
         return Err(AppError::BadRequest(format!("Minimum risk is £1.00, got {} pence", req.risk_pence)));
     }
-    if req.limit_yes_pts < 1 || req.limit_yes_pts >= PRICE_SCALE {
-        tracing::warn!("Order rejected: invalid price {} (must be 1 <= price < {})", req.limit_yes_pts, PRICE_SCALE);
-        return Err(AppError::BadRequest(format!("Invalid price: {} (must be between 1 and {})", req.limit_yes_pts, PRICE_SCALE - 1)));
+    // Enforce price range: 0.1% to 99.9% (10000 pts to 9990000 pts)
+    const MIN_PRICE_PTS: i64 = 10_000;      // 0.1%
+    const MAX_PRICE_PTS: i64 = 9_990_000;   // 99.9%
+    if req.limit_yes_pts < MIN_PRICE_PTS || req.limit_yes_pts > MAX_PRICE_PTS {
+        tracing::warn!("Order rejected: invalid price {} (must be {} <= price <= {})", req.limit_yes_pts, MIN_PRICE_PTS, MAX_PRICE_PTS);
+        return Err(AppError::BadRequest(format!("Price must be between 0.1% and 99.9%, got {:.4}%", req.limit_yes_pts as f64 / 100_000.0)));
     }
 
     // Calculate contracts
@@ -176,10 +182,374 @@ pub async fn create_order(
     }))
 }
 
+fn require_user_id(headers: &HeaderMap) -> Result<Uuid, AppError> {
+    headers
+        .get("X-User-Id")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| AppError::Unauthorized("Missing X-User-Id".to_string()))
+}
+
+#[derive(Deserialize)]
+pub struct OrdersQuery {
+    #[serde(alias = "marketId")]
+    market_id: Option<Uuid>,
+    #[serde(alias = "includeHistory")]
+    include_history: Option<bool>,
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderSummary {
+    pub id: Uuid,
+    pub market_id: Uuid,
+    pub side: Side,
+    pub p_pts: i64,
+    pub yes_pts: i64,
+    pub liability_pence: i64,
+    pub original_contracts: String,
+    pub remaining_contracts: String,
+    pub status: String,
+    pub time_in_force: String,
+    pub created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct OrdersResponse {
+    pub orders: Vec<OrderSummary>,
+}
+
+pub async fn get_orders(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OrdersQuery>,
+) -> Result<Json<OrdersResponse>, AppError> {
+    let user_id = require_user_id(&headers)?;
+    let include_history = query.include_history.unwrap_or(false);
+    let limit = query.limit.unwrap_or(200).max(1).min(1000);
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            id,
+            market_id,
+            side as "side: Side",
+            p_pts,
+            limit_price_yes_pts,
+            COALESCE(liability_pence, 0)::bigint as "liability_pence!",
+            COALESCE(status::text, 'OPEN') as "status!",
+            qty_original_micros,
+            qty_remaining_micros,
+            COALESCE(time_in_force::text, 'GTC') as "time_in_force!",
+            created_at
+        FROM orders
+        WHERE user_id = $1
+          AND ($2::uuid IS NULL OR market_id = $2)
+          AND ($3::bool OR status IN ('OPEN', 'PARTIALLY_MATCHED'))
+        ORDER BY created_at DESC
+        LIMIT $4
+        "#,
+        user_id,
+        query.market_id,
+        include_history,
+        limit
+    )
+    .fetch_all(&app.db)
+    .await?;
+
+    let orders = rows
+        .into_iter()
+        .map(|r| OrderSummary {
+            id: r.id,
+            market_id: r.market_id,
+            side: r.side,
+            p_pts: r.p_pts as i64,
+            yes_pts: r.limit_price_yes_pts as i64,
+            liability_pence: r.liability_pence,
+            original_contracts: r.qty_original_micros.to_string(),
+            remaining_contracts: r.qty_remaining_micros.to_string(),
+            status: r.status,
+            time_in_force: r.time_in_force,
+            created_at: r
+                .created_at
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+        })
+        .collect();
+
+    Ok(Json(OrdersResponse { orders }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TradePosition {
+    pub size_pence: i64,
+    pub yes_price_pts: i64,
+    pub fee_pence: i64,
+    pub executed_at: String,
+    pub contracts_micros: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionResponse {
+    pub market_id: Uuid,
+    pub net_yes_pence: i64,
+    pub net_contracts_micros: String,
+    pub avg_entry_yes_pts: i64,
+    pub mark_yes_pts: i64,
+    pub unrealized_pnl_pence: i64,
+    pub total_fees_pence: i64,
+    pub can_cash_out: bool,
+    pub buy_positions: Vec<TradePosition>,
+    pub sell_positions: Vec<TradePosition>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionSummary {
+    pub market_id: Uuid,
+    pub market_question: String,
+    pub net_yes_pence: i64,
+    pub net_contracts_micros: String,
+    pub avg_entry_yes_pts: i64,
+    pub mark_yes_pts: i64,
+    pub unrealized_pnl_pence: i64,
+    pub total_fees_pence: i64,
+    pub can_cash_out: bool,
+}
+
+pub async fn get_positions(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PositionSummary>>, AppError> {
+    let user_id = require_user_id(&headers)?;
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT 
+            pl.market_id,
+            COALESCE(SUM(CASE WHEN pl.side::text = 'BUY_YES' THEN pl.qty_remaining_micros ELSE -pl.qty_remaining_micros END), 0)::bigint as "net_qty_micros!",
+            COALESCE(p.avg_open_price_yes_pts, 0) as "avg_open_price_yes_pts!",
+            COALESCE(p.realized_pnl_pence, 0) as "realized_pnl_pence!",
+            COALESCE(p.fees_paid_pence, 0) as "fees_paid_pence!",
+            m.name as market_question
+        FROM position_lots pl
+        JOIN markets m ON pl.market_id = m.id
+        LEFT JOIN positions p ON p.market_id = pl.market_id AND p.user_id = pl.user_id
+        WHERE pl.user_id = $1 AND pl.qty_remaining_micros > 0
+        GROUP BY pl.market_id, m.name, p.avg_open_price_yes_pts, p.realized_pnl_pence, p.fees_paid_pence
+        HAVING SUM(pl.qty_remaining_micros) > 0
+        "#,
+        user_id
+    )
+    .fetch_all(&app.db)
+    .await?;
+
+    let positions = rows
+        .into_iter()
+        .map(|r| PositionSummary {
+            market_id: r.market_id,
+            market_question: r.market_question,
+            net_yes_pence: 0,
+            net_contracts_micros: r.net_qty_micros.to_string(),
+            avg_entry_yes_pts: r.avg_open_price_yes_pts as i64,
+            mark_yes_pts: PRICE_SCALE / 2,
+            unrealized_pnl_pence: 0,
+            total_fees_pence: r.fees_paid_pence as i64,
+            can_cash_out: true,
+        })
+        .collect();
+
+    Ok(Json(positions))
+}
+
+pub async fn get_position_for_market(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Path(market_id): Path<Uuid>,
+) -> Result<Json<PositionResponse>, AppError> {
+    let user_id = require_user_id(&headers)?;
+
+    let lots = sqlx::query!(
+        r#"
+        SELECT 
+            side::text as "side!",
+            entry_price_yes_pts,
+            qty_remaining_micros,
+            opened_at
+        FROM position_lots
+        WHERE user_id = $1 AND market_id = $2 AND qty_remaining_micros > 0
+        ORDER BY opened_at ASC
+        "#,
+        user_id,
+        market_id
+    )
+    .fetch_all(&app.db)
+    .await?;
+
+    let position = sqlx::query!(
+        r#"
+        SELECT 
+            COALESCE(net_qty_micros, 0) as "net_qty_micros!",
+            COALESCE(avg_open_price_yes_pts, 0) as "avg_open_price_yes_pts!",
+            COALESCE(realized_pnl_pence, 0) as "realized_pnl_pence!",
+            COALESCE(fees_paid_pence, 0) as "fees_paid_pence!"
+        FROM positions
+        WHERE market_id = $1 AND user_id = $2
+        "#,
+        market_id,
+        user_id
+    )
+    .fetch_optional(&app.db)
+    .await?;
+
+    if lots.is_empty() && position.is_none() {
+        return Ok(Json(PositionResponse {
+            market_id,
+            net_yes_pence: 0,
+            net_contracts_micros: "0".to_string(),
+            avg_entry_yes_pts: 0,
+            mark_yes_pts: PRICE_SCALE / 2,
+            unrealized_pnl_pence: 0,
+            total_fees_pence: 0,
+            can_cash_out: false,
+            buy_positions: Vec::new(),
+            sell_positions: Vec::new(),
+        }));
+    }
+
+    let mut net_contracts_micros: i128 = position
+        .as_ref()
+        .map(|p| p.net_qty_micros as i128)
+        .unwrap_or(0);
+
+    if net_contracts_micros == 0 {
+        for lot in &lots {
+            let qty = lot.qty_remaining_micros as i128;
+            if lot.side == "BUY_YES" {
+                net_contracts_micros += qty;
+            } else {
+                net_contracts_micros -= qty;
+            }
+        }
+    }
+
+    let avg_entry_yes_pts = position
+        .as_ref()
+        .map(|p| p.avg_open_price_yes_pts as i64)
+        .unwrap_or(0);
+    let total_fees_pence = position
+        .as_ref()
+        .map(|p| p.fees_paid_pence as i64)
+        .unwrap_or(0);
+
+    let mut buy_positions = Vec::new();
+    let mut sell_positions = Vec::new();
+
+    for lot in lots {
+        let qty = lot.qty_remaining_micros as i128;
+        let price = lot.entry_price_yes_pts as i64;
+        let notional_pence = (price as i128 * qty * PAYOUT_PENCE_PER_CONTRACT as i128)
+            / (PRICE_SCALE as i128 * CONTRACT_SCALE_MICROS as i128);
+        let executed_at = lot.opened_at.and_utc().to_rfc3339();
+
+        let tp = TradePosition {
+            size_pence: notional_pence as i64,
+            yes_price_pts: price,
+            fee_pence: 0,
+            executed_at,
+            contracts_micros: if lot.side == "BUY_YES" {
+                qty.to_string()
+            } else {
+                format!("-{}", qty)
+            },
+        };
+
+        if lot.side == "BUY_YES" {
+            buy_positions.push(tp);
+        } else {
+            sell_positions.push(tp);
+        }
+    }
+
+    let best_bid_yes = sqlx::query_scalar!(
+        r#"
+        SELECT MAX(limit_price_yes_pts)
+        FROM orders
+        WHERE market_id = $1
+          AND side::text = 'BUY_YES'
+          AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+        "#,
+        market_id
+    )
+    .fetch_one(&app.db)
+    .await?
+    .unwrap_or(0);
+
+    let best_ask_yes = sqlx::query_scalar!(
+        r#"
+        SELECT MIN(limit_price_yes_pts)
+        FROM orders
+        WHERE market_id = $1
+          AND side::text = 'SELL_YES'
+          AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+        "#,
+        market_id
+    )
+    .fetch_one(&app.db)
+    .await?
+    .unwrap_or(PRICE_SCALE);
+
+    let mark_yes_pts = if best_bid_yes > 0 && best_ask_yes < PRICE_SCALE {
+        (best_bid_yes + best_ask_yes) / 2
+    } else if avg_entry_yes_pts > 0 {
+        avg_entry_yes_pts
+    } else {
+        PRICE_SCALE / 2
+    };
+
+    let abs_contracts_micros = net_contracts_micros.abs() as i128;
+    let net_yes_pence = (abs_contracts_micros * PAYOUT_PENCE_PER_CONTRACT as i128)
+        / CONTRACT_SCALE_MICROS as i128;
+
+    let is_open = !buy_positions.is_empty() || !sell_positions.is_empty();
+    let mut unrealized_pnl_pence: i128 = 0;
+    if is_open && avg_entry_yes_pts > 0 && abs_contracts_micros > 0 {
+        let pnl_per_contract_pence = if net_contracts_micros > 0 {
+            ((mark_yes_pts - avg_entry_yes_pts) as i128 * PAYOUT_PENCE_PER_CONTRACT as i128)
+                / PRICE_SCALE as i128
+        } else {
+            ((avg_entry_yes_pts - mark_yes_pts) as i128 * PAYOUT_PENCE_PER_CONTRACT as i128)
+                / PRICE_SCALE as i128
+        };
+
+        unrealized_pnl_pence = (pnl_per_contract_pence * abs_contracts_micros)
+            / CONTRACT_SCALE_MICROS as i128;
+    }
+
+    let can_cash_out = is_open && (best_bid_yes > 0 || best_ask_yes < PRICE_SCALE);
+
+    Ok(Json(PositionResponse {
+        market_id,
+        net_yes_pence: net_yes_pence as i64,
+        net_contracts_micros: net_contracts_micros.to_string(),
+        avg_entry_yes_pts,
+        mark_yes_pts,
+        unrealized_pnl_pence: (unrealized_pnl_pence as i64) - total_fees_pence,
+        total_fees_pence,
+        can_cash_out,
+        buy_positions,
+        sell_positions,
+    }))
+}
+
 #[derive(Debug)]
 pub enum AppError {
     BadRequest(String),
     InvalidPrice,
+    Unauthorized(String),
     Database(sqlx::Error),
     Internal(String),
 }
@@ -207,6 +577,7 @@ impl IntoResponse for AppError {
         let (status, message) = match self {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::InvalidPrice => (StatusCode::BAD_REQUEST, "Invalid price".to_string()),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
             AppError::Database(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };

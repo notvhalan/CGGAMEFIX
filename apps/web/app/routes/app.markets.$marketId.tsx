@@ -119,7 +119,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
     }
     
     // Handle regular order placement
-    const side = formData.get("side") as 'FOR' | 'LAY';
+    const side = formData.get("side") as 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY';
     const pPts = parseInt(formData.get("pPts") as string);
     const liabilityPence = parseInt(formData.get("liabilityPence") as string);
     const timeInForce = (formData.get("timeInForce") as 'GTC' | 'IOC') || 'GTC';
@@ -150,6 +150,7 @@ export default function MarketDetail() {
   const [lastTrade, setLastTrade] = useState<any | null>(null);
   const [orderBook, setOrderBook] = useState(loaderData.orderBook);
   const [timeframe, setTimeframe] = useState<Timeframe>('tick');
+  const [chartType, setChartType] = useState<'line' | 'candle'>('line'); // Default to line
   const [selectedPrice, setSelectedPrice] = useState<number | null>(null);
   const [isPositionsModalOpen, setIsPositionsModalOpen] = useState(false);
   const [orderFeedback, setOrderFeedback] = useState<{ type: 'success' | 'error', message: string } | null>(null);
@@ -447,11 +448,49 @@ export default function MarketDetail() {
                 {tf}
               </button>
             ))}
+            
+            {/* Chart Type Selector */}
+            <div style={{ display: 'flex', gap: '0.25rem', marginLeft: 'auto' }}>
+              <button
+                onClick={() => setChartType('line')}
+                style={{
+                  padding: '0.25rem 0.625rem',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  background: chartType === 'line' ? '#667eea' : 'transparent',
+                  color: chartType === 'line' ? '#fff' : '#94a3b8',
+                  border: '1px solid',
+                  borderColor: chartType === 'line' ? '#667eea' : '#374151',
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s'
+                }}
+              >
+                Line
+              </button>
+              <button
+                onClick={() => setChartType('candle')}
+                style={{
+                  padding: '0.25rem 0.625rem',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  background: chartType === 'candle' ? '#667eea' : 'transparent',
+                  color: chartType === 'candle' ? '#fff' : '#94a3b8',
+                  border: '1px solid',
+                  borderColor: chartType === 'candle' ? '#667eea' : '#374151',
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s'
+                }}
+              >
+                Candles
+              </button>
+            </div>
           </div>
           
           {/* Chart Component */}
           <div style={{ flex: 1, overflow: 'hidden', padding: '0.75rem' }}>
-            <PriceChart trades={trades} lastTrade={lastTrade} timeframe={timeframe} marketId={marketId} />
+            <PriceChart trades={trades} lastTrade={lastTrade} timeframe={timeframe} marketId={marketId} chartType={chartType} />
           </div>
         </div>
 

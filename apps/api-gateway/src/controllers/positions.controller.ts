@@ -4,6 +4,7 @@ import { PRICE_SCALE, CONTRACT_SCALE, CONTRACT_PAYOUT_PENCE } from '@betting-exc
 import { RustExchangeService } from '../services/rust-exchange.service';
 
 interface TradePosition {
+  lotId: string;
   sizePence: number;
   yesPricePts: number;
   feePence: number;
@@ -73,21 +74,87 @@ export class PositionsController {
   }
 
   /**
-   * Get user's position for a specific market
-   * Computes from trades table
+   * Get user's position for a specific market.
+   * Gets net/mark/pnl from Rust, then overrides buyPositions/sellPositions
+   * by querying position_lots directly — so both BUY_YES and SELL_YES lots
+   * are always returned independently, never filtered by net direction.
    */
   @Get('markets/:marketId/me')
   async getMyPosition(
     @Param('marketId') marketId: string,
     @Req() req: any
   ): Promise<Position> {
-    // Get user ID from session
     const userId = req.session?.userId;
     if (!userId) {
       throw new Error('User not authenticated');
     }
 
-    return this.rustExchange.getPositionForMarket({ userId, marketId });
+    // Get the base position data (net contracts, mark, pnl) from Rust exchange
+    const base = await this.rustExchange.getPositionForMarket({ userId, marketId });
+
+    // Clean up any dust lots (< 1000 micros) left by previous partial closes —
+    // zero them out immediately so they never appear in the UI.
+    await this.databaseService.query(
+      `UPDATE position_lots
+       SET qty_remaining_micros = 0, updated_at = NOW()
+       WHERE user_id = $1
+         AND market_id = $2
+         AND qty_remaining_micros > 0
+         AND qty_remaining_micros < 1000`,
+      [userId, marketId]
+    );
+
+    // Query position_lots directly to get ALL open lots for both sides,
+    // bypassing any net-direction filter in the Rust engine.
+    const lotsResult = await this.databaseService.query<{
+      lot_id: string;
+      side: string;
+      entry_price_yes_pts: string;
+      qty_remaining_micros: string;
+      opened_at: string;
+    }>(
+      `SELECT lot_id, side::text, entry_price_yes_pts, qty_remaining_micros, opened_at
+       FROM position_lots
+       WHERE user_id = $1
+         AND market_id = $2
+         AND qty_remaining_micros >= 1000
+       ORDER BY opened_at ASC`,
+      [userId, marketId]
+    );
+
+    const PRICE_SCALE_DB = 10_000_000;
+    const CONTRACT_SCALE_MICROS_DB = 1_000_000;
+    const PAYOUT_PENCE = 100; // 100p = £1 per contract
+
+    const buyPositions: TradePosition[] = [];
+    const sellPositions: TradePosition[] = [];
+
+    for (const lot of lotsResult.rows) {
+      const qty = BigInt(lot.qty_remaining_micros);
+      const price = Number(lot.entry_price_yes_pts);
+      const sizePence = Math.round(
+        (price * Number(qty) * PAYOUT_PENCE) / (PRICE_SCALE_DB * CONTRACT_SCALE_MICROS_DB)
+      );
+      const entry: TradePosition = {
+        lotId: lot.lot_id,
+        sizePence,
+        yesPricePts: price,
+        feePence: 0,
+        executedAt: new Date(lot.opened_at).toISOString(),
+        contractsMicros: lot.side === 'BUY_YES' ? lot.qty_remaining_micros : `-${lot.qty_remaining_micros}`,
+      };
+      if (lot.side === 'BUY_YES') {
+        buyPositions.push(entry);
+      } else {
+        sellPositions.push(entry);
+      }
+    }
+
+    return {
+      ...base,
+      buyPositions,
+      sellPositions,
+    };
   }
 
   /**

@@ -64,6 +64,7 @@ interface CashoutExecuteRequest {
   marketId: string;
   netContractsMicros: string;
   maxSlippagePts: number;
+  lotIds?: string[];
 }
 
 interface InlineNotice {
@@ -77,15 +78,15 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const [limitPrice, setLimitPrice] = useState('');
   const [sizeMode, setSizeMode] = useState<'all' | 'partial'>('all');
   const [partialPercent, setPartialPercent] = useState(100);
-  const [selectedGroup, setSelectedGroup] = useState<number | null>(null);
-  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [cashoutQuote, setCashoutQuote] = useState<CashoutQuote | null>(null);
   const [loadingQuote, setLoadingQuote] = useState(false);
   const [executingCashout, setExecutingCashout] = useState(false);
-  const [groupQuotes, setGroupQuotes] = useState<Map<number, CashoutQuote>>(new Map());
-  const [loadingGroupQuotes, setLoadingGroupQuotes] = useState<Set<number>>(new Set());
+  const [groupQuotes, setGroupQuotes] = useState<Map<string, CashoutQuote>>(new Map());
+  const [loadingGroupQuotes, setLoadingGroupQuotes] = useState<Set<string>>(new Set());
   const [inlineNotice, setInlineNotice] = useState<InlineNotice | null>(null);
-  const [sideFilter, setSideFilter] = useState<'all' | 'for' | 'lay'>('all');
+  const [sideFilter, setSideFilter] = useState<'all' | 'buy_yes' | 'sell_yes'>('all');
   const [viewMode, setViewMode] = useState<'grouped' | 'individual'>('grouped');
   
   // Live orderbook prices via WebSocket (initialize from orderBook prop)
@@ -198,34 +199,9 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     return reconciled;
   };
 
-  const sameSideRawPositions = netSign > 0n
-    ? (buyPositions || [])
-    : netSign < 0n
-      ? (sellPositions || [])
-      : [];
-  const oppositeSideRawPositions = netSign > 0n
-    ? (sellPositions || [])
-    : netSign < 0n
-      ? (buyPositions || [])
-      : [];
-
-  const hasSameSideRows = sameSideRawPositions.length > 0;
-  const hasOppositeSideRows = oppositeSideRawPositions.length > 0;
-
-  // Prefer same-side rows; if missing (legacy drift), borrow opposite-side rows as entry buckets.
-  // Keep the displayed side aligned with source rows in fallback mode.
-  const sourceRows = hasSameSideRows ? sameSideRawPositions : oppositeSideRawPositions;
-  const displaySign = hasSameSideRows
-    ? netSign
-    : hasOppositeSideRows
-      ? -netSign
-      : netSign;
-  const canonicalRows = canonicalizePositions(sourceRows, displaySign);
-  const reconciledRows = reconcileLotsToNet(canonicalRows, displaySign, absNetContractsMicros);
-
-  const displayBuyPositions = displaySign > 0n ? reconciledRows : [];
-  const displaySellPositions = displaySign < 0n ? reconciledRows : [];
-  const isFallbackBucketView = hasOpenPositions && displaySign !== netSign;
+  // Treat BUY YES and SELL YES as completely independent buckets — never subtract one from the other
+  const canonicalBuyRows = canonicalizePositions(buyPositions || [], 1n);
+  const canonicalSellRows = canonicalizePositions(sellPositions || [], -1n);
 
   // Fetch cashout quote
   const fetchCashoutQuote = useCallback(async () => {
@@ -329,18 +305,17 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   }, [isOpen, marketId]);
 
   // Fetch cashout quote for a specific group
-  const fetchGroupQuote = useCallback(async (yesPricePts: number, totalContractsMicros: bigint) => {
-    console.log('[fetchGroupQuote] yesPricePts:', yesPricePts, 'totalContractsMicros:', totalContractsMicros.toString());
-    setLoadingGroupQuotes(prev => new Set(prev).add(yesPricePts));
+  // groupKey = `${side}-${yesPricePts}` — unique per side+price bucket
+  const fetchGroupQuote = useCallback(async (groupKey: string, side: 'BUY_YES' | 'SELL_YES', totalContractsMicros: bigint) => {
+    console.log('[fetchGroupQuote] key:', groupKey, 'side:', side, 'contracts:', totalContractsMicros.toString());
+    setLoadingGroupQuotes(prev => new Set(prev).add(groupKey));
     try {
-      // Sign group contracts to match overall position direction for close side detection
-      const posNet = typeof netContractsMicrosStr === 'string' 
-        ? BigInt(netContractsMicrosStr) 
-        : netContractsMicrosStr;
-      const sign = posNet === 0n ? 0n : (posNet > 0n ? 1n : -1n);
-      const groupSigned = sign * (totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros);
+      // For BUY_YES lots: closing them means placing SELL_YES → send positive contracts
+      // For SELL_YES lots: closing them means placing BUY_YES → send negative contracts
+      const abs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
+      const signed = side === 'BUY_YES' ? abs : -abs;
       
-      console.log('[fetchGroupQuote] Sending request with groupSigned:', groupSigned.toString());
+      console.log('[fetchGroupQuote] Sending signed contracts:', signed.toString());
       
       const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/v1/cashout/quote`, {
@@ -349,11 +324,9 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         credentials: 'include',
         body: JSON.stringify({
           marketId,
-          netContractsMicros: groupSigned.toString(),
+          netContractsMicros: signed.toString(),
         }),
       });
-
-      console.log('[fetchGroupQuote] Response status:', response.status, response.statusText);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -362,18 +335,17 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       }
 
       const quote = await response.json();
-      console.log('[fetchGroupQuote] Group quote received:', JSON.stringify(quote, null, 2));
-      setGroupQuotes(prev => new Map(prev).set(yesPricePts, quote));
+      setGroupQuotes(prev => new Map(prev).set(groupKey, quote));
     } catch (error) {
       console.error('[fetchGroupQuote] Failed to fetch group quote:', error);
     } finally {
       setLoadingGroupQuotes(prev => {
         const next = new Set(prev);
-        next.delete(yesPricePts);
+        next.delete(groupKey);
         return next;
       });
     }
-  }, [marketId, netContractsMicrosStr]);
+  }, [marketId]);
 
   // Group positions by yesPricePts
   const groupPositions = (positions: any[]) => {
@@ -399,8 +371,8 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       .map(([yesPricePts, data]) => ({ yesPricePts, ...data }));
   };
 
-  const groupedBuyPositions = groupPositions(displayBuyPositions);
-  const groupedSellPositions = groupPositions(displaySellPositions);
+  const groupedBuyPositions = groupPositions(canonicalBuyRows);
+  const groupedSellPositions = groupPositions(canonicalSellRows);
 
   const executeCashoutRequest = useCallback(async (requestBody: CashoutExecuteRequest) => {
     console.log('[Cashout] Executing IOC close with body:', requestBody);
@@ -462,61 +434,92 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   };
 
   // Submit grouped close immediately (closes this group only).
-  const handleGroupCashout = async (yesPricePts: number, totalContractsMicros: bigint) => {
-    console.log('[GroupCashout] Closing individual group:', { yesPricePts, groupContracts: totalContractsMicros.toString() });
-
-    const quote = groupQuotes.get(yesPricePts);
-    console.log('[GroupCashout] Quote for this group:', quote);
-
+  const handleGroupCashout = async (
+    groupKey: string,
+    side: 'BUY_YES' | 'SELL_YES',
+    totalContractsMicros: bigint,
+    positions: any[]
+  ) => {
+    const quote = groupQuotes.get(groupKey);
     if (!quote || !quote.success) {
-      setInlineNotice({
-        type: 'error',
-        message: 'No valid quote available for this group. Get quote first.',
-      });
+      setInlineNotice({ type: 'error', message: 'No valid quote for this group. Get quote first.' });
       return;
     }
-
-    const posNet = typeof netContractsMicrosStr === 'string'
-      ? BigInt(netContractsMicrosStr)
-      : netContractsMicrosStr;
-    const sign = posNet === 0n ? 0n : (posNet > 0n ? 1n : -1n);
-    const absGroupContracts = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
-    const groupSigned = sign * absGroupContracts;
-
-    const requestBody = {
+    const abs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
+    // BUY_YES lots are closed by selling → positive micros (SELL_YES order)
+    // SELL_YES lots are closed by buying → negative micros (BUY_YES order)
+    const signed = side === 'BUY_YES' ? abs : -abs;
+    // Collect lot IDs so the server targets these specific lots instead of FIFO
+    const lotIds = positions
+      .map((p: any) => p.lotId)
+      .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+    await executeCashoutRequest({
       marketId,
-      netContractsMicros: groupSigned.toString(),
+      netContractsMicros: signed.toString(),
       maxSlippagePts: 100000,
-    };
-    console.log('[GroupCashout] Request body:', requestBody);
-    await executeCashoutRequest(requestBody);
+      ...(lotIds.length > 0 ? { lotIds } : {}),
+    });
   };
 
   // Early return AFTER all hooks have been called
   if (!isOpen) return null;
 
-  // Combine all positions for table view
+  // Combine all positions for grouped view — each group has a unique key = `${side}-${yesPricePts}`
   const allGroups = [
-    ...groupedBuyPositions.map(g => ({ ...g, side: 'BUY_YES' as const })),
-    ...groupedSellPositions.map(g => ({ ...g, side: 'SELL_YES' as const }))
+    ...groupedBuyPositions.map(g => ({ ...g, side: 'BUY_YES' as const, key: `BUY_YES-${g.yesPricePts}` })),
+    ...groupedSellPositions.map(g => ({ ...g, side: 'SELL_YES' as const, key: `SELL_YES-${g.yesPricePts}` })),
   ].filter(g => {
-    if (sideFilter === 'for') return g.side === 'BUY_YES';
-    if (sideFilter === 'lay') return g.side === 'SELL_YES';
+    // Drop dust groups that would display as 0.00
+    const absContracts = g.totalContractsMicros < 0n ? -g.totalContractsMicros : g.totalContractsMicros;
+    if (absContracts < 5000n) return false;
+    if (sideFilter === 'buy_yes') return g.side === 'BUY_YES';
+    if (sideFilter === 'sell_yes') return g.side === 'SELL_YES';
     return true;
-  }).sort((a, b) => b.yesPricePts - a.yesPricePts);
+  }).sort((a, b) => {
+    if (a.side !== b.side) return a.side === 'BUY_YES' ? -1 : 1;
+    return b.yesPricePts - a.yesPricePts;
+  });
 
-  // Get currently selected group or default to "all"
-  const activeGroup = selectedGroup !== null 
-    ? allGroups.find(g => g.yesPricePts === selectedGroup)
+  // Grouped view: one aggregated row per side (total all lots into one position per side)
+  type SideAgg = { side: 'BUY_YES' | 'SELL_YES'; key: string; totalContractsMicros: bigint; totalSizePence: number; yesPricePts: number; positions: any[]; count: number; };
+
+  const buildSideAggregate = (rows: any[], side: 'BUY_YES' | 'SELL_YES'): SideAgg | null => {
+    // Filter out dust lots before aggregating
+    const meaningful = rows.filter((p: any) => Math.abs(Number(p.contractsMicros || '0')) >= 5000);
+    if (meaningful.length === 0) return null;
+    const totalContractsNum = meaningful.reduce((s: number, p: any) => s + Math.abs(Number(p.contractsMicros || '0')), 0);
+    const totalContractsMicros = BigInt(Math.round(totalContractsNum));
+    // Drop if total rounds to 0.00 at 2dp (< 0.005 contracts = 5000 micros)
+    if (totalContractsMicros < 5000n) return null;
+    const totalSizePence = meaningful.reduce((s: number, p: any) => s + (p.sizePence || 0), 0);
+    const weightedPriceSum = meaningful.reduce((s: number, p: any) => {
+      const c = Math.abs(Number(p.contractsMicros || '0'));
+      return s + (p.yesPricePts || 0) * c;
+    }, 0);
+    const yesPricePts = totalContractsNum > 0 ? Math.round(weightedPriceSum / totalContractsNum) : 0;
+    return { side, key: side, totalContractsMicros, totalSizePence, yesPricePts, positions: meaningful, count: meaningful.length };
+  };
+
+  const buyAgg = buildSideAggregate(canonicalBuyRows, 'BUY_YES');
+  const sellAgg = buildSideAggregate(canonicalSellRows, 'SELL_YES');
+
+  const aggregatedRows: SideAgg[] = ([buyAgg, sellAgg] as (SideAgg | null)[]).filter((agg): agg is SideAgg => {
+    if (!agg) return false;
+    if (sideFilter === 'buy_yes') return agg.side === 'BUY_YES';
+    if (sideFilter === 'sell_yes') return agg.side === 'SELL_YES';
+    return true;
+  });
+
+  // Individual view uses allGroups (per-price-bucket rows); grouped uses aggregatedRows (one row per side)
+  const activeGroup = selectedGroup !== null
+    ? (viewMode === 'grouped'
+        ? aggregatedRows.find(g => g.key === selectedGroup)
+        : allGroups.find(g => g.key === selectedGroup))
     : null;
 
-  const toggleRowExpand = (yesPricePts: number) => {
+  const toggleRowExpand = (key: string) => {
     const next = new Set(expandedRows);
-    if (next.has(yesPricePts)) {
-      next.delete(yesPricePts);
-    } else {
-      next.add(yesPricePts);
-    }
+    if (next.has(key)) next.delete(key); else next.add(key);
     setExpandedRows(next);
   };
 
@@ -595,14 +598,24 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
           background: '#0d1117',
           flexShrink: 0
         }}>
+          {canonicalBuyRows.length > 0 && (
+            <div>
+              <span style={{ color: '#8b949e' }}>BUY YES:</span>{' '}
+              <span style={{ color: '#3fb950', fontWeight: 600 }}>
+                {canonicalBuyRows.reduce((s: number, p: any) => s + Math.abs(Number(p.contractsMicros)) / 1_000_000, 0).toFixed(2)} ctr
+              </span>
+            </div>
+          )}
+          {canonicalSellRows.length > 0 && (
+            <div>
+              <span style={{ color: '#8b949e' }}>SELL YES:</span>{' '}
+              <span style={{ color: '#f85149', fontWeight: 600 }}>
+                {canonicalSellRows.reduce((s: number, p: any) => s + Math.abs(Number(p.contractsMicros)) / 1_000_000, 0).toFixed(2)} ctr
+              </span>
+            </div>
+          )}
           <div>
-            <span style={{ color: '#8b949e' }}>Side:</span>{' '}
-            <span style={{ color: isLong ? '#3fb950' : '#f85149', fontWeight: 600 }}>
-              {isLong ? '▲ FOR' : '▼ LAY'}
-            </span>
-          </div>
-          <div>
-            <span style={{ color: '#8b949e' }}>Contracts:</span>{' '}
+            <span style={{ color: '#8b949e' }}>Net:</span>{' '}
             <span style={{ color: '#c9d1d9', fontWeight: 600 }}>
               {(Number(netContractsMicros) / 1_000_000).toFixed(2)}
             </span>
@@ -678,36 +691,36 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 All
               </button>
               <button
-                onClick={() => setSideFilter('for')}
+                onClick={() => setSideFilter('buy_yes')}
                 style={{
                   padding: '0.25rem 0.75rem',
-                  background: sideFilter === 'for' ? '#238636' : 'transparent',
+                  background: sideFilter === 'buy_yes' ? '#1f6feb' : 'transparent',
                   border: '1px solid #30363d',
                   borderRadius: '4px',
-                  color: sideFilter === 'for' ? '#c9d1d9' : '#8b949e',
+                  color: sideFilter === 'buy_yes' ? '#c9d1d9' : '#8b949e',
                   fontSize: '0.75rem',
                   fontWeight: 600,
                   cursor: 'pointer',
                   fontFamily: 'monospace'
                 }}
               >
-                FOR
+                BUY YES
               </button>
               <button
-                onClick={() => setSideFilter('lay')}
+                onClick={() => setSideFilter('sell_yes')}
                 style={{
                   padding: '0.25rem 0.75rem',
-                  background: sideFilter === 'lay' ? '#238636' : 'transparent',
+                  background: sideFilter === 'sell_yes' ? '#da3633' : 'transparent',
                   border: '1px solid #30363d',
                   borderRadius: '4px',
-                  color: sideFilter === 'lay' ? '#c9d1d9' : '#8b949e',
+                  color: sideFilter === 'sell_yes' ? '#c9d1d9' : '#8b949e',
                   fontSize: '0.75rem',
                   fontWeight: 600,
                   cursor: 'pointer',
                   fontFamily: 'monospace'
                 }}
               >
-                LAY
+                SELL YES
               </button>
               <div style={{ width: '1px', height: '1rem', background: '#30363d', margin: '0 0.25rem' }} />
               <button
@@ -743,18 +756,6 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 Individual
               </button>
             </div>
-            {isFallbackBucketView && (
-              <div style={{
-                padding: '0.4rem 1rem',
-                borderBottom: '1px solid #30363d',
-                background: '#2d1f0f',
-                color: '#f2cc60',
-                fontSize: '0.7rem',
-                fontFamily: 'monospace'
-              }}>
-                Bucket rows are legacy entry history. Close actions reduce net position FIFO and may update different rows.
-              </div>
-            )}
 
             {/* Table Header */}
             <div style={{
@@ -789,9 +790,50 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               scrollbarColor: '#30363d #0d1117'
             }}
             className="positions-scroll">
-              {allGroups.map((group) => {
-                const isSelected = selectedGroup === group.yesPricePts;
-                const isExpanded = expandedRows.has(group.yesPricePts);
+              {viewMode === 'grouped' ? aggregatedRows.map((agg) => {
+                const isSelected = selectedGroup === agg.key;
+                const avgEntry = agg.yesPricePts / 100_000;
+                const contracts = Number(agg.totalContractsMicros) / 1_000_000;
+                const cost = agg.totalSizePence;
+                const markValue = contracts * (markPercent / 100) * 100;
+                const pnl = agg.side === 'BUY_YES' ? (markValue - cost) : (cost - markValue);
+                return (
+                  <div
+                    key={agg.key}
+                    onClick={() => setSelectedGroup(isSelected ? null : agg.key)}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '60px 80px 90px 80px 80px 90px 60px 80px',
+                      padding: '0.6rem 1rem',
+                      borderBottom: '1px solid #21262d',
+                      fontSize: '0.75rem',
+                      fontFamily: 'monospace',
+                      cursor: 'pointer',
+                      background: isSelected ? '#1c2128' : 'transparent',
+                      transition: 'background 0.1s',
+                    }}
+                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#161b22'; }}
+                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <div style={{ color: agg.side === 'BUY_YES' ? '#3fb950' : '#f85149', fontWeight: 700 }}>
+                      {agg.side === 'BUY_YES' ? 'BUY YES' : 'SELL YES'}
+                    </div>
+                    <div style={{ color: '#c9d1d9' }}>{avgEntry.toFixed(2)}%</div>
+                    <div style={{ color: '#c9d1d9', fontWeight: 700, fontSize: '0.8rem' }}>{contracts.toFixed(2)}</div>
+                    <div style={{ color: '#8b949e' }}>{formatPence(cost)}</div>
+                    <div style={{ color: '#c9d1d9' }}>{markPercent.toFixed(2)}%</div>
+                    <div style={{ textAlign: 'right', color: pnl >= 0 ? '#3fb950' : '#f85149', fontWeight: 700 }}>
+                      {pnl >= 0 ? '+' : ''}{formatPence(pnl)}
+                    </div>
+                    <div style={{ textAlign: 'center', color: '#6e7681' }}>{agg.count}</div>
+                    <div style={{ textAlign: 'center', color: isSelected ? '#3fb950' : '#6e7681', fontSize: '0.65rem', fontWeight: isSelected ? 700 : 400 }}>
+                      {isSelected ? '✓ SEL' : 'SELECT'}
+                    </div>
+                  </div>
+                );
+              }) : allGroups.map((group) => {
+                const isSelected = selectedGroup === group.key;
+                const isExpanded = expandedRows.has(group.key);
                 const avgEntry = group.yesPricePts / 100_000;
                 const contracts = Math.abs(Number(group.totalContractsMicros) / 1_000_000);
                 const cost = group.totalSizePence;
@@ -801,10 +843,10 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                   : (cost - markValue);
 
                 return (
-                  <div key={`${group.side}-${group.yesPricePts}`}>
+                  <div key={group.key}>
                     {/* Main Row */}
                     <div
-                      onClick={() => setSelectedGroup(isSelected ? null : group.yesPricePts)}
+                      onClick={() => setSelectedGroup(isSelected ? null : group.key)}
                       style={{
                         display: 'grid',
                         gridTemplateColumns: '60px 80px 90px 80px 80px 90px 60px 80px',
@@ -827,7 +869,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                         color: group.side === 'BUY_YES' ? '#3fb950' : '#f85149',
                         fontWeight: 600
                       }}>
-                        {group.side === 'BUY_YES' ? '▲ FOR' : '▼ LAY'}
+                        {group.side === 'BUY_YES' ? 'BUY YES' : 'SELL YES'}
                       </div>
                       <div style={{ color: '#c9d1d9' }}>
                         {avgEntry.toFixed(2)}%
@@ -855,7 +897,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            toggleRowExpand(group.yesPricePts);
+                            toggleRowExpand(group.key);
                           }}
                           style={{
                             background: 'transparent',
@@ -1005,7 +1047,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 </div>
                 <div style={{ color: '#c9d1d9', fontWeight: 600, fontSize: '0.6875rem', flex: 1 }}>
                   {activeGroup 
-                    ? `${activeGroup.side} @ ${(activeGroup.yesPricePts / 100_000).toFixed(2)}% · ${Math.abs(Number(activeGroup.totalContractsMicros) / 1_000_000).toFixed(2)} contracts`
+                    ? `${activeGroup.side === 'BUY_YES' ? 'BUY YES' : 'SELL YES'} @ ${(activeGroup.yesPricePts / 100_000).toFixed(2)}% · ${Math.abs(Number(activeGroup.totalContractsMicros) / 1_000_000).toFixed(2)} ctr`
                     : 'All Positions'
                   }
                 </div>
@@ -1279,7 +1321,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               <button
                 onClick={() => {
                   if (activeGroup) {
-                    fetchGroupQuote(activeGroup.yesPricePts, activeGroup.totalContractsMicros);
+                    fetchGroupQuote(activeGroup.key, activeGroup.side, activeGroup.totalContractsMicros);
                   } else {
                     fetchCashoutQuote();
                   }
@@ -1301,7 +1343,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               </button>
 
               {/* Preview Box */}
-              {((activeGroup && groupQuotes.get(activeGroup.yesPricePts)) || (!activeGroup && cashoutQuote)) && (
+              {((activeGroup && groupQuotes.get(activeGroup.key)) || (!activeGroup && cashoutQuote)) && (
                 <div style={{
                   padding: '0.5rem',
                   background: '#161b22',
@@ -1314,7 +1356,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                   </div>
                   {(() => {
                     const quote = activeGroup 
-                      ? groupQuotes.get(activeGroup.yesPricePts)
+                      ? groupQuotes.get(activeGroup.key)
                       : cashoutQuote;
                     
                     if (!quote || !quote.success) {
@@ -1372,7 +1414,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               <button
                 onClick={() => {
                   if (activeGroup) {
-                    handleGroupCashout(activeGroup.yesPricePts, activeGroup.totalContractsMicros);
+                    handleGroupCashout(activeGroup.key, activeGroup.side, activeGroup.totalContractsMicros, activeGroup.positions);
                   } else {
                     handleCashout();
                   }

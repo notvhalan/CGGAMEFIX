@@ -565,13 +565,8 @@ pub async fn get_position_for_market(
     let mut sell_positions = Vec::new();
 
     for lot in lots {
-        // Use positions.net_qty_micros as source of truth and hide stale opposite-side lots.
-        if net_contracts_micros > 0 && lot.side != "BUY_YES" {
-            continue;
-        }
-        if net_contracts_micros < 0 && lot.side != "SELL_YES" {
-            continue;
-        }
+        // Include all lots regardless of net direction — both BUY_YES and SELL_YES are
+        // returned independently so the frontend can display them as separate groups.
 
         let qty = lot.qty_remaining_micros as i128;
         let price = lot.entry_price_yes_pts as i64;

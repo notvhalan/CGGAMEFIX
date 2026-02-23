@@ -155,6 +155,7 @@ export class CashoutController {
       marketId: string;
       netContractsMicros: string;
       maxSlippagePts?: number;
+      lotIds?: string[]; // Optional: target specific lots instead of FIFO
     },
     @Req() req: FastifyRequest & { session: any },
   ) {
@@ -182,11 +183,11 @@ export class CashoutController {
       // The requested close amount must have opposite sign to the current position
       // and must not exceed the position size
       // netContracts > 0 means long position â†’ must close with LAY (negative close)
-      // netContracts < 0 means short position â†’ must close with FOR (positive close)
+      // netContracts < 0 means short position → must close with FOR (positive close)
       
       // Since we're passing the same netContractsMicros from position, we use absolute value
       // But we need to ensure we're trading the opposite direction
-      const closeContractsMicros = netContracts < 0n ? -netContracts : netContracts;
+      let closeContractsMicros = netContracts < 0n ? -netContracts : netContracts;
       const closeSide = netContracts > 0n ? OrderSide.LAY : OrderSide.FOR;
 
       this.logger.info(`Close execute: market=${marketId}, contracts=${closeContractsMicros}, side=${closeSide}`);
@@ -224,6 +225,44 @@ export class CashoutController {
       }
 
       this.logger.info(`Cancelled ${openOrderIds.length} resting orders before close`);
+
+      // If specific lot IDs were provided, target them directly instead of FIFO.
+      // We do this by temporarily setting their opened_at to epoch so Rust's
+      // FIFO clearing hits them first, and we close with their exact qty.
+      if (body.lotIds && body.lotIds.length > 0) {
+        const targetLotsResult = await this.databaseService.query<{
+          qty_remaining_micros: string;
+        }>(
+          `SELECT qty_remaining_micros
+           FROM position_lots
+           WHERE lot_id = ANY($1::uuid[])
+             AND user_id = $2
+             AND market_id = $3
+             AND qty_remaining_micros > 0`,
+          [body.lotIds, userId, marketId]
+        );
+
+        if (targetLotsResult.rows.length > 0) {
+          const totalTargetQty = targetLotsResult.rows.reduce(
+            (s, r) => s + BigInt(r.qty_remaining_micros), 0n
+          );
+
+          // Prioritise these lots in FIFO by backdating them to epoch.
+          await this.databaseService.query(
+            `UPDATE position_lots
+             SET opened_at = '1970-01-01 00:00:00+00'
+             WHERE lot_id = ANY($1::uuid[])
+               AND user_id = $2`,
+            [body.lotIds, userId]
+          );
+
+          // Override close quantity to exactly match the targeted lots.
+          closeContractsMicros = totalTargetQty;
+          this.logger.info(
+            `Lot-targeted close: ${body.lotIds.length} lots, total qty=${totalTargetQty}`
+          );
+        }
+      }
 
       // Use aggressive but valid price bounds accepted by Rust exchange.
       // SELL_YES (closing long YES) uses the lowest allowed YES price.

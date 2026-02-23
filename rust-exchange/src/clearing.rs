@@ -255,8 +255,10 @@ impl ClearingService {
             .await?;
 
             // 8. Update positions
-            self.update_position(&mut tx, taker_order.market_id, fill.maker_user_id, fill.maker_side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id).await?;
-            self.update_position(&mut tx, taker_order.market_id, fill.taker_user_id, taker_order.side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id).await?;
+            // Maker is always opening a new independent lot (never reduce_only).
+            // Taker is reduce_only when this is a cashout/close order.
+            self.update_position(&mut tx, taker_order.market_id, fill.maker_user_id, fill.maker_side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id, false).await?;
+            self.update_position(&mut tx, taker_order.market_id, fill.taker_user_id, taker_order.side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id, taker_reduce_only).await?;
 
             tx.commit().await?;
 
@@ -389,68 +391,72 @@ impl ClearingService {
         exec_yes_pts: i64,
         qty_micros: i64,
         trade_id: uuid::Uuid,
+        reduce_only: bool,
     ) -> anyhow::Result<()> {
         let incoming_side = match side {
             Side::BuyYes => "BUY_YES",
             Side::SellYes => "SELL_YES",
         };
-        let opposite_side = if incoming_side == "BUY_YES" {
-            "SELL_YES"
-        } else {
-            "BUY_YES"
-        };
-
-        // 1) Consume opposite-side lots FIFO (reduces/closes exposure).
-        let opposite_lots = sqlx::query!(
-            r#"
-            SELECT lot_id, qty_remaining_micros
-            FROM position_lots
-            WHERE user_id = $1
-              AND market_id = $2
-              AND side::text = $3
-              AND qty_remaining_micros > 0
-            ORDER BY opened_at ASC
-            FOR UPDATE
-            "#,
-            user_id,
-            market_id,
-            opposite_side
-        )
-        .fetch_all(&mut **tx)
-        .await?;
+        let opposite_side = if incoming_side == "BUY_YES" { "SELL_YES" } else { "BUY_YES" };
 
         let mut remaining_to_open = qty_micros;
-        for lot in opposite_lots {
-            if remaining_to_open <= 0 {
-                break;
-            }
 
-            let close_qty = remaining_to_open.min(lot.qty_remaining_micros);
-            if close_qty <= 0 {
-                continue;
-            }
+        if reduce_only {
+            // Reduce-only (cashout/close): consume opposite-side lots FIFO first.
+            // DUST PREVENTION: if closing a lot would leave fewer than DUST_THRESHOLD
+            // micros remaining, snap to zero and take the whole lot. This prevents
+            // sub-cent remnants that can never be meaningfully closed.
+            const DUST_THRESHOLD: i64 = 10_000; // 0.01 contracts
 
-            let updated = sqlx::query!(
+            let opposite_lots = sqlx::query!(
                 r#"
-                UPDATE position_lots
-                SET qty_remaining_micros = qty_remaining_micros - $1,
-                    updated_at = NOW()
-                WHERE lot_id = $2
-                  AND qty_remaining_micros >= $1
+                SELECT lot_id, qty_remaining_micros
+                FROM position_lots
+                WHERE user_id = $1
+                  AND market_id = $2
+                  AND side::text = $3
+                  AND qty_remaining_micros > 0
+                ORDER BY opened_at ASC
+                FOR UPDATE
                 "#,
-                close_qty,
-                lot.lot_id
+                user_id,
+                market_id,
+                opposite_side
             )
-            .execute(&mut **tx)
+            .fetch_all(&mut **tx)
             .await?;
 
-            if updated.rows_affected() > 0 {
-                remaining_to_open -= close_qty;
+            for lot in opposite_lots {
+                if remaining_to_open <= 0 { break; }
+                // Base close qty
+                let mut close_qty = remaining_to_open.min(lot.qty_remaining_micros);
+                if close_qty <= 0 { continue; }
+                // Snap: if what would remain in the lot is below dust threshold, take all of it
+                let would_remain = lot.qty_remaining_micros - close_qty;
+                if would_remain > 0 && would_remain < DUST_THRESHOLD {
+                    close_qty = lot.qty_remaining_micros;
+                }
+                let updated = sqlx::query!(
+                    r#"
+                    UPDATE position_lots
+                    SET qty_remaining_micros = GREATEST(0, qty_remaining_micros - $1),
+                        updated_at = NOW()
+                    WHERE lot_id = $2
+                    "#,
+                    close_qty,
+                    lot.lot_id
+                )
+                .execute(&mut **tx)
+                .await?;
+                if updated.rows_affected() > 0 {
+                    remaining_to_open -= remaining_to_open.min(close_qty);
+                }
             }
         }
+        // reduce_only orders never open new lots — any unfilled remainder is discarded.
+        // Normal orders always open a new independent lot for the full qty.
 
-        // 2) Any remainder opens a new lot on incoming side.
-        if remaining_to_open > 0 {
+        if !reduce_only && remaining_to_open > 0 {
             sqlx::query(
                 r#"
                 INSERT INTO position_lots (

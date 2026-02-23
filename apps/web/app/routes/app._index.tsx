@@ -13,25 +13,6 @@ import "~/styles/components/controls.css";
 
 type TimeRange = '1D' | '1W' | '1M' | 'ALL';
 
-const generateMockBalanceData = (pence: number, range: TimeRange) => {
-  const now = Math.floor(Date.now() / 1000);
-  const points = range === '1D' ? 48 : range === '1W' ? 168 : range === '1M' ? 720 : 2160;
-  const interval = range === '1D' ? 1800 : range === '1W' ? 3600 : range === '1M' ? 3600 : 14400;
-  
-  const data = [];
-  const startValue = pence * (0.85 + Math.random() * 0.1);
-  
-  for (let i = 0; i < points; i++) {
-    const time = now - (points - i) * interval;
-    const variance = (Math.random() - 0.5) * pence * 0.02;
-    const trend = ((pence - startValue) / points) * i;
-    const value = Math.max(0, startValue + trend + variance);
-    data.push({ time, value });
-  }
-  
-  return data;
-};
-
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
     const url = new URL(request.url);
@@ -51,70 +32,48 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const history = historyResponse.status === 'fulfilled' ? historyResponse.value : null;
     const positions = positionsResponse.status === 'fulfilled' ? positionsResponse.value || [] : [];
 
-    // Calculate equity = available + locked (orders) + position value
-    const availablePence = wallet?.balance ? Math.round(wallet.balance * 100) : 0;
-    const reservedPence = wallet?.lockedBalance ? Math.round(wallet.lockedBalance * 100) : 0;
-    
-    // Calculate total position value at mark price
-    // For BUY YES (positive contracts): value = contracts * mark_price
-    // For BUY NO (negative contracts): value = contracts * (1 - mark_price)
-    const positionValuePence = positions.reduce((sum: number, p: any) => {
-      const micros = BigInt(p.netContractsMicros || '0');
-      if (micros === 0n) return sum;
-      
-      const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
-      const markPrice = (p.markYesPts || 0) / 100_000 / 100; // Convert to decimal price
-      const isLong = micros > 0n;
-      
-      // Position value = what you could sell it for at mark price
-      const value = contracts * (isLong ? markPrice : (1 - markPrice)) * 100; // Convert to pence
-      return sum + value;
-    }, 0);
-    
-    const equityPence = availablePence + reservedPence + positionValuePence;
+    // Wallet balances in pounds (API returns pounds)
+    const availablePounds = wallet?.balance ?? 0;
+    const reservedPounds = wallet?.lockedBalance ?? 0;
+    const equityPounds = availablePounds + reservedPounds;
 
     let equityData, availableData, reservedData;
+    let eventsData: any[] = [];
     
     if (history?.history && history.history.length > 0) {
       console.log('[Dashboard Loader] Using REAL wallet history:', history.history.length, 'entries');
-      console.log('[Dashboard Loader] Sample entry:', history.history[0]);
       
-      // Deduplicate by timestamp - keep the last entry for each unique timestamp
-      const deduped = history.history.reduce((acc: any[], h: any) => {
-        const time = Math.floor(new Date(h.timestamp).getTime() / 1000);
-        const existing = acc.find(item => item.time === time);
-        if (existing) {
-          // Update existing entry (keep the latest values for this timestamp)
-          existing.balance = h.balance;
-          existing.available = h.available;
-          existing.reserved = h.reserved;
-        } else {
-          acc.push({
-            time,
-            balance: h.balance,
-            available: h.available,
-            reserved: h.reserved
-          });
-        }
-        return acc;
-      }, []);
-      
-      equityData = deduped.map(h => ({ time: h.time, value: h.balance }));
-      availableData = deduped.map(h => ({ time: h.time, value: h.available }));
-      reservedData = deduped.map(h => ({ time: h.time, value: h.reserved }));
-      
-      console.log('[Dashboard Loader] After deduplication:', deduped.length, 'unique timestamps');
-      console.log('[Dashboard Loader] Transformed equity data sample:', equityData.slice(0, 3));
-      console.log('[Dashboard Loader] Value range:', {
-        min: Math.min(...equityData.map(d => d.value)),
-        max: Math.max(...equityData.map(d => d.value))
-      });
+      // Deduplicate by second — multiple trades in the same second share the same unix timestamp.
+      // lightweight-charts requires strictly ascending unique times; duplicates cause setData to throw.
+      // Data arrives ASC from the server, so last write per second = most recent balance for that second.
+      const seen = new Map<number, any>();
+      for (const h of history.history) {
+        seen.set(Math.floor(new Date(h.timestamp).getTime() / 1000), h);
+      }
+      const deduped = [...seen.entries()].sort((a, b) => a[0] - b[0]);
+
+      equityData    = deduped.map(([t, h]) => ({ time: t, value: h.balance }));
+      availableData = deduped.map(([t, h]) => ({ time: t, value: h.available }));
+      reservedData  = deduped.map(([t, h]) => ({ time: t, value: h.reserved }));
+
+      // Map individual events for color-coded chart markers
+      if (history?.events) {
+        eventsData = history.events.map((e: any) => ({
+          time: Math.floor(new Date(e.timestamp).getTime() / 1000),
+          entryType: e.entryType,
+          credit: e.credit,
+          debit: e.debit,
+          balance: e.balance,
+        }));
+      }
     } else {
-      console.log('[Dashboard Loader] No real history found, using MOCK data. History response:', history);
-      // Fallback to mock data
-      equityData = generateMockBalanceData(equityPence, timeRange);
-      availableData = generateMockBalanceData(availablePence, timeRange);
-      reservedData = generateMockBalanceData(reservedPence, timeRange);
+      console.log('[Dashboard Loader] No history at all, using stub data for empty state');
+      // Only truly new accounts with zero trades get a flat stub line
+      const now = Math.floor(Date.now() / 1000);
+      const stubVal = equityPounds || 100;
+      equityData    = [{ time: now - 86400, value: stubVal }, { time: now, value: stubVal }];
+      availableData = [{ time: now - 86400, value: availablePounds || stubVal }, { time: now, value: availablePounds || stubVal }];
+      reservedData  = [{ time: now - 86400, value: reservedPounds || 0 }, { time: now, value: reservedPounds || 0 }];
     }
 
     return json({ 
@@ -129,19 +88,22 @@ export async function loader({ request }: LoaderFunctionArgs) {
       equityData,
       availableData,
       reservedData,
+      eventsData,
       timeRange
     });
   } catch (error) {
     const timeRange = '1W';
+    const now = Math.floor(Date.now() / 1000);
     return json({ 
       wallet: null, 
       markets: [], 
       orders: [], 
       positions: [],
       timestamp: new Date().toISOString(),
-      equityData: generateMockBalanceData(10000, timeRange),
-      availableData: generateMockBalanceData(8000, timeRange),
-      reservedData: generateMockBalanceData(2000, timeRange),
+      equityData: [{ time: now - 86400, value: 0 }, { time: now, value: 0 }],
+      availableData: [{ time: now - 86400, value: 0 }, { time: now, value: 0 }],
+      reservedData: [{ time: now - 86400, value: 0 }, { time: now, value: 0 }],
+      eventsData: [],
       timeRange
     });
   }
@@ -167,7 +129,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function Dashboard() {
-  const { wallet, markets, orders, positions, equityData, availableData, reservedData, timeRange } = useLoaderData<typeof loader>();
+  const { wallet, markets, orders, positions, equityData, availableData, reservedData, eventsData, timeRange } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === 'submitting';
   const [chartMode, setChartMode] = useState<'equity' | 'available' | 'reserved'>('equity');
@@ -393,6 +355,7 @@ export default function Dashboard() {
                 equity={chartMode === 'equity' ? equityData : chartMode === 'available' ? availableData : reservedData}
                 available={chartMode === 'equity' ? availableData : []}
                 reserved={chartMode === 'equity' ? reservedData : []}
+                events={eventsData}
                 timeRange={timeRange}
               />
             </div>

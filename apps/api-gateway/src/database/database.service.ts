@@ -596,6 +596,26 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Get pre-aggregated 100ms price bars for a market
+   */
+  async getPriceBarsByMarketId(marketId: string, limit = 6000): Promise<any[]> {
+    const result = await this.pool.query(
+      `SELECT
+        market_id,
+        bucket_start,
+        open_yes_pts,
+        close_yes_pts,
+        volume_micros
+      FROM price_bars_100ms
+      WHERE market_id = $1
+      ORDER BY bucket_start ASC
+      LIMIT $2`,
+      [marketId, limit]
+    );
+    return result.rows;
+  }
+
+  /**
    * Get trades for a market
    */
   async getTradesByMarketId(marketId: string, limit = 50): Promise<any[]> {

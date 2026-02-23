@@ -46,6 +46,10 @@ export async function getMarketTrades(marketId: string, limit = 50) {
   return fetchApi<any>(`/v1/markets/${marketId}/trades?limit=${limit}`);
 }
 
+export async function getMarketPriceBars(marketId: string, limit = 6000) {
+  return fetchApi<{ marketId: string; bars: any[]; count: number }>(`/v1/markets/${marketId}/price-bars?limit=${limit}`);
+}
+
 // Position APIs
 export async function getPosition(request: Request, marketId: string) {
   const cookie = request.headers.get('Cookie');

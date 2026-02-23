@@ -24,10 +24,30 @@ export const links: LinksFunction = () => [
   },
 ];
 
+function normalizePublicApiUrl(rawUrl?: string) {
+  const fallback = 'http://localhost:3000';
+  const candidate = (rawUrl || fallback).trim();
+
+  try {
+    const url = new URL(candidate);
+    const isLocalHost = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+    if (!isLocalHost && url.protocol === 'http:') {
+      url.protocol = 'https:';
+    }
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return candidate.replace(/\/$/, '');
+  }
+}
+
 export async function loader({ request }: LoaderFunctionArgs) {
+  const apiUrl = normalizePublicApiUrl(
+    process.env.VITE_API_URL || process.env.API_BASE_URL || 'http://localhost:3000',
+  );
+
   return json({
     ENV: {
-      API_URL: process.env.VITE_API_URL || process.env.API_BASE_URL || 'http://localhost:3000',
+      API_URL: apiUrl,
       WS_URL: process.env.VITE_WS_URL || 'ws://localhost:3000',
       RUST_WS_URL: process.env.VITE_RUST_WS_URL || process.env.RUST_WS_URL || 'ws://localhost:3001/ws',
     },

@@ -1,14 +1,14 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "rootDir": "./src",
-    "outDir": "./dist",
+    "rootDir": "../oldcodematching-engine/src",
+    "outDir": "../oldcodematching-engine/dist",
     "noUnusedParameters": false
   },
   "references": [
     { "path": "../../packages/shared-types" },
     { "path": "../../packages/shared-config" }
   ],
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
+  "include": ["../oldcodematching-engine/src/**/*"],
+  "exclude": ["../oldcodematching-engine/node_modules", "../oldcodematching-engine/dist", "../oldcodematching-engine/tests"]
 }

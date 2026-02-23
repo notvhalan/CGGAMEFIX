@@ -1,11 +1,12 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { NATS_SUBJECTS, EventType } from '@betting-exchange/shared-types';
 import { NatsClient } from '../nats/nats.client';
 import { DatabaseService } from '../database/database.service';
 
 @Injectable()
-export class OrderEventsService implements OnModuleInit {
+export class OrderEventsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OrderEventsService.name);
+  private pollTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly natsClient: NatsClient,
@@ -41,6 +42,74 @@ export class OrderEventsService implements OnModuleInit {
     });
     
     this.logger.log(`Subscribed to order and trade events: ${NATS_SUBJECTS.EVENTS_ORDER_CANCELLED}, ${NATS_SUBJECTS.EVENTS_ORDER_REJECTED}, ${NATS_SUBJECTS.EVENTS_TRADE_EXECUTED}`);
+
+    // Polling fallback: catch any trades that NATS missed (e.g. after a restart).
+    // Runs immediately on startup (to backfill), then every 30 seconds.
+    await this.pollUnsettledTrades();
+    this.pollTimer = setInterval(() => {
+      this.pollUnsettledTrades().catch(err =>
+        this.logger.error('Poll unsettled trades error', err)
+      );
+    }, 30_000);
+  }
+
+  onModuleDestroy() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  /**
+   * Finds trades not yet in trade_settlements and settles them.
+   * This is a safety net for when NATS events are missed (e.g. after restarts).
+   */
+  private async pollUnsettledTrades() {
+    try {
+      // Find trades where EITHER order leg hasn't been settled yet
+      const result = await this.databaseService.query(
+        `SELECT t.*
+         FROM trades t
+         WHERE NOT EXISTS (
+           SELECT 1 FROM trade_settlements ts
+           WHERE ts.trade_id = t.id::text
+             AND ts.order_id = t.maker_order_id::text
+         )
+         ORDER BY t.created_at ASC
+         LIMIT 200`,
+        []
+      );
+
+      if (result.rows.length === 0) return;
+
+      this.logger.log(`[Poll] Found ${result.rows.length} unsettled trades — settling now`);
+
+      let settled = 0;
+      for (const row of result.rows) {
+        try {
+          await this.handleTradeExecuted({
+            tradeId:      row.id,
+            makerOrderId: row.maker_order_id,
+            takerOrderId: row.taker_order_id,
+            makerUserId:  row.maker_user_id,
+            takerUserId:  row.taker_user_id,
+            qtyMicros:    row.qty_micros.toString(),
+            notionalPence: row.notional_pence.toString(),
+            takerSide:    row.side === 'BUY_YES' ? 'BUY_YES' : 'SELL_YES',
+            makerFeePence: row.maker_fee_pence.toString(),
+            takerFeePence: row.taker_fee_pence.toString(),
+            executedAt:   row.created_at, // use original trade time for accurate history
+          });
+          settled++;
+        } catch (err) {
+          this.logger.error(`[Poll] Failed to settle trade ${row.id}`, err);
+        }
+      }
+
+      this.logger.log(`[Poll] Settled ${settled}/${result.rows.length} trades`);
+    } catch (err) {
+      this.logger.error('[Poll] Error querying unsettled trades', err);
+    }
   }
 
   private async handleOrderCancelled(data: any) {
@@ -139,6 +208,7 @@ export class OrderEventsService implements OnModuleInit {
       takerSide,
       makerFeePence,
       takerFeePence,
+      executedAt,  // optional: original trade timestamp (used by poller backfill)
     } = data;
 
     this.logger.log(`Settling trade ${tradeId}: ${qtyMicros} micros @ ${notionalPence}p`);
@@ -160,6 +230,7 @@ export class OrderEventsService implements OnModuleInit {
           filledQtyMicros,
           notionalPence: notional,
           feePence: BigInt(takerFeePence),
+          executedAt,
         });
 
         await this.settleOneOrder(client, {
@@ -170,6 +241,7 @@ export class OrderEventsService implements OnModuleInit {
           filledQtyMicros,
           notionalPence: notional,
           feePence: BigInt(makerFeePence),
+          executedAt,
         });
       });
 
@@ -192,9 +264,12 @@ export class OrderEventsService implements OnModuleInit {
       filledQtyMicros: bigint;
       notionalPence: bigint;
       feePence: bigint;
+      executedAt?: string | Date; // original trade timestamp for backfill accuracy
     }
   ) {
-    const { tradeId, orderId, userId, side, filledQtyMicros, notionalPence, feePence } = args;
+    const { tradeId, orderId, userId, side, filledQtyMicros, notionalPence, feePence, executedAt } = args;
+    // Use original trade time when available (backfill), otherwise NOW()
+    const ledgerTimestamp = executedAt ? `'${new Date(executedAt).toISOString()}'::timestamptz` : 'NOW()';
 
     // 1) Idempotency: only settle once per (tradeId, orderId)
     const inserted = await this.databaseService.insertSettlementOnce(client, tradeId, orderId, userId);
@@ -274,7 +349,7 @@ export class OrderEventsService implements OnModuleInit {
       
       await client.query(
         `INSERT INTO ledger_entries (user_id, wallet_id, entry_type, debit, credit, balance, description, created_at)
-         VALUES ($1, $2, 'TRADE_SETTLEMENT', $3, $4, $5, $6, NOW())`,
+         VALUES ($1, $2, 'TRADE_SETTLEMENT', $3, $4, $5, $6, ${ledgerTimestamp})`,
         [
           userId,
           walletId,
@@ -311,7 +386,7 @@ export class OrderEventsService implements OnModuleInit {
       
       await client.query(
         `INSERT INTO ledger_entries (user_id, wallet_id, entry_type, debit, credit, balance, description, created_at)
-         VALUES ($1, $2, 'TRADE_SETTLEMENT', $3, $4, $5, $6, NOW())`,
+         VALUES ($1, $2, 'TRADE_SETTLEMENT', $3, $4, $5, $6, ${ledgerTimestamp})`,
         [
           userId,
           walletId,

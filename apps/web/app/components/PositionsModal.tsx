@@ -6,15 +6,31 @@ import { getWSClient } from '~/lib/ws.client';
 
 // Get API URL from window.ENV or default to localhost
 const getApiUrl = () => {
+  const normalizeApiUrl = (rawUrl: string) => {
+    const candidate = (rawUrl || '').trim();
+    if (!candidate) return 'http://localhost:3000';
+    try {
+      const url = new URL(candidate);
+      const isLocalHost = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+      if (!isLocalHost && url.protocol === 'http:') {
+        url.protocol = 'https:';
+      }
+      return url.toString().replace(/\/$/, '');
+    } catch {
+      return candidate.replace(/\/$/, '');
+    }
+  };
+
   if (typeof window !== 'undefined') {
     // First try window.ENV
     if ((window as any).ENV?.API_URL) {
-      console.log('[getApiUrl] Using window.ENV.API_URL:', (window as any).ENV.API_URL);
-      return (window as any).ENV.API_URL;
+      const normalized = normalizeApiUrl((window as any).ENV.API_URL);
+      console.log('[getApiUrl] Using window.ENV.API_URL:', normalized);
+      return normalized;
     }
-    // Fall back to current origin if on gamefix.fun
+    // Fall back to production API origin for gamefix domains.
     if (window.location.hostname.includes('gamefix.fun')) {
-      const apiUrl = `${window.location.protocol}//gamefix.fun:3000`;
+      const apiUrl = 'https://api.gamefix.fun';
       console.log('[getApiUrl] Using gamefix.fun URL:', apiUrl);
       return apiUrl;
     }
@@ -44,6 +60,17 @@ interface CashoutQuote {
   quoteTimestamp: number;
 }
 
+interface CashoutExecuteRequest {
+  marketId: string;
+  netContractsMicros: string;
+  maxSlippagePts: number;
+}
+
+interface InlineNotice {
+  type: 'success' | 'error' | 'info';
+  message: string;
+}
+
 export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, marketId, orderBook }: PositionsModalProps) {
   const [closeMode, setCloseMode] = useState<'ioc' | 'limit'>('ioc');
   const [slippage, setSlippage] = useState(0.25);
@@ -57,6 +84,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const [executingCashout, setExecutingCashout] = useState(false);
   const [groupQuotes, setGroupQuotes] = useState<Map<number, CashoutQuote>>(new Map());
   const [loadingGroupQuotes, setLoadingGroupQuotes] = useState<Set<number>>(new Set());
+  const [inlineNotice, setInlineNotice] = useState<InlineNotice | null>(null);
   const [sideFilter, setSideFilter] = useState<'all' | 'for' | 'lay'>('all');
   const [viewMode, setViewMode] = useState<'grouped' | 'individual'>('grouped');
   
@@ -93,8 +121,111 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const avgEntryPercent = avgEntryYesPts / 100_000;
   const markPercent = markYesPts / 100_000;
 
-  // Check if there are any open positions
-  const hasOpenPositions = (buyPositions && buyPositions.length > 0) || (sellPositions && sellPositions.length > 0);
+  // Position state should be driven by net contracts, not lot array presence.
+  const absNetContractsMicros = netContractsMicros < 0n ? -netContractsMicros : netContractsMicros;
+  const hasOpenPositions = netContractsMicros !== 0n;
+  const syntheticPricePts = avgEntryYesPts > 0 ? avgEntryYesPts : markYesPts;
+  const syntheticSizePence = Number(
+    (BigInt(syntheticPricePts) * absNetContractsMicros * 100n) / (10_000_000n * 1_000_000n)
+  );
+  const netSign = netContractsMicros > 0n ? 1n : (netContractsMicros < 0n ? -1n : 0n);
+
+  const toAbs = (value: bigint) => (value < 0n ? -value : value);
+  const toAbsContracts = (pos: any) => {
+    const raw = BigInt(pos?.contractsMicros ?? '0');
+    return toAbs(raw);
+  };
+
+  const toIso = (value: any) => {
+    const candidate = value ?? new Date().toISOString();
+    const date = new Date(candidate);
+    return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+  };
+
+  const canonicalizePositions = (positions: any[], sign: bigint) => {
+    return positions.map((pos) => {
+      const absContracts = toAbsContracts(pos);
+      const signedContracts = sign >= 0n ? absContracts : -absContracts;
+      const executedAt = toIso(pos?.executedAt ?? pos?.timestamp);
+      return {
+        ...pos,
+        yesPricePts: Number(pos?.yesPricePts ?? syntheticPricePts),
+        sizePence: Number(pos?.sizePence ?? 0),
+        feePence: Number(pos?.feePence ?? 0),
+        executedAt,
+        contractsMicros: signedContracts.toString(),
+      };
+    });
+  };
+
+  // Reconcile row-level lots to authoritative net contracts while preserving individual entries.
+  const reconcileLotsToNet = (positions: any[], sign: bigint, targetAbsContracts: bigint) => {
+    let remaining = targetAbsContracts;
+    const reconciled: any[] = [];
+
+    for (const pos of positions) {
+      if (remaining <= 0n) break;
+      const absContracts = toAbsContracts(pos);
+      if (absContracts <= 0n) continue;
+
+      const keepContracts = absContracts < remaining ? absContracts : remaining;
+      const scaledSizePence = absContracts > 0n
+        ? Number((BigInt(Math.max(0, Number(pos.sizePence || 0))) * keepContracts) / absContracts)
+        : 0;
+
+      reconciled.push({
+        ...pos,
+        sizePence: scaledSizePence,
+        contractsMicros: (sign * keepContracts).toString(),
+      });
+      remaining -= keepContracts;
+    }
+
+    // If we still have missing quantity, append one residual row instead of replacing all rows.
+    if (remaining > 0n && sign !== 0n) {
+      const residualSizePence = Number(
+        (BigInt(syntheticPricePts) * remaining * 100n) / (10_000_000n * 1_000_000n)
+      );
+      reconciled.push({
+        sizePence: residualSizePence,
+        yesPricePts: syntheticPricePts,
+        feePence: 0,
+        executedAt: new Date().toISOString(),
+        contractsMicros: (sign * remaining).toString(),
+      });
+    }
+
+    return reconciled;
+  };
+
+  const sameSideRawPositions = netSign > 0n
+    ? (buyPositions || [])
+    : netSign < 0n
+      ? (sellPositions || [])
+      : [];
+  const oppositeSideRawPositions = netSign > 0n
+    ? (sellPositions || [])
+    : netSign < 0n
+      ? (buyPositions || [])
+      : [];
+
+  const hasSameSideRows = sameSideRawPositions.length > 0;
+  const hasOppositeSideRows = oppositeSideRawPositions.length > 0;
+
+  // Prefer same-side rows; if missing (legacy drift), borrow opposite-side rows as entry buckets.
+  // Keep the displayed side aligned with source rows in fallback mode.
+  const sourceRows = hasSameSideRows ? sameSideRawPositions : oppositeSideRawPositions;
+  const displaySign = hasSameSideRows
+    ? netSign
+    : hasOppositeSideRows
+      ? -netSign
+      : netSign;
+  const canonicalRows = canonicalizePositions(sourceRows, displaySign);
+  const reconciledRows = reconcileLotsToNet(canonicalRows, displaySign, absNetContractsMicros);
+
+  const displayBuyPositions = displaySign > 0n ? reconciledRows : [];
+  const displaySellPositions = displaySign < 0n ? reconciledRows : [];
+  const isFallbackBucketView = hasOpenPositions && displaySign !== netSign;
 
   // Fetch cashout quote
   const fetchCashoutQuote = useCallback(async () => {
@@ -159,6 +290,13 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       return () => clearInterval(interval);
     }
   }, [isOpen, fetchCashoutQuote]);
+
+  // Auto-dismiss inline notices.
+  useEffect(() => {
+    if (!inlineNotice) return;
+    const timer = setTimeout(() => setInlineNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [inlineNotice]);
 
   // WebSocket subscription for live orderbook prices
   useEffect(() => {
@@ -261,124 +399,13 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       .map(([yesPricePts, data]) => ({ yesPricePts, ...data }));
   };
 
-  const groupedBuyPositions = groupPositions(buyPositions);
-  const groupedSellPositions = groupPositions(sellPositions);
+  const groupedBuyPositions = groupPositions(displayBuyPositions);
+  const groupedSellPositions = groupPositions(displaySellPositions);
 
-  // Execute cashout for full position
-  const handleCashout = async () => {
-    console.log('[Cashout] Button clicked, cashoutQuote:', cashoutQuote);
-    
-    if (!cashoutQuote || !cashoutQuote.success) {
-      console.error('[Cashout] No valid quote available');
-      alert('No valid quote available');
-      return;
-    }
-
-    const filledContracts = BigInt(cashoutQuote.filledContractsMicros);
-    const unfilledContracts = BigInt(cashoutQuote.unfilledContractsMicros);
-    const filledAbs = filledContracts < 0n ? -filledContracts : filledContracts;
-    const unfilledAbs = unfilledContracts < 0n ? -unfilledContracts : unfilledContracts;
-    const fillablePercent = Number(filledAbs) > 0 
-      ? (Number(filledAbs) * 100 / (Number(filledAbs) + Number(unfilledAbs))).toFixed(1)
-      : '0';
-
-    if (!confirm(
-      `Cash out position for ${formatPence(Number(cashoutQuote.netValuePence))}?\n\n` +
-      `Book fill: ${fillablePercent}% (${(Number(filledAbs) / 1_000_000).toFixed(2)} contracts)\n` +
-      `Unfilled: ${(Number(unfilledAbs) / 1_000_000).toFixed(2)} contracts will not close`
-    )) {
-      console.log('[Cashout] User cancelled confirmation');
-      return;
-    }
-
-    console.log('[Cashout] Executing cashout (IOC order) with params:', {
-      marketId,
-      netContractsMicros: netContractsMicros.toString(),
-    });
-
+  const executeCashoutRequest = useCallback(async (requestBody: CashoutExecuteRequest) => {
+    console.log('[Cashout] Executing IOC close with body:', requestBody);
     setExecutingCashout(true);
     try {
-      const apiUrl = getApiUrl();
-      const response = await fetch(`${apiUrl}/v1/cashout/execute`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          marketId,
-          netContractsMicros: netContractsMicros.toString(),
-          maxSlippagePts: 100000, // 1% max slippage
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to execute cashout: ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      
-      if (result.success) {
-        alert(`✅ Close order submitted! Order ID: ${result.orderId}\n\n${result.message}`);
-        onClose();
-        // Trigger refetch in parent component
-        onCashoutSuccess?.();
-      } else {
-        alert(`❌ Close failed: ${result.error || 'Unknown error'}`);
-      }
-    } catch (error) {
-      console.error('Failed to execute cashout:', error);
-      alert(`✗ Close failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setExecutingCashout(false);
-    }
-  };
-
-  // Execute cashout for grouped position - closes THIS GROUP only
-  const handleGroupCashout = async (yesPricePts: number, totalContractsMicros: bigint) => {
-    console.log('[GroupCashout] Closing individual group:', { yesPricePts, groupContracts: totalContractsMicros.toString() });
-    
-    const quote = groupQuotes.get(yesPricePts);
-    console.log('[GroupCashout] Quote for this group:', quote);
-    
-    if (!quote || !quote.success) {
-      alert('No valid quote available for this group. Please get a quote first.');
-      return;
-    }
-
-    const filledContracts = BigInt(quote.filledContractsMicros);
-    const unfilledContracts = BigInt(quote.unfilledContractsMicros);
-    const filledAbs = filledContracts < 0n ? -filledContracts : filledContracts;
-    const unfilledAbs = unfilledContracts < 0n ? -unfilledContracts : unfilledContracts;
-    const contractsAbs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
-    const fillablePercent = Number(filledAbs) > 0 
-      ? (Number(filledAbs) * 100 / (Number(filledAbs) + Number(unfilledAbs))).toFixed(1)
-      : '0';
-
-    const confirmMessage = `Close ${(Number(contractsAbs) / 1_000_000).toFixed(2)} contracts @ ${(yesPricePts / 100_000).toFixed(2)}% for ${formatPence(Number(quote.netValuePence))}?\n\nBook fill: ${fillablePercent}%\nUnfilled: ${(Number(unfilledAbs) / 1_000_000).toFixed(2)} contracts\n\nThis will reduce your position but not close it entirely.`;
-    console.log('[GroupCashout] Confirmation message:', confirmMessage);
-    
-    if (!confirm(confirmMessage)) {
-      console.log('[GroupCashout] User cancelled');
-      return;
-    }
-
-    console.log('[GroupCashout] Executing group cashout (IOC order)...');
-    setExecutingCashout(true);
-    try {
-      // Sign group contracts to match overall position direction (same as quote)
-      const posNet = typeof netContractsMicrosStr === 'string' 
-        ? BigInt(netContractsMicrosStr) 
-        : netContractsMicrosStr;
-      const sign = posNet === 0n ? 0n : (posNet > 0n ? 1n : -1n);
-      const absGroupContracts = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
-      const groupSigned = sign * absGroupContracts;
-      
-      const requestBody = {
-        marketId,
-        netContractsMicros: groupSigned.toString(),
-        maxSlippagePts: 100000, // 1% max slippage
-      };
-      console.log('[GroupCashout] Request body:', requestBody);
-      
       const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/v1/cashout/execute`, {
         method: 'POST',
@@ -387,31 +414,82 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         body: JSON.stringify(requestBody),
       });
 
-      console.log('Cashout response status:', response.status, response.statusText);
-
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('Cashout error response:', errorText);
+        console.error('[Cashout] Error response:', errorText);
         throw new Error(`Failed to execute cashout: ${response.statusText}`);
       }
 
       const result = await response.json();
-      console.log('[GroupCashout] Result:', result);
-      
       if (result.success) {
-        alert(`✓ Close order submitted! Order ID: ${result.orderId}\n\n${result.message}`);
-        onClose();
-        // Trigger refetch in parent component
+        setInlineNotice({
+          type: 'success',
+          message: `Close order submitted (${result.orderId?.slice(0, 8) || 'ok'}). Position is refreshing...`,
+        });
+        fetchCashoutQuote();
         onCashoutSuccess?.();
       } else {
-        alert(`✗ Close failed: ${result.error || 'Unknown error'}`);
+        setInlineNotice({
+          type: 'error',
+          message: `Close failed: ${result.error || 'Unknown error'}`,
+        });
       }
     } catch (error) {
-      console.error('[GroupCashout] Error:', error);
-      alert(`✗ Close failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('[Cashout] Error:', error);
+      setInlineNotice({
+        type: 'error',
+        message: `Close failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
     } finally {
       setExecutingCashout(false);
     }
+  }, [onCashoutSuccess, fetchCashoutQuote]);
+
+  // Submit full-position close immediately (no browser popup/confirm).
+  const handleCashout = async () => {
+    console.log('[Cashout] Button clicked, cashoutQuote:', cashoutQuote);
+
+    if (!cashoutQuote || !cashoutQuote.success) {
+      console.error('[Cashout] No valid quote available');
+      setInlineNotice({ type: 'error', message: 'No valid quote available yet.' });
+      return;
+    }
+    await executeCashoutRequest({
+      marketId,
+      netContractsMicros: netContractsMicros.toString(),
+      maxSlippagePts: 100000,
+    });
+  };
+
+  // Submit grouped close immediately (closes this group only).
+  const handleGroupCashout = async (yesPricePts: number, totalContractsMicros: bigint) => {
+    console.log('[GroupCashout] Closing individual group:', { yesPricePts, groupContracts: totalContractsMicros.toString() });
+
+    const quote = groupQuotes.get(yesPricePts);
+    console.log('[GroupCashout] Quote for this group:', quote);
+
+    if (!quote || !quote.success) {
+      setInlineNotice({
+        type: 'error',
+        message: 'No valid quote available for this group. Get quote first.',
+      });
+      return;
+    }
+
+    const posNet = typeof netContractsMicrosStr === 'string'
+      ? BigInt(netContractsMicrosStr)
+      : netContractsMicrosStr;
+    const sign = posNet === 0n ? 0n : (posNet > 0n ? 1n : -1n);
+    const absGroupContracts = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
+    const groupSigned = sign * absGroupContracts;
+
+    const requestBody = {
+      marketId,
+      netContractsMicros: groupSigned.toString(),
+      maxSlippagePts: 100000,
+    };
+    console.log('[GroupCashout] Request body:', requestBody);
+    await executeCashoutRequest(requestBody);
   };
 
   // Early return AFTER all hooks have been called
@@ -665,6 +743,18 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 Individual
               </button>
             </div>
+            {isFallbackBucketView && (
+              <div style={{
+                padding: '0.4rem 1rem',
+                borderBottom: '1px solid #30363d',
+                background: '#2d1f0f',
+                color: '#f2cc60',
+                fontSize: '0.7rem',
+                fontFamily: 'monospace'
+              }}>
+                Bucket rows are legacy entry history. Close actions reduce net position FIFO and may update different rows.
+              </div>
+            )}
 
             {/* Table Header */}
             <div style={{
@@ -804,7 +894,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                             <div>Contracts: {(Number(pos.contractsMicros) / 1_000_000).toFixed(2)}</div>
                             <div>Cost: {formatPence(pos.sizePence)}</div>
                             <div style={{ color: '#6e7681', fontSize: '0.65rem' }}>
-                              {new Date(pos.timestamp).toLocaleTimeString()}
+                              {new Date(pos.executedAt ?? pos.timestamp).toLocaleTimeString()}
                             </div>
                           </div>
                         ))}
@@ -1266,6 +1356,19 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               background: '#0d1117',
               flexShrink: 0
             }}>
+              {inlineNotice && (
+                <div style={{
+                  padding: '0.45rem 0.5rem',
+                  borderRadius: '3px',
+                  border: `1px solid ${inlineNotice.type === 'success' ? '#238636' : inlineNotice.type === 'error' ? '#f85149' : '#30363d'}`,
+                  background: inlineNotice.type === 'success' ? '#102116' : inlineNotice.type === 'error' ? '#2d1215' : '#161b22',
+                  color: inlineNotice.type === 'success' ? '#3fb950' : inlineNotice.type === 'error' ? '#ff7b72' : '#8b949e',
+                  fontSize: '0.6875rem',
+                  fontFamily: 'monospace'
+                }}>
+                  {inlineNotice.message}
+                </div>
+              )}
               <button
                 onClick={() => {
                   if (activeGroup) {
@@ -1371,4 +1474,5 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     </>
   );
 }
+
 

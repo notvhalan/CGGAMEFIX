@@ -171,15 +171,26 @@ impl OrderBook {
 
     /// Remove order from book
     pub fn cancel_order(&mut self, order_id: Uuid, side: Side, limit_yes_pts: i64) -> Option<i64> {
-        let queue = match side {
-            Side::BuyYes => self.bids.get_mut(&limit_yes_pts)?,
-            Side::SellYes => self.asks.get_mut(&limit_yes_pts)?,
-        };
-
-        let pos = queue.iter().position(|o| o.order_id == order_id)?;
-        let order = queue.remove(pos)?;
-        
-        Some(order.qty_remaining_micros)
+        match side {
+            Side::BuyYes => {
+                let queue = self.bids.get_mut(&limit_yes_pts)?;
+                let pos = queue.iter().position(|o| o.order_id == order_id)?;
+                let order = queue.remove(pos)?;
+                if queue.is_empty() {
+                    self.bids.remove(&limit_yes_pts);
+                }
+                Some(order.qty_remaining_micros)
+            }
+            Side::SellYes => {
+                let queue = self.asks.get_mut(&limit_yes_pts)?;
+                let pos = queue.iter().position(|o| o.order_id == order_id)?;
+                let order = queue.remove(pos)?;
+                if queue.is_empty() {
+                    self.asks.remove(&limit_yes_pts);
+                }
+                Some(order.qty_remaining_micros)
+            }
+        }
     }
 }
 

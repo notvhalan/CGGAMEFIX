@@ -1,10 +1,9 @@
 import { Controller, Post, Body, HttpCode, HttpStatus, Req, UnauthorizedException } from '@nestjs/common';
 import { Logger } from '@betting-exchange/shared-config';
-import { NatsClient } from '../nats/nats.client';
-import { NATS_SUBJECTS, PRICE_SCALE, OrderSide, CONTRACT_SCALE, CONTRACT_PAYOUT_PENCE, TimeInForce } from '@betting-exchange/shared-types';
+import { PRICE_SCALE, OrderSide, CONTRACT_SCALE, CONTRACT_PAYOUT_PENCE } from '@betting-exchange/shared-types';
 import { FastifyRequest } from 'fastify';
 import { DatabaseService } from '../database/database.service';
-import { v4 as uuidv4 } from 'uuid';
+import { RustExchangeService } from '../services/rust-exchange.service';
 
 /**
  * CLOB-only Close Position Controller
@@ -17,9 +16,37 @@ export class CashoutController {
   private readonly logger = new Logger('CashoutController');
 
   constructor(
-    private readonly natsClient: NatsClient,
     private readonly databaseService: DatabaseService,
+    private readonly rustExchange: RustExchangeService,
   ) {}
+
+  private async waitForOrderCancellations(orderIds: string[], timeoutMs = 5000): Promise<number> {
+    if (orderIds.length === 0) {
+      return 0;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let pending = orderIds.length;
+
+    while (Date.now() < deadline) {
+      const pendingResult = await this.databaseService.query<{ pending: string }>(
+        `SELECT COUNT(*)::text AS pending
+         FROM orders
+         WHERE id = ANY($1::uuid[])
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
+        [orderIds]
+      );
+
+      pending = Number(pendingResult.rows[0]?.pending || '0');
+      if (pending === 0) {
+        return 0;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    return pending;
+  }
 
   /**
    * Get CLOB-only close estimate by sweeping book levels
@@ -119,7 +146,7 @@ export class CashoutController {
 
   /**
    * Execute close as normal IOC order
-   * Creates order in DB and publishes to matching engine
+   * Submits IOC order to Rust exchange
    */
   @Post('execute')
   @HttpCode(HttpStatus.OK)
@@ -137,7 +164,7 @@ export class CashoutController {
         throw new UnauthorizedException('User not authenticated');
       }
 
-      const { marketId, netContractsMicros, maxSlippagePts = 100000 } = body;
+      const { marketId, netContractsMicros } = body;
       if (!marketId || !netContractsMicros) {
         throw new Error('marketId and netContractsMicros are required');
       }
@@ -154,8 +181,8 @@ export class CashoutController {
       
       // The requested close amount must have opposite sign to the current position
       // and must not exceed the position size
-      // netContracts > 0 means long position → must close with LAY (negative close)
-      // netContracts < 0 means short position → must close with FOR (positive close)
+      // netContracts > 0 means long position â†’ must close with LAY (negative close)
+      // netContracts < 0 means short position â†’ must close with FOR (positive close)
       
       // Since we're passing the same netContractsMicros from position, we use absolute value
       // But we need to ensure we're trading the opposite direction
@@ -166,34 +193,44 @@ export class CashoutController {
 
       // CRITICAL: Cancel all resting orders for this user/market to prevent reopening position
       this.logger.info(`Cancelling resting orders for user=${userId}, market=${marketId}`);
-      const cancelResult = await this.databaseService.query(
-        `UPDATE orders
-         SET status = 'CANCELLED', updated_at = NOW()
-         WHERE user_id = $1 
-         AND market_id = $2 
-         AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-         RETURNING id`,
+      const openOrdersResult = await this.databaseService.query<{ id: string }>(
+        `SELECT id
+         FROM orders
+         WHERE user_id = $1
+           AND market_id = $2
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
         [userId, marketId]
       );
-      
-      // Publish cancel events to matching engine for each cancelled order
-      for (const row of cancelResult.rows) {
-        this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, {
-          orderId: row.id,
-          userId,
-          marketId,
-          reason: 'Cancelled before closing position',
-          timestamp: new Date().toISOString(),
-        });
-      }
-      
-      this.logger.info(`Cancelled ${cancelResult.rows.length} resting orders before close`);
+      const openOrderIds = openOrdersResult.rows.map(row => row.id);
 
-      // Use extreme price to match against any available liquidity
-      // For LAY (selling YES): use yesPts=1 (will match any FOR order)
-      // For FOR (buying YES): use yesPts=PRICE_SCALE-1 (will match any LAY order)
-      const yesPts = closeSide === OrderSide.FOR ? PRICE_SCALE - 1 : 1;
-      const pPts = closeSide === OrderSide.FOR ? yesPts : PRICE_SCALE - yesPts;
+      if (openOrderIds.length > 0) {
+        const cancelResults = await Promise.allSettled(
+          openOrderIds.map(orderId =>
+            this.rustExchange.cancelOrder({
+              orderId,
+              userId,
+            })
+          )
+        );
+        const failedCancels = cancelResults.filter(result => result.status === 'rejected');
+        if (failedCancels.length > 0) {
+          throw new Error(`Failed to cancel ${failedCancels.length} resting orders`);
+        }
+
+        const pendingCancels = await this.waitForOrderCancellations(openOrderIds);
+        if (pendingCancels > 0) {
+          throw new Error(`Timed out waiting for ${pendingCancels} resting order cancellations`);
+        }
+      }
+
+      this.logger.info(`Cancelled ${openOrderIds.length} resting orders before close`);
+
+      // Use aggressive but valid price bounds accepted by Rust exchange.
+      // SELL_YES (closing long YES) uses the lowest allowed YES price.
+      // BUY_YES (closing short YES) uses the highest allowed YES price.
+      const MIN_PRICE_PTS = 10_000; // 0.1%
+      const MAX_PRICE_PTS = 9_990_000; // 99.9%
+      const yesPts = closeSide === OrderSide.FOR ? MAX_PRICE_PTS : MIN_PRICE_PTS;
 
       // Calculate max liability (max possible loss on this order)
       // For LAY: max loss is if YES wins, we pay (PRICE_SCALE - yesPts) per contract
@@ -203,61 +240,30 @@ export class CashoutController {
         : yesPts;
       const maxLiabilityPence = Number((BigInt(maxLossPerContract) * closeContractsMicros * BigInt(CONTRACT_PAYOUT_PENCE)) / (BigInt(PRICE_SCALE) * BigInt(CONTRACT_SCALE)));
 
-      // REDUCE-ONLY: No need to lock additional balance for closing orders
-      // The margin is already locked in the existing position
-      // Locking here would double-count and cause "2× to reserved balance" bug
-      this.logger.info(`Cashout close order: skipping lockBalance (reduce-only, existing position margin covers this)`);
+      if (maxLiabilityPence < 100) {
+        throw new Error('Close size is below minimum order risk (GBP 1.00)');
+      }
 
-      // Create IOC order in DB
-      const orderId = uuidv4();
-      const stakePence = closeSide === OrderSide.FOR ? maxLiabilityPence : undefined;
-      const liabilityPence = closeSide === OrderSide.LAY ? maxLiabilityPence : undefined;
-      
-      await this.databaseService.query(
-        `INSERT INTO orders 
-          (id, market_id, user_id, side, p_pts, limit_price_yes_pts, stake_pence, liability_pence, 
-           qty_remaining_micros, qty_original_micros, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', NOW(), NOW())`,
-        [
-          orderId, 
-          marketId, 
-          userId, 
-          closeSide, 
-          pPts, 
-          yesPts,
-          stakePence,
-          liabilityPence,
-          closeContractsMicros.toString(),
-          closeContractsMicros.toString()
-        ]
-      );
-
-      // Publish to matching engine as IOC
-      const orderCommand = {
-        orderId,
-        userId,
+      const rustResponse = await this.rustExchange.submitOrder({
         marketId,
-        side: closeSide,
-        pPts,
-        yesPts,
-        stakePence: closeSide === OrderSide.FOR ? maxLiabilityPence : undefined,
-        liabilityPence: closeSide === OrderSide.LAY ? maxLiabilityPence : undefined,
-        originalContractsMicros: closeContractsMicros.toString(),
-        remainingContractsMicros: closeContractsMicros.toString(),
-        timeInForce: TimeInForce.IOC, // Immediate-Or-Cancel
-        timestamp: new Date().toISOString(),
-      };
+        userId,
+        side: closeSide as 'BUY_YES' | 'SELL_YES',
+        riskPence: maxLiabilityPence,
+        limitYesPts: yesPts,
+        timeInForce: 'IOC',
+        reduceOnly: true,
+      });
 
-      this.natsClient.publish(NATS_SUBJECTS.ORDERS_SUBMIT, orderCommand);
-
-      this.logger.info(`Close order submitted: ${orderId}, IOC, ${closeSide}, contracts=${closeContractsMicros}`);
+      this.logger.info(
+        `Close order submitted via Rust exchange: ${rustResponse.order_id}, IOC, ${closeSide}, risk=${maxLiabilityPence}p`
+      );
 
       return {
         success: true,
-        orderId,
+        orderId: rustResponse.order_id,
         marketId,
         userId,
-        message: 'Close order submitted as IOC. Unfilled portion will not rest on book.',
+        message: 'Close order submitted as IOC via Rust exchange. Unfilled portion will not rest on book.',
       };
     } catch (error) {
       this.logger.error('Failed to execute close', error);

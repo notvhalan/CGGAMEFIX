@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, HttpCode, HttpStatus, Req, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, Post, Body, HttpCode, HttpStatus, Req, Query, UnauthorizedException } from '@nestjs/common';
 import { Logger } from '@betting-exchange/shared-config';
 import { NatsClient } from '../nats/nats.client';
 import { NATS_SUBJECTS } from '../nats/subjects';
@@ -45,7 +45,8 @@ export class WalletController {
 
   @Get('history')
   async getWalletHistory(
-    @Req() req: FastifyRequest & { session: any }
+    @Req() req: FastifyRequest & { session: any },
+    @Query('range') range: string = '1W',
   ) {
     try {
       const userId = req.session?.userId;
@@ -53,32 +54,89 @@ export class WalletController {
         throw new UnauthorizedException('User not authenticated');
       }
 
-      this.logger.info(`Fetching wallet history for user: ${userId}`);
+      this.logger.info(`Fetching wallet history for user: ${userId}, range: ${range}`);
 
-      // Query raw range from params if needed, defaulting to 1 week for now or just returning last 50 entries
-      // In a real app, parse 'range' query param (1D, 1W, etc.)
+      // Time window for the requested range
+      let sinceSql: string;
+      switch (range) {
+        case '1D':  sinceSql = `NOW() - INTERVAL '1 day'`;   break;
+        case '1M':  sinceSql = `NOW() - INTERVAL '1 month'`; break;
+        case 'ALL': sinceSql = `'1970-01-01'::timestamptz`;  break;
+        case '1W':
+        default:    sinceSql = `NOW() - INTERVAL '7 days'`;  break;
+      }
 
-      const result = await this.databaseService.query(
-        `SELECT created_at, balance, (COALESCE(credit, 0) - COALESCE(debit, 0)) as amount, entry_type, description 
-         FROM ledger_entries 
-         WHERE user_id = $1 
-         ORDER BY created_at DESC 
-         LIMIT 100`,
-        [userId]
-      );
+      // Fetch all individual entries in the range (no bucketing — every balance change is a chart point)
+      // Also fetch locked_balance from the wallet at query time for the reserved series.
+      // MAX 2000 points; if a range has more we downsample with time buckets sized to ~500 pts.
+      const RAW_LIMIT = 2000;
 
-      this.logger.info(`Found ${result.rows.length} ledger entries for user ${userId}`);
+      const rawQuery = `
+        SELECT l.entry_type,
+               l.credit::float    AS credit,
+               l.debit::float     AS debit,
+               l.balance::float   AS balance,
+               w.locked_balance::float AS locked,
+               l.created_at
+        FROM ledger_entries l
+        JOIN wallets w ON w.id = l.wallet_id
+        WHERE l.user_id = $1
+          AND w.currency = 'GBP'
+          AND l.created_at >= ${sinceSql}
+        ORDER BY l.created_at ASC
+        LIMIT ${RAW_LIMIT}`;
 
-      // Transform for chart
-      // We need to reverse it to be chronological for the chart
-      const history = result.rows.reverse().map(row => ({
+      let [rawResult, countResult] = await Promise.all([
+        this.databaseService.query(rawQuery, [userId]),
+        this.databaseService.query(
+          `SELECT COUNT(*) AS total FROM ledger_entries l
+           JOIN wallets w ON w.id = l.wallet_id
+           WHERE l.user_id = $1 AND w.currency = 'GBP' AND l.created_at >= ${sinceSql}`,
+          [userId]
+        ),
+      ]);
+
+      const totalInRange = parseInt(countResult.rows[0]?.total ?? '0', 10);
+
+      // If fewer than 2 points in range, fall back to ALL history
+      if (rawResult.rows.length < 2) {
+        this.logger.info(`Only ${rawResult.rows.length} point(s) in range '${range}', falling back to ALL history`);
+        rawResult = await this.databaseService.query(
+          `SELECT l.entry_type,
+                  l.credit::float    AS credit,
+                  l.debit::float     AS debit,
+                  l.balance::float   AS balance,
+                  w.locked_balance::float AS locked,
+                  l.created_at
+           FROM ledger_entries l
+           JOIN wallets w ON w.id = l.wallet_id
+           WHERE l.user_id = $1
+             AND w.currency = 'GBP'
+           ORDER BY l.created_at ASC
+           LIMIT ${RAW_LIMIT}`,
+          [userId]
+        );
+      }
+
+      this.logger.info(`Returning ${rawResult.rows.length} history points for user ${userId} (total in range: ${totalInRange})`);
+
+      const history = rawResult.rows.map((row: any) => ({
         timestamp: row.created_at,
-        balance: parseFloat(row.balance),
-        available: parseFloat(row.balance), // Simplified: available = balance for now
-        reserved: 0 // Placeholder
+        balance:   parseFloat(row.balance),
+        available: parseFloat(row.balance) - parseFloat(row.locked || '0'),
+        reserved:  parseFloat(row.locked  || '0'),
       }));
 
-      return { history };
+      // Events are the same rows (already have entry_type, credit, debit)
+      const events = rawResult.rows.map((row: any) => ({
+        timestamp:  row.created_at,
+        entryType:  row.entry_type,
+        credit:     parseFloat(row.credit),
+        debit:      parseFloat(row.debit),
+        balance:    parseFloat(row.balance),
+      }));
+
+      return { history, events };
     } catch (error) {
       this.logger.error('Failed to fetch wallet history', error);
       throw error;

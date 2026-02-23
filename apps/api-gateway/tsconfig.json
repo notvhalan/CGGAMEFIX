@@ -22,5 +22,5 @@
     "moduleResolution": "node"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "../../apps/web", "../../apps/matching-engine", "../../apps/market-data", "../../apps/settlement-service", "../../apps/wallet-service"]
+  "exclude": ["node_modules", "dist", "tests", "../../apps/web", "../oldcodematching-engine", "../../apps/market-data", "../../apps/settlement-service", "../../apps/wallet-service"]
 }

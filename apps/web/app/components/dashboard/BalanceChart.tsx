@@ -5,14 +5,23 @@ interface BalancePoint {
   value: number;
 }
 
+interface BalanceEvent {
+  time: number;       // unix seconds
+  entryType: string;  // 'DEPOSIT' | 'TRADE_SETTLEMENT' | etc.
+  credit: number;
+  debit: number;
+  balance: number;
+}
+
 interface BalanceChartProps {
   equity: BalancePoint[];
   available: BalancePoint[];
   reserved: BalancePoint[];
+  events?: BalanceEvent[];
   timeRange?: '1D' | '1W' | '1M' | 'ALL';
 }
 
-export function BalanceChart({ equity, available, reserved, timeRange = '1D' }: BalanceChartProps) {
+export function BalanceChart({ equity, available, reserved, events, timeRange = '1D' }: BalanceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const resizeHandlerRef = useRef<(() => void) | null>(null);
@@ -22,39 +31,23 @@ export function BalanceChart({ equity, available, reserved, timeRange = '1D' }: 
 
     let isMounted = true;
 
-    // Dynamically import lightweight-charts
     import('lightweight-charts').then((module) => {
       if (!isMounted || !chartContainerRef.current) return;
 
-      console.log('[BalanceChart] Module loaded:', module);
-      
-      // Handle potential ESM vs CJS interop issues
-      const createChart = module.createChart || (module.default && module.default.createChart);
-      const ColorType = module.ColorType || (module.default && module.default.ColorType) || { Solid: 'solid' };
-      const AreaSeries = module.AreaSeries || (module.default && module.default.AreaSeries);
+      // v5 exports everything directly — no .default needed
+      const { createChart, ColorType, AreaSeries, createSeriesMarkers } = module as any;
 
-      if (!createChart) {
-        console.error('[BalanceChart] Could not find createChart function in module', module);
-        return;
-      }
-      if (!AreaSeries) {
-        console.error('[BalanceChart] AreaSeries not found in module', module);
-        return;
-      }
+      if (!createChart || !AreaSeries) return;
 
-      // Clean up any existing chart before creating a new one
+      // Destroy any previous chart instance
       if (chartRef.current) {
         chartRef.current.remove();
+        chartRef.current = null;
       }
 
-      console.log('[BalanceChart] Creating chart in container:', {
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight
-      });
-
-      const chart = createChart(chartContainerRef.current, {
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight,
+      const chart = createChart(chartContainerRef.current!, {
+        width: chartContainerRef.current!.clientWidth,
+        height: chartContainerRef.current!.clientHeight,
         layout: {
           background: { type: ColorType.Solid, color: 'transparent' },
           textColor: '#6b7280',
@@ -67,15 +60,10 @@ export function BalanceChart({ equity, available, reserved, timeRange = '1D' }: 
           borderColor: 'transparent',
           autoScale: true,
           alignLabels: true,
-          scaleMargins: {
-            top: 0.1,
-            bottom: 0.1,
-          },
+          scaleMargins: { top: 0.15, bottom: 0.1 },
         },
         localization: {
-          priceFormatter: (price: number) => {
-            return '£' + price.toFixed(2);
-          },
+          priceFormatter: (price: number) => '£' + price.toFixed(2),
         },
         timeScale: {
           borderColor: 'transparent',
@@ -83,19 +71,12 @@ export function BalanceChart({ equity, available, reserved, timeRange = '1D' }: 
           secondsVisible: false,
         },
         crosshair: {
-          vertLine: {
-            color: '#e5e7eb',
-            labelBackgroundColor: '#667eea',
-          },
-          horzLine: {
-            color: '#e5e7eb',
-            labelBackgroundColor: '#667eea',
-          },
+          vertLine: { color: '#e5e7eb', labelBackgroundColor: '#667eea' },
+          horzLine: { color: '#e5e7eb', labelBackgroundColor: '#667eea' },
         },
       });
 
       chartRef.current = chart;
-      console.log('[BalanceChart] Chart created:', chart);
 
       try {
         const equitySeries = chart.addSeries(AreaSeries, {
@@ -106,38 +87,84 @@ export function BalanceChart({ equity, available, reserved, timeRange = '1D' }: 
         });
 
         if (equity && equity.length > 0) {
-          console.log('[BalanceChart] Setting data:', equity.length, 'points');
-          console.log('[BalanceChart] First 3 data points:', equity.slice(0, 3));
-          console.log('[BalanceChart] Value range:', {
-            min: Math.min(...equity.map(d => d.value)),
-            max: Math.max(...equity.map(d => d.value))
-          });
-          
-          // Add explicit type checking/conversion if necessary
           const validData = equity.map((d) => {
             const time = d.time > 1_000_000_000_000 ? Math.floor(d.time / 1000) : d.time;
             return { time: time as any, value: d.value };
           });
-          
-          console.log('[BalanceChart] Transformed data sample:', validData.slice(0, 3));
           equitySeries.setData(validData);
+
+          // ── Color-coded event markers ──────────────────────────────────────
+          // Priority per second: DEPOSIT > WIN > LOSS (no duplicate times allowed)
+          // Colors: green deposit arrow | indigo win dot | red loss dot
+          if (createSeriesMarkers && events && events.length > 0) {
+            const PRIORITY: Record<string, number> = { DEPOSIT: 3, WIN: 2, LOSS: 1 };
+            const seen = new Map<number, { t: number; type: string; evt: BalanceEvent }>();
+
+            for (const evt of events) {
+              const t = evt.time > 1_000_000_000_000 ? Math.floor(evt.time / 1000) : evt.time;
+              const type =
+                evt.entryType === 'DEPOSIT'
+                  ? 'DEPOSIT'
+                  : evt.credit > evt.debit
+                  ? 'WIN'
+                  : 'LOSS';
+              const existing = seen.get(t);
+              if (!existing || (PRIORITY[type] ?? 0) > (PRIORITY[existing.type] ?? 0)) {
+                seen.set(t, { t, type, evt });
+              }
+            }
+
+            const markers = Array.from(seen.values())
+              .sort((a, b) => a.t - b.t)
+              .map(({ t, type, evt }) => {
+                if (type === 'DEPOSIT') {
+                  return {
+                    time: t as any,
+                    position: 'aboveBar' as const,
+                    color: '#22c55e',
+                    shape: 'arrowUp' as const,
+                    text: `+£${evt.credit.toFixed(2)}`,
+                    size: 1,
+                  };
+                }
+                if (type === 'WIN') {
+                  return {
+                    time: t as any,
+                    position: 'inBar' as const,
+                    color: '#818cf8',
+                    shape: 'circle' as const,
+                    text: '',
+                    size: 0,
+                  };
+                }
+                return {
+                  time: t as any,
+                  position: 'inBar' as const,
+                  color: '#f87171',
+                  shape: 'circle' as const,
+                  text: '',
+                  size: 0,
+                };
+              });
+
+            createSeriesMarkers(equitySeries, markers);
+          }
+          // ──────────────────────────────────────────────────────────────────
+
           chart.timeScale().fitContent();
-        } else {
-             console.log('[BalanceChart] No equity data provided');
         }
       } catch (e) {
-        console.error("Error adding series to chart:", e);
+        console.error('[BalanceChart] Error setting chart data:', e);
       }
 
       const handleResize = () => {
         if (chartContainerRef.current && chartRef.current) {
-          chartRef.current.applyOptions({ 
+          chartRef.current.applyOptions({
             width: chartContainerRef.current.clientWidth,
-            height: chartContainerRef.current.clientHeight
+            height: chartContainerRef.current.clientHeight,
           });
         }
       };
-
       resizeHandlerRef.current = handleResize;
       window.addEventListener('resize', handleResize);
     });
@@ -155,7 +182,7 @@ export function BalanceChart({ equity, available, reserved, timeRange = '1D' }: 
       }
     };
 
-  }, [equity, available, reserved, timeRange]);
+  }, [equity, available, reserved, events, timeRange]);
 
   return <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />;
 }

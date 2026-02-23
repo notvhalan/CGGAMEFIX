@@ -89,6 +89,20 @@ pub struct MatchCommand {
     pub time_in_force: TimeInForce,
 }
 
+/// Cancel command sent to matching engine
+#[derive(Debug, Clone)]
+pub struct CancelCommand {
+    pub order_id: Uuid,
+    pub user_id: Uuid,
+}
+
+/// Engine command envelope
+#[derive(Debug, Clone)]
+pub enum EngineCommand {
+    Submit(MatchCommand),
+    Cancel(CancelCommand),
+}
+
 /// Fill produced by matching engine (deterministic output)
 #[derive(Debug, Clone)]
 pub struct Fill {

@@ -49,9 +49,9 @@ export class MarketsController {
       // Fetch orders from database
       const orders = await this.databaseService.getOrdersByMarketId(marketId);
       
-      // Separate into bids (FOR) and asks (LAY)
-      const forOrders = orders.filter(o => o.side === 'FOR');
-      const layOrders = orders.filter(o => o.side === 'LAY');
+      // Separate into bids (BUY_YES/FOR) and asks (SELL_YES/LAY)
+      const forOrders = orders.filter(o => o.side === 'BUY_YES' || o.side === 'FOR');
+      const layOrders = orders.filter(o => o.side === 'SELL_YES' || o.side === 'LAY');
       
       // Group by YES probability points and sum remaining contracts 
       const groupByYesPts = (orders: typeof forOrders) => {
@@ -80,6 +80,22 @@ export class MarketsController {
       return orderBookData;
     } catch (error) {
       this.logger.error(`Failed to fetch orderbook for ${marketId}`, error);
+      throw error;
+    }
+  }
+
+  @Get(':marketId/price-bars')
+  async getMarketPriceBars(
+    @Param('marketId') marketId: string,
+    @Query('limit') limit: string = '6000'
+  ) {
+    try {
+      const limitNum = parseInt(limit, 10) || 6000;
+      this.logger.debug(`Fetching price bars for market ${marketId}, limit: ${limitNum}`);
+      const bars = await this.databaseService.getPriceBarsByMarketId(marketId, limitNum);
+      return { marketId, bars, count: bars.length };
+    } catch (error) {
+      this.logger.error(`Failed to fetch price bars for ${marketId}`, error);
       throw error;
     }
   }

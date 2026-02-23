@@ -1,18 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+interface PriceBar {
+  market_id?: string;
+  bucket_start: string | Date;
+  open_yes_pts: number;
+  close_yes_pts: number;
+  volume_micros: number;
+}
+
 interface Trade {
-  id: string;
-  market_id: string;
+  id?: string;
+  market_id?: string;
   yes_pts: number;
   contracts: number;
-  cost_pence: number;
   executed_at: string | Date;
 }
 
 type Timeframe = "tick" | "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 
 interface PriceChartProps {
-  trades: Trade[];
+  priceBars: PriceBar[];
   lastTrade?: Trade | null;
   timeframe?: Timeframe;
   marketId: string;
@@ -35,7 +42,7 @@ function intervalSec(tf: Timeframe): number {
     case "1h": return 3600;
     case "4h": return 14400;
     case "1d": return 86400;
-    case "tick": return 0; // special mode
+    case "tick": return 0;
   }
 }
 
@@ -48,165 +55,71 @@ type Candle = {
   volume: number;
 };
 
-class CandleAgg {
-  private tf: Timeframe;
-  private tfSec: number;
+/** Aggregate price_bars_100ms rows into OHLCV candles for any timeframe */
+function buildCandles(bars: PriceBar[], timeframe: Timeframe): Candle[] {
+  if (bars.length === 0) return [];
 
-  private currentBucketStart: number | null = null;
-  private current: Candle | null = null;
+  const sorted = [...bars].sort((a, b) => toSec(a.bucket_start) - toSec(b.bucket_start));
 
-  // for tick mode, ensure strictly increasing timestamps (seconds)
-  private lastEmittedTime: number | null = null;
-
-  constructor(tf: Timeframe) {
-    this.tf = tf;
-    this.tfSec = intervalSec(tf);
-  }
-
-  reset(tf: Timeframe) {
-    this.tf = tf;
-    this.tfSec = intervalSec(tf);
-    this.currentBucketStart = null;
-    this.current = null;
-    this.lastEmittedTime = null;
-  }
-
-  // Build initial candles from history (ascending)
-  seedFromTrades(sortedAscTrades: Trade[]): Candle[] {
-    this.currentBucketStart = null;
-    this.current = null;
-    this.lastEmittedTime = null;
-
-    const out: Candle[] = [];
-    for (const tr of sortedAscTrades) {
-      const updates = this.ingest(tr, /*emitGapFills*/ true);
-      for (const c of updates) out.push(c);
-    }
-    return out;
-  }
-
-  // ingest trade, return candles that should be appended/updated in order:
-  // - in normal tf: might return multiple (gap fills) + last updated candle
-  // - in tick: always returns one new bar
-  ingest(tr: Trade, emitGapFills: boolean): Candle[] {
-    // Handle different trade data structures - check for various field names
-    const yesPts = Number(tr.yes_pts || (tr as any).yesPts || (tr as any).price || 0);
-    const contracts = Number(tr.contracts || (tr as any).quantity || (tr as any).size || 0);
-    
-    if (isNaN(yesPts) || isNaN(contracts) || yesPts === 0) {
-      console.warn('[CandleAgg] Skipping invalid trade:', { 
-        yes_pts: tr.yes_pts, 
-        contracts: tr.contracts,
-        availableKeys: Object.keys(tr),
-        rawTrade: tr 
+  if (timeframe === "tick") {
+    // Each 100ms bar → one candle; ensure strictly increasing integer timestamps
+    const result: Candle[] = [];
+    let lastT = -Infinity;
+    for (const bar of sorted) {
+      const open = pPtsToPercent(Number(bar.open_yes_pts));
+      const close = pPtsToPercent(Number(bar.close_yes_pts));
+      let t = toSec(bar.bucket_start);
+      if (t <= lastT) t = lastT + 1;
+      lastT = t;
+      result.push({
+        time: t,
+        open,
+        high: Math.max(open, close),
+        low: Math.min(open, close),
+        close,
+        volume: Number(bar.volume_micros),
       });
-      return [];
     }
-    
-    const price = pPtsToPercent(yesPts);
-    const vol = contracts; // contracts is the volume
-
-    const tSecRaw = toSec(tr.executed_at);
-
-    // TICK MODE: each trade is its own bar
-    if (this.tf === "tick") {
-      let tSec = tSecRaw;
-      // Ensure strictly increasing timestamps - increment if duplicate or earlier
-      if (this.lastEmittedTime !== null) {
-        if (tSec <= this.lastEmittedTime) {
-          tSec = this.lastEmittedTime + 1;
-        }
-      }
-      this.lastEmittedTime = tSec;
-
-      const c: Candle = {
-        time: tSec,
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume: vol,
-      };
-      // current is irrelevant in tick mode
-      return [c];
-    }
-
-    // TIME BUCKET MODE
-    const bucket = Math.floor(tSecRaw / this.tfSec) * this.tfSec;
-
-    // if first candle
-    if (this.currentBucketStart === null || this.current === null) {
-      this.currentBucketStart = bucket;
-      this.current = {
-        time: bucket,
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume: vol,
-      };
-      return [this.current];
-    }
-
-    const updates: Candle[] = [];
-
-    // same bucket -> update current candle
-    if (bucket === this.currentBucketStart) {
-      this.current.high = Math.max(this.current.high, price);
-      this.current.low = Math.min(this.current.low, price);
-      this.current.close = price;
-      this.current.volume += vol;
-      updates.push(this.current);
-      return updates;
-    }
-
-    // future bucket -> optionally fill gaps
-    if (bucket > this.currentBucketStart) {
-      const prevClose = this.current.close;
-      const prevBucket = this.currentBucketStart;
-
-      if (emitGapFills) {
-        // fill missing buckets between prevBucket and bucket
-        for (let b = prevBucket + this.tfSec; b < bucket; b += this.tfSec) {
-          const flat: Candle = {
-            time: b,
-            open: prevClose,
-            high: prevClose,
-            low: prevClose,
-            close: prevClose,
-            volume: 0,
-          };
-          updates.push(flat);
-        }
-      }
-
-      // start new candle at bucket
-      this.currentBucketStart = bucket;
-      this.current = {
-        time: bucket,
-        open: prevClose, // common exchange style: open at previous close
-        high: Math.max(prevClose, price),
-        low: Math.min(prevClose, price),
-        close: price,
-        volume: vol,
-      };
-      updates.push(this.current);
-      return updates;
-    }
-
-    // older trade (out of order) — ignore for realtime incremental mode
-    return [];
+    return result;
   }
+
+  // Aggregate 100ms bars into the selected timeframe bucket
+  const tfSec = intervalSec(timeframe);
+  const buckets = new Map<number, Candle>();
+  for (const bar of sorted) {
+    const barSec = toSec(bar.bucket_start);
+    const bucket = Math.floor(barSec / tfSec) * tfSec;
+    const open = pPtsToPercent(Number(bar.open_yes_pts));
+    const close = pPtsToPercent(Number(bar.close_yes_pts));
+    const vol = Number(bar.volume_micros);
+
+    if (!buckets.has(bucket)) {
+      buckets.set(bucket, {
+        time: bucket,
+        open,
+        high: Math.max(open, close),
+        low: Math.min(open, close),
+        close,
+        volume: vol,
+      });
+    } else {
+      const c = buckets.get(bucket)!;
+      c.high = Math.max(c.high, open, close);
+      c.low = Math.min(c.low, open, close);
+      c.close = close; // last 100ms bar's close = candle close
+      c.volume += vol;
+    }
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
 }
 
 export function PriceChart({
-  trades,
+  priceBars,
   lastTrade,
   timeframe = "15m",
   chartType = "line",
 }: PriceChartProps) {
-  // console.log('[PriceChart] Render - trades count:', trades?.length, 'timeframe:', timeframe, 'isLoading:', 'initializing');
-  
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [chartLib, setChartLib] = useState<any>(null);
@@ -215,22 +128,20 @@ export function PriceChart({
   const candleRef = useRef<any>(null);
   const volRef = useRef<any>(null);
 
-  const aggRef = useRef<CandleAgg | null>(null);
+  // Tracks the live candle being updated by real-time trades
+  const liveBarRef = useRef<{ bucket: number; open: number; high: number; low: number; close: number; volume: number } | null>(null);
 
-  // Create chart once - only recreate on unmount
+  // Create chart once
   useEffect(() => {
     if (!containerRef.current) return;
-
     let mounted = true;
 
     const initChart = async () => {
       try {
         const imported = await import("lightweight-charts");
         if (!mounted) return;
-        
         setChartLib(imported);
         const { createChart, ColorType } = imported;
-        
         if (!mounted || !containerRef.current) return;
 
         const chart = createChart(containerRef.current, {
@@ -273,7 +184,6 @@ export function PriceChart({
   useEffect(() => {
     if (!chartRef.current || !chartLib || isLoading) return;
 
-    // Remove old series
     if (candleRef.current) {
       chartRef.current.removeSeries(candleRef.current);
       candleRef.current = null;
@@ -283,22 +193,22 @@ export function PriceChart({
       volRef.current = null;
     }
 
-    // Add new series based on chartType
-    const candles = chartType === 'line' 
-      ? chartRef.current.addSeries(chartLib.LineSeries, {
-          priceFormat: {
-            type: "custom",
-            formatter: (p: number) => `${p.toFixed(2)}%`,
-          },
-          color: '#667eea',
-          lineWidth: 2,
-        })
-      : chartRef.current.addSeries(chartLib.CandlestickSeries, {
-          priceFormat: {
-            type: "custom",
-            formatter: (p: number) => `${p.toFixed(2)}%`,
-          },
-        });
+    const candles =
+      chartType === "line"
+        ? chartRef.current.addSeries(chartLib.LineSeries, {
+            priceFormat: {
+              type: "custom",
+              formatter: (p: number) => `${p.toFixed(2)}%`,
+            },
+            color: "#667eea",
+            lineWidth: 2,
+          })
+        : chartRef.current.addSeries(chartLib.CandlestickSeries, {
+            priceFormat: {
+              type: "custom",
+              formatter: (p: number) => `${p.toFixed(2)}%`,
+            },
+          });
 
     const volume = chartRef.current.addSeries(chartLib.HistogramSeries, {
       priceFormat: { type: "volume" },
@@ -310,66 +220,30 @@ export function PriceChart({
     volRef.current = volume;
   }, [chartType, chartLib, isLoading]);
 
-  // Re-seed chart when timeframe changes OR initial trades change materially
-  // (for exchange UIs, you normally re-seed on tf change; and keep incremental updates after)
+  // Re-seed chart when timeframe, chartType, or source data changes
   const seedKey = useMemo(() => {
-    // cheap key; if you pull history via loader, it changes rarely
-    const first = trades[trades.length - 1]?.id ?? "";
-    const last = trades[0]?.id ?? "";
-    return `${timeframe}:${chartType}:${first}:${last}:${trades.length}`;
-  }, [timeframe, chartType, trades]);
+    const first = priceBars[0]?.bucket_start?.toString() ?? "";
+    const last = priceBars[priceBars.length - 1]?.bucket_start?.toString() ?? "";
+    return `${timeframe}:${chartType}:${first}:${last}:${priceBars.length}`;
+  }, [timeframe, chartType, priceBars]);
 
   useEffect(() => {
-    // Don't try to seed data while chart is still loading
-    // console.log('[PriceChart] Data seeding effect - isLoading:', isLoading, 'trades:', trades.length);
-    if (isLoading) {
-      // console.log('[PriceChart] Skipping seed - chart still loading');
-      return;
-    }
-    
+    if (isLoading) return;
     const chart = chartRef.current;
     const candleSeries = candleRef.current;
     const volSeries = volRef.current;
-    // console.log('[PriceChart] Refs - chart:', !!chart, 'candleSeries:', !!candleSeries, 'volSeries:', !!volSeries);
     if (!chart || !candleSeries || !volSeries) return;
 
-    const sortedAsc = [...trades].sort(
-      (a, b) => new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
-    );
-    // console.log('[PriceChart] Sorted trades:', sortedAsc.length, 'first:', sortedAsc[0]?.executed_at, 'last:', sortedAsc[sortedAsc.length-1]?.executed_at);
+    const candles = buildCandles(priceBars, timeframe);
+    if (candles.length === 0) return;
 
-    if (!aggRef.current) aggRef.current = new CandleAgg(timeframe);
-    aggRef.current.reset(timeframe);
+    liveBarRef.current = null; // reset live bar on full reseed
 
-    const seeded = aggRef.current.seedFromTrades(sortedAsc);
-    // console.log('[PriceChart] Seeded candles:', seeded.length);
-
-    if (seeded.length === 0) {
-      // console.log('[PriceChart] No candles generated, exiting');
-      return;
-    }
-
-    // Deduplicate by time (keep last occurrence) and ensure ascending order
-    const dedupedMap = new Map<number, Candle>();
-    for (const c of seeded) {
-      dedupedMap.set(c.time, c);
-    }
-    const deduped = Array.from(dedupedMap.values()).sort((a, b) => a.time - b.time);
-    // console.log('[PriceChart] After dedup:', deduped.length, 'first:', deduped[0], 'last:', deduped[deduped.length-1]);
-
-    // console.log('[PriceChart] Setting candle data, first:', deduped[0], 'last:', deduped[deduped.length-1]);
-    if (chartType === 'line') {
-      // For line chart, just set time and value (close price)
-      candleSeries.setData(
-        deduped.map(c => ({
-          time: c.time,
-          value: c.close,
-        }))
-      );
+    if (chartType === "line") {
+      candleSeries.setData(candles.map((c) => ({ time: c.time, value: c.close })));
     } else {
-      // For candlestick chart, set OHLC
       candleSeries.setData(
-        deduped.map(c => ({
+        candles.map((c) => ({
           time: c.time,
           open: c.open,
           high: c.high,
@@ -380,58 +254,87 @@ export function PriceChart({
     }
 
     volSeries.setData(
-      deduped.map(c => ({
+      candles.map((c) => ({
         time: c.time,
         value: Number(c.volume) || 0,
-        color: c.close >= c.open ? "rgba(16,185,129,0.30)" : "rgba(239,68,68,0.30)",
+        color:
+          c.close >= c.open
+            ? "rgba(16,185,129,0.30)"
+            : "rgba(239,68,68,0.30)",
       }))
     );
 
     chart.timeScale().fitContent();
-  }, [seedKey, isLoading, timeframe, trades, chartType]);
+  }, [seedKey, isLoading, timeframe, priceBars, chartType]);
 
-  // Incremental live update when a trade arrives
+  // Incremental real-time update from WebSocket trade events
   useEffect(() => {
     if (!lastTrade) return;
-
     const candleSeries = candleRef.current;
     const volSeries = volRef.current;
-    const agg = aggRef.current;
-    if (!candleSeries || !volSeries || !agg) return;
+    if (!candleSeries || !volSeries) return;
 
-    const updates = agg.ingest(lastTrade, /*emitGapFills*/ true);
-    if (updates.length === 0) return;
+    const price = pPtsToPercent(Number(lastTrade.yes_pts));
+    // WebSocket normalised trade uses qtyMicros; REST-sourced trades may use contracts.
+    // Fall back through both and default to 0 to prevent NaN from reaching the histogram series.
+    const vol = Number(lastTrade.qtyMicros ?? lastTrade.contracts ?? 0) || 0;
+    const tradeSec = toSec(lastTrade.executed_at);
 
-    for (const c of updates) {
-      if (chartType === 'line') {
-        candleSeries.update({
-          time: c.time,
-          value: c.close,
-        });
-      } else {
-        candleSeries.update({
-          time: c.time,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-        });
-      }
+    // Which timeframe bucket does this trade belong to?
+    let bucketSec: number;
+    if (timeframe === "tick") {
+      bucketSec = tradeSec; // 1-second granularity for live tick
+    } else {
+      const tfSec = intervalSec(timeframe);
+      bucketSec = Math.floor(tradeSec / tfSec) * tfSec;
+    }
 
-      volSeries.update({
-        time: c.time,
-        value: c.volume,
-        color: c.close >= c.open ? "rgba(16,185,129,0.30)" : "rgba(239,68,68,0.30)",
+    const live = liveBarRef.current;
+    if (!live || live.bucket !== bucketSec) {
+      const prevClose = live?.close ?? price;
+      liveBarRef.current = {
+        bucket: bucketSec,
+        open: prevClose,
+        high: Math.max(prevClose, price),
+        low: Math.min(prevClose, price),
+        close: price,
+        volume: vol,
+      };
+    } else {
+      live.high = Math.max(live.high, price);
+      live.low = Math.min(live.low, price);
+      live.close = price;
+      live.volume += vol;
+    }
+
+    const c = liveBarRef.current!;
+    if (chartType === "line") {
+      candleSeries.update({ time: bucketSec, value: c.close });
+    } else {
+      candleSeries.update({
+        time: bucketSec,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
       });
     }
-  }, [lastTrade, chartType]);
-  
-  if (!trades || trades.length === 0) {
+    volSeries.update({
+      time: bucketSec,
+      value: c.volume,
+      color:
+        c.close >= c.open
+          ? "rgba(16,185,129,0.30)"
+          : "rgba(239,68,68,0.30)",
+    });
+  }, [lastTrade, chartType, timeframe]);
+
+  if (!priceBars || priceBars.length === 0) {
     return (
       <div style={{ height: "100%", display: "grid", placeItems: "center", color: "#64748b" }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: "2.5rem", marginBottom: "1rem" }}>📈</div>
-          <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>No Trades Yet</div>
+          <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>No Price Data Yet</div>
           <div style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
             Chart will appear once trading begins
           </div>
@@ -442,38 +345,39 @@ export function PriceChart({
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
-      {/* Always render the container so ref attaches and useEffect can run */}
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-      
-      {/* Show loading overlay while chart initializes */}
+
       {isLoading && (
-        <div style={{ 
-          position: "absolute", 
-          top: 0, 
-          left: 0, 
-          right: 0, 
-          bottom: 0, 
-          display: "grid", 
-          placeItems: "center", 
-          background: "#1a1f26",
-          color: "#64748b",
-          zIndex: 10
-        }}>
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "grid",
+            placeItems: "center",
+            background: "#1a1f26",
+            color: "#64748b",
+            zIndex: 10,
+          }}
+        >
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Loading chart...</div>
           </div>
         </div>
       )}
-      
-      {/* TradingView Attribution */}
-      <div style={{
-        position: "absolute",
-        bottom: "4px",
-        left: "4px",
-        fontSize: "10px",
-        color: "#64748b",
-        pointerEvents: "none"
-      }}>
+
+      <div
+        style={{
+          position: "absolute",
+          bottom: "4px",
+          left: "4px",
+          fontSize: "10px",
+          color: "#64748b",
+          pointerEvents: "none",
+        }}
+      >
         Chart by TradingView
       </div>
     </div>

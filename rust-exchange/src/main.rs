@@ -7,7 +7,7 @@ mod clearing;
 mod websocket;
 
 use axum::{
-    routing::get,
+    routing::{delete, get},
     Router,
 };
 use sqlx::PgPool;
@@ -23,7 +23,7 @@ use crate::websocket::WsBroadcaster;
 pub struct AppState {
     db: PgPool,
     wallet: Arc<WalletService>,
-    match_tx: mpsc::UnboundedSender<MatchCommand>,
+    match_tx: mpsc::UnboundedSender<EngineCommand>,
     ws_broadcaster: WsBroadcaster,
 }
 
@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Connected to database");
 
     // Create channels
-    let (match_tx, match_rx) = mpsc::unbounded_channel::<MatchCommand>();
+    let (match_tx, match_rx) = mpsc::unbounded_channel::<EngineCommand>();
     let (fill_tx, fill_rx) = mpsc::unbounded_channel::<Vec<Fill>>();
 
     // Create services
@@ -52,7 +52,13 @@ async fn main() -> anyhow::Result<()> {
     let ws_broadcaster = WsBroadcaster::new(pool.clone());
     
     // Spawn matching engine task
-    let engine = MatchingEngine::new(match_rx, fill_tx, pool.clone(), ws_broadcaster.clone());
+    let engine = MatchingEngine::new(
+        match_rx,
+        fill_tx,
+        pool.clone(),
+        (*wallet).clone(),
+        ws_broadcaster.clone(),
+    );
     tokio::spawn(async move {
         tracing::info!("Matching engine started");
         engine.run().await;
@@ -77,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/markets/:market_id/quote", get(api::get_quote))
         .route("/api/orders", get(api::get_orders).post(api::create_order))
+        .route("/api/orders/:order_id", delete(api::cancel_order))
         .route("/api/positions/me", get(api::get_positions))
         .route("/api/positions/markets/:market_id/me", get(api::get_position_for_market))
         .route("/ws", get(websocket::ws_handler))

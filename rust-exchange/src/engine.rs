@@ -1,27 +1,30 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use sqlx::PgPool;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use sqlx::PgPool;
-use std::time::{Duration, Instant};
-use crate::types::*;
 use crate::orderbook::{OrderBook, BookOrder};
+use crate::types::*;
+use crate::wallet::WalletService;
 use crate::websocket::WsBroadcaster;
 
 /// Matching engine that owns orderbooks and processes commands deterministically
 pub struct MatchingEngine {
     books: HashMap<Uuid, OrderBook>,
-    command_rx: mpsc::UnboundedReceiver<MatchCommand>,
+    command_rx: mpsc::UnboundedReceiver<EngineCommand>,
     fill_tx: mpsc::UnboundedSender<Vec<Fill>>,
     db: PgPool,
+    wallet: WalletService,
     ws_broadcaster: WsBroadcaster,
     last_broadcast: HashMap<Uuid, Instant>,
 }
 
 impl MatchingEngine {
     pub fn new(
-        command_rx: mpsc::UnboundedReceiver<MatchCommand>,
+        command_rx: mpsc::UnboundedReceiver<EngineCommand>,
         fill_tx: mpsc::UnboundedSender<Vec<Fill>>,
         db: PgPool,
+        wallet: WalletService,
         ws_broadcaster: WsBroadcaster,
     ) -> Self {
         Self {
@@ -29,6 +32,7 @@ impl MatchingEngine {
             command_rx,
             fill_tx,
             db,
+            wallet,
             ws_broadcaster,
             last_broadcast: HashMap::new(),
         }
@@ -132,11 +136,20 @@ impl MatchingEngine {
         }
         
         while let Some(cmd) = self.command_rx.recv().await {
-            self.process_command(cmd);
+            if let Err(e) = self.process_command(cmd).await {
+                tracing::error!("Failed to process engine command: {}", e);
+            }
         }
     }
 
-    fn process_command(&mut self, cmd: MatchCommand) {
+    async fn process_command(&mut self, cmd: EngineCommand) -> anyhow::Result<()> {
+        match cmd {
+            EngineCommand::Submit(submit) => self.process_submit(submit).await,
+            EngineCommand::Cancel(cancel) => self.handle_cancel(cancel).await,
+        }
+    }
+
+    async fn process_submit(&mut self, cmd: MatchCommand) -> anyhow::Result<()> {
         tracing::info!("Processing order: order_id={}, market_id={}, side={:?}, limit_yes_pts={}, qty_micros={}", 
             cmd.order_id, cmd.market_id, cmd.side, cmd.limit_yes_pts, cmd.qty_micros);
         
@@ -188,9 +201,204 @@ impl MatchingEngine {
             tracing::info!("Dust remaining {} micros treated as trading fee", remaining);
         }
 
+        // IOC orders must never rest on book; if nothing filled they should become terminal immediately.
+        if cmd.time_in_force == TimeInForce::Ioc && remaining == cmd.qty_micros {
+            self.finalize_unfilled_ioc(cmd.order_id).await?;
+        }
+
         // Broadcast orderbook update if it changed (throttled)
         if orderbook_changed {
             self.request_orderbook_broadcast(market_id);
         }
+
+        Ok(())
+    }
+
+    async fn finalize_unfilled_ioc(&mut self, order_id: Uuid) -> anyhow::Result<()> {
+        let order = sqlx::query!(
+            r#"
+            SELECT
+                user_id,
+                market_id,
+                qty_remaining_micros,
+                qty_original_micros,
+                COALESCE(liability_pence, 0)::bigint as "liability_pence!",
+                COALESCE(status::text, 'OPEN') as "status!"
+            FROM orders
+            WHERE id = $1
+            "#,
+            order_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let Some(order) = order else {
+            tracing::warn!("IOC cleanup skipped: order not found ({})", order_id);
+            return Ok(());
+        };
+
+        if (order.status != "OPEN" && order.status != "PARTIALLY_MATCHED")
+            || order.qty_remaining_micros <= 0
+        {
+            return Ok(());
+        }
+
+        let mut tx = self.db.begin().await?;
+        let update_result = sqlx::query!(
+            r#"
+            UPDATE orders
+            SET status = 'CANCELLED',
+                qty_remaining_micros = 0,
+                updated_at = NOW()
+            WHERE id = $1
+              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+              AND qty_remaining_micros > 0
+            "#,
+            order_id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if update_result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
+
+        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
+            ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
+                / order.qty_original_micros as i128) as i64
+        } else {
+            0
+        };
+
+        if release_pence > 0 {
+            self.wallet
+                .release_order_lock(&mut tx, order.user_id, release_pence)
+                .await?;
+        }
+
+        tx.commit().await?;
+        tracing::info!(
+            "IOC order {} cancelled unfilled and {}p released",
+            order_id,
+            release_pence
+        );
+        Ok(())
+    }
+
+    async fn handle_cancel(&mut self, cmd: CancelCommand) -> anyhow::Result<()> {
+        tracing::info!(
+            "Processing cancel: order_id={}, user_id={}",
+            cmd.order_id,
+            cmd.user_id
+        );
+
+        let order = sqlx::query!(
+            r#"
+            SELECT
+                user_id,
+                market_id,
+                side as "side: Side",
+                limit_price_yes_pts,
+                qty_remaining_micros,
+                qty_original_micros,
+                COALESCE(liability_pence, 0)::bigint as "liability_pence!",
+                COALESCE(status::text, 'OPEN') as "status!"
+            FROM orders
+            WHERE id = $1
+            "#,
+            cmd.order_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let Some(order) = order else {
+            tracing::warn!("Cancel ignored: order not found ({})", cmd.order_id);
+            return Ok(());
+        };
+
+        if order.user_id != cmd.user_id {
+            tracing::warn!(
+                "Cancel rejected: user mismatch for order {} (requested={}, actual={})",
+                cmd.order_id,
+                cmd.user_id,
+                order.user_id
+            );
+            return Ok(());
+        }
+
+        let mut should_broadcast = false;
+        if let Some(book) = self.books.get_mut(&order.market_id) {
+            if book
+                .cancel_order(cmd.order_id, order.side, order.limit_price_yes_pts)
+                .is_some()
+            {
+                should_broadcast = true;
+                tracing::info!("Removed order {} from in-memory book", cmd.order_id);
+            }
+        }
+
+        if order.status != "OPEN" && order.status != "PARTIALLY_MATCHED" {
+            tracing::info!(
+                "Cancel skipped for order {} because status is {}",
+                cmd.order_id,
+                order.status
+            );
+            if should_broadcast {
+                self.request_orderbook_broadcast(order.market_id);
+            }
+            return Ok(());
+        }
+
+        let mut tx = self.db.begin().await?;
+
+        let update_result = sqlx::query!(
+            r#"
+            UPDATE orders
+            SET status = 'CANCELLED',
+                qty_remaining_micros = 0,
+                updated_at = NOW()
+            WHERE id = $1
+              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+            "#,
+            cmd.order_id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if update_result.rows_affected() == 0 {
+            tx.rollback().await?;
+            tracing::info!(
+                "Cancel became no-op for order {} (already terminal in DB)",
+                cmd.order_id
+            );
+            if should_broadcast {
+                self.request_orderbook_broadcast(order.market_id);
+            }
+            return Ok(());
+        }
+
+        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
+            ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
+                / order.qty_original_micros as i128) as i64
+        } else {
+            0
+        };
+
+        if release_pence > 0 {
+            self.wallet
+                .release_order_lock(&mut tx, order.user_id, release_pence)
+                .await?;
+        }
+
+        tx.commit().await?;
+        tracing::info!(
+            "Order {} cancelled and {}p released",
+            cmd.order_id,
+            release_pence
+        );
+
+        self.request_orderbook_broadcast(order.market_id);
+        Ok(())
     }
 }

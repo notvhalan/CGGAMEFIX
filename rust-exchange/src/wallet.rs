@@ -155,6 +155,64 @@ impl WalletService {
         Ok(())
     }
 
+    /// Settle a reduce-only fill directly to available balance.
+    /// SELL_YES close receives YES premium, BUY_YES close pays YES premium.
+    pub async fn settle_reduce_only_fill(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+        side: Side,
+        exec_yes_pts: i64,
+        filled_qty_micros: i64,
+    ) -> Result<()> {
+        let yes_notional_pence = calculate_risk_buyyes(filled_qty_micros, exec_yes_pts);
+        let cashflow_pence = match side {
+            Side::SellYes => yes_notional_pence,
+            Side::BuyYes => -yes_notional_pence,
+        };
+
+        if cashflow_pence >= 0 {
+            let credit_pounds = BigDecimal::from_str(&format!("{}", cashflow_pence as f64 / 100.0))?;
+            sqlx::query!(
+                r#"
+                UPDATE wallets
+                SET balance = balance + $1,
+                    updated_at = NOW()
+                WHERE user_id = $2
+                  AND currency = 'GBP'
+                "#,
+                credit_pounds,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await?;
+        } else {
+            let debit_pence = -cashflow_pence;
+            let debit_pounds = BigDecimal::from_str(&format!("{}", debit_pence as f64 / 100.0))?;
+            let updated = sqlx::query!(
+                r#"
+                UPDATE wallets
+                SET balance = balance - $1,
+                    updated_at = NOW()
+                WHERE user_id = $2
+                  AND currency = 'GBP'
+                  AND balance >= $1
+                RETURNING id
+                "#,
+                debit_pounds,
+                user_id
+            )
+            .fetch_optional(&mut **tx)
+            .await?;
+
+            if updated.is_none() {
+                anyhow::bail!("Insufficient balance for reduce-only close");
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get user balance
     pub async fn get_balance(&self, user_id: Uuid) -> Result<(i64, i64)> {
         let row = sqlx::query!(

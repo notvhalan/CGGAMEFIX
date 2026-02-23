@@ -177,3 +177,81 @@ CGGAMEFIX is a peer-to-peer betting exchange with a central limit order book (CL
 - docs/CLOB_POSITION_TRACKING.md
 - docs/frontend-auth.md
 - docs/google-auth.md
+
+
+Yes. I can do it.
+
+Use this implementation order so you fix correctness first and avoid rewriting twice.
+
+Batch 1 (P0): Single Order Path + Real Cancel
+
+Make Rust exchange the only writer for submit/cancel.
+Add cancel API in Rust.
+Route API gateway cancel to Rust, not DB+NATS.
+Files:
+main.rs, types.rs, api.rs, engine.rs, rust-exchange.service.ts, orders.controller.ts
+
+What to change:
+
+Add EngineCommand enum (Submit, Cancel) and change matcher channel from MatchCommand to EngineCommand.
+Add DELETE /api/orders/:order_id in Rust API.
+In engine cancel handler:
+Remove order from in-memory book.
+Update DB status to CANCELLED.
+Release lock with wallet.release_order_lock(...).
+In gateway orders.controller cancel endpoint, remove manual DB status update + NATS publish and call Rust cancel endpoint only.
+Batch 2 (P0): IOC + Lock Release + Size Consistency
+
+Implement IOC remainder release in Rust engine.
+Unify min contract threshold across all services.
+Files:
+engine.rs, clearing.rs, orderbook.rs, api.rs, types.rs, order.ts
+
+What to change:
+
+Define one Rust constant for min size (10_000 micros to match TS MIN_CONTRACT_MICROS).
+For IOC with unfilled remainder:
+Set final status (CANCELLED or PARTIALLY_MATCHED).
+Set remaining to 0.
+Release lock for unfilled quantity.
+Remove inconsistent 1000 and 1_000_000 thresholds in engine/clearing.
+Batch 3 (P1): Side Naming + Position Consistency
+
+Eliminate FOR/LAY assumptions in runtime code.
+Keep only BUY_YES/SELL_YES in reads/writes.
+Files:
+markets.controller.ts, position-lots.service.ts, admin.controller.ts, migrate-order-side-naming.sql
+
+What to change:
+
+markets.controller orderbook filters must use BUY_YES/SELL_YES.
+position-lots.service comparisons must stop using FOR/LAY.
+Admin settlement logic must check BUY_YES/SELL_YES.
+Run side migration once and freeze enum usage.
+Batch 4 (P1): Remove Mixed Legacy Paths
+
+Remove NATS order submit/cancel from cashout/positions flows.
+Send IOC close orders directly to Rust.
+Files:
+cashout.controller.ts, positions.controller.ts, app.module.ts
+
+What to change:
+
+Replace manual INSERT orders + NATS_SUBJECTS.ORDERS_SUBMIT with rustExchange.submitOrder(...).
+Replace cancel publishes with Rust cancel calls.
+Keep NATS only for events you still actually consume.
+Batch 5 (P2): Reliability + Tests
+
+Replace unbounded channels with bounded queues.
+Add smoke integration tests for submit, match, partial IOC, cancel, lock/unlock.
+Cut noisy WS debug logs.
+Files:
+main.rs, engine.rs, clearing.rs, websocket.rs, apps/api-gateway/tests/*, rust-exchange/tests/*
+
+Verification checklist after Batch 1-3:
+
+Place GTC order, cancel, confirm wallet unlocked and order removed from book.
+Place IOC partially fill, confirm remainder unlocked and non-resting.
+Confirm /v1/markets/:id/book matches WS snapshot for same market.
+Confirm positions/settlement side logic works with BUY_YES/SELL_YES only.
+I can start implementing Batch 1 now and then send you a patch + exact test results before moving to Batch 2.

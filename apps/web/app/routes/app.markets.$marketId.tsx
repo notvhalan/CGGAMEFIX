@@ -1,6 +1,6 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useActionData, Link, Form, useRevalidator } from "@remix-run/react";
-import { getMarket, getMarketOrderBook, getMarketTrades, createOrder, getWallet, getPosition, cashOutPosition, getUserOrders, cancelOrder } from "~/lib/api.server";
+import { getMarket, getMarketOrderBook, getMarketTrades, getMarketPriceBars, createOrder, getWallet, getPosition, cashOutPosition, getUserOrders, cancelOrder } from "~/lib/api.server";
 import { OrderBook } from "~/components/OrderBook";
 import { OrderTicket } from "~/components/OrderTicket";
 import { TradesTape } from "~/components/TradesTape";
@@ -53,25 +53,26 @@ export async function loader({ params, request }: LoaderFunctionArgs) {
   const marketId = params.marketId!;
   
   try {
-    const [market, orderBook, trades] = await Promise.all([
+    const [market, orderBook, trades, priceBarsResult] = await Promise.all([
       getMarket(marketId),
       getMarketOrderBook(marketId),
       getMarketTrades(marketId, 500),
+      getMarketPriceBars(marketId, 6000).catch(() => ({ bars: [] })),
     ]);
 
-    // Get wallet, position, and orders if user is authenticated
-    let wallet = null;
-    let position = null;
-    let userOrders = null;
-    try {
-      wallet = await getWallet(request);
-      position = await getPosition(request, marketId);
-      userOrders = await getUserOrders(request, marketId);
-    } catch {
-      // Not authenticated or fetch failed
-    }
+    // Fetch user-specific data independently so one failing request
+    // does not hide other sections like open orders.
+    const [walletResult, positionResult, userOrdersResult] = await Promise.allSettled([
+      getWallet(request),
+      getPosition(request, marketId),
+      getUserOrders(request, marketId),
+    ]);
 
-    return json({ market, orderBook, trades, wallet, position, userOrders, marketId });
+    const wallet = walletResult.status === 'fulfilled' ? walletResult.value : null;
+    const position = positionResult.status === 'fulfilled' ? positionResult.value : null;
+    const userOrders = userOrdersResult.status === 'fulfilled' ? userOrdersResult.value : null;
+
+    return json({ market, orderBook, trades, priceBars: priceBarsResult.bars ?? [], wallet, position, userOrders, marketId });
   } catch (error) {
     throw new Response("Market not found", { status: 404 });
   }
@@ -147,6 +148,7 @@ export default function MarketDetail() {
 
   // Real-time state
   const [trades, setTrades] = useState(loaderData.trades?.trades || []);
+  const [priceBars, setPriceBars] = useState<any[]>(loaderData.priceBars || []);
   const [lastTrade, setLastTrade] = useState<any | null>(null);
   const [orderBook, setOrderBook] = useState(loaderData.orderBook);
   const [timeframe, setTimeframe] = useState<Timeframe>('tick');
@@ -166,6 +168,9 @@ export default function MarketDetail() {
   // Callback to refetch data after cashout
   const handleCashoutSuccess = () => {
     revalidator.revalidate();
+    // Close execution returns quickly; clearing/position updates may land shortly after.
+    setTimeout(() => revalidator.revalidate(), 400);
+    setTimeout(() => revalidator.revalidate(), 1200);
   };
 
   // Show feedback from action results
@@ -490,7 +495,7 @@ export default function MarketDetail() {
           
           {/* Chart Component */}
           <div style={{ flex: 1, overflow: 'hidden', padding: '0.75rem' }}>
-            <PriceChart trades={trades} lastTrade={lastTrade} timeframe={timeframe} marketId={marketId} chartType={chartType} />
+            <PriceChart priceBars={priceBars} lastTrade={lastTrade} timeframe={timeframe} marketId={marketId} chartType={chartType} />
           </div>
         </div>
 
@@ -686,7 +691,7 @@ export default function MarketDetail() {
       </div>
 
       {/* Positions Modal */}
-      {position && ((position.buyPositions && position.buyPositions.length > 0) || (position.sellPositions && position.sellPositions.length > 0)) && (
+      {position && isPositionsModalOpen && (
         <PositionsModal
           position={position}
           isOpen={isPositionsModalOpen}

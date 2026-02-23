@@ -48,10 +48,7 @@ export function PositionPanel({ position, isLoading, compact = false, onOpenDeta
         : position.netContractsMicros)
     : 0n;
 
-  const hasOpenPositions = position && (
-    (position.buyPositions && position.buyPositions.length > 0) ||
-    (position.sellPositions && position.sellPositions.length > 0)
-  );
+  const hasOpenPositions = position && netContractsMicros !== 0n;
 
   if (!position || !hasOpenPositions) {
     return (

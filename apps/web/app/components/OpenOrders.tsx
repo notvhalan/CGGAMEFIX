@@ -26,7 +26,7 @@ if (typeof document !== 'undefined' && !document.getElementById('open-orders-scr
 interface Order {
   id: string;
   marketId: string;
-  side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY';
+  side: 'BUY_YES' | 'SELL_YES' | 'FOR' | 'LAY' | 'BuyYes' | 'SellYes';
   yesPts?: number;
   pPts?: number;
   remainingContracts: string;
@@ -45,9 +45,12 @@ interface OpenOrdersProps {
   orders: Order[] | null;
 }
 
+const isBuyYesSide = (side: string) => side === 'BUY_YES' || side === 'FOR' || side === 'BuyYes';
+const isSellYesSide = (side: string) => side === 'SELL_YES' || side === 'LAY' || side === 'SellYes';
+
 export default function OpenOrders({ orders }: OpenOrdersProps) {
-  const [limit, setLimit] = useState(50);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const limit = 200;
 
   const { forGroups, layGroups } = useMemo(() => {
     if (!orders?.length) return { forGroups: [], layGroups: [] };
@@ -64,8 +67,8 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
     }, {} as Record<string, GroupedOrder>);
 
     const allGroups = Object.values(grouped).sort((a, b) => b.yesPts - a.yesPts);
-    const forGroups = allGroups.filter(g => g.side === 'BUY_YES' || g.side === 'FOR');
-    const layGroups = allGroups.filter(g => g.side === 'SELL_YES' || g.side === 'LAY');
+    const forGroups = allGroups.filter(g => isBuyYesSide(g.side));
+    const layGroups = allGroups.filter(g => isSellYesSide(g.side));
     
     return { forGroups, layGroups };
   }, [orders]);
@@ -166,39 +169,6 @@ export default function OpenOrders({ orders }: OpenOrdersProps) {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Header controls */}
-      <div style={{
-        display: 'flex',
-        gap: '0.75rem',
-        alignItems: 'center',
-        padding: '0.5rem 0.75rem',
-        borderBottom: '1px solid #2d3748',
-        flexShrink: 0
-      }}>
-        <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', fontWeight: 700, color: '#10b981', letterSpacing: '0.05em' }}>
-          OPEN ORDERS
-        </div>
-
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          <button
-            type="button"
-            onClick={() => setLimit(l => (l === 50 ? 200 : 50))}
-            style={{
-              background: 'transparent',
-              color: '#94a3b8',
-              border: '1px solid #374151',
-              borderRadius: 4,
-              fontFamily: 'monospace',
-              fontSize: '0.7rem',
-              padding: '0.25rem 0.5rem',
-              cursor: 'pointer'
-            }}
-          >
-            {limit === 50 ? 'Show 200' : 'Show 50'}
-          </button>
-        </div>
-      </div>
-
       {/* Two-column layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1px', background: '#2d3748', flex: 1, overflow: 'hidden' }}>
         {/* FOR side */}

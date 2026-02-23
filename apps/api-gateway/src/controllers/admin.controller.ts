@@ -5,6 +5,7 @@ import { LiquidityBotsService } from '../services/liquidity-bots.service';
 import { DatabaseService } from '../database/database.service';
 import { NatsClient } from '../nats/nats.client';
 import { NATS_SUBJECTS } from '../nats/subjects';
+import { RustExchangeService } from '../services/rust-exchange.service';
 
 @Controller('v1/admin')
 export class AdminController {
@@ -20,6 +21,7 @@ export class AdminController {
     private readonly liquidityBotsService: LiquidityBotsService,
     private readonly databaseService: DatabaseService,
     private readonly natsClient: NatsClient,
+    private readonly rustExchange: RustExchangeService,
   ) {}
   
   /**
@@ -38,6 +40,34 @@ export class AdminController {
     }
     
     this.logger.info(`Admin access granted to ${user.email}`);
+  }
+
+  private async waitForOrderCancellations(orderIds: string[], timeoutMs = 5000): Promise<number> {
+    if (orderIds.length === 0) {
+      return 0;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let pending = orderIds.length;
+
+    while (Date.now() < deadline) {
+      const pendingResult = await this.databaseService.query<{ pending: string }>(
+        `SELECT COUNT(*)::text AS pending
+         FROM orders
+         WHERE id = ANY($1::uuid[])
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
+        [orderIds]
+      );
+
+      pending = Number(pendingResult.rows[0]?.pending || '0');
+      if (pending === 0) {
+        return 0;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    return pending;
   }
 
   @Post('liquidity-bots/start')
@@ -161,26 +191,46 @@ export class AdminController {
     this.logger.info(`Admin ${userId} resolving market ${body.marketId} - Winner: ${body.winningOutcome}`);
 
     try {
-      // 1. Cancel all open orders for this market
-      const cancelledOrdersResult = await this.databaseService.query(
-        `UPDATE orders 
-         SET status = 'CANCELLED',
-             updated_at = NOW()
-         WHERE market_id = $1 AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-         RETURNING id`,
+      // 1. Cancel all open orders for this market via Rust exchange so wallet locks are released correctly.
+      const openOrdersResult = await this.databaseService.query<{ id: string; user_id: string }>(
+        `SELECT id, user_id
+         FROM orders
+         WHERE market_id = $1
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
         [body.marketId]
       );
-      this.logger.info(`Cancelled ${cancelledOrdersResult.rows.length} open orders`);
 
-      // 1b. Publish cancel commands to matching engine to clear in-memory orderbook
-      for (const order of cancelledOrdersResult.rows) {
-        this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, {
-          orderId: order.id,
-          marketId: body.marketId,
-          reason: 'MARKET_SETTLED',
-        });
+      const openOrderIds = openOrdersResult.rows.map(row => row.id);
+      if (openOrdersResult.rows.length > 0) {
+        const cancelResults = await Promise.allSettled(
+          openOrdersResult.rows.map(order =>
+            this.rustExchange.cancelOrder({
+              orderId: order.id,
+              userId: order.user_id,
+            })
+          )
+        );
+
+        const failedCancels = cancelResults.filter(result => result.status === 'rejected');
+        if (failedCancels.length > 0) {
+          throw new Error(`Failed to cancel ${failedCancels.length} orders before settlement`);
+        }
+
+        const pendingCancels = await this.waitForOrderCancellations(openOrderIds);
+        if (pendingCancels > 0) {
+          throw new Error(`Timed out waiting for ${pendingCancels} order cancellations before settlement`);
+        }
       }
-      this.logger.info(`Published ${cancelledOrdersResult.rows.length} cancel commands to matching engine`);
+
+      const cancelledOrdersResult = await this.databaseService.query<{ cancelled_count: string }>(
+        `SELECT COUNT(*)::text AS cancelled_count
+         FROM orders
+         WHERE id = ANY($1::uuid[])
+           AND status = 'CANCELLED'`,
+        [openOrderIds]
+      );
+      const cancelledOrdersCount = Number(cancelledOrdersResult.rows[0]?.cancelled_count || '0');
+      this.logger.info(`Cancelled ${cancelledOrdersCount} open orders before settlement`);
 
       // 2. Update market status to SETTLED
       await this.databaseService.query(
@@ -220,9 +270,10 @@ export class AdminController {
       const userSettlements: any[] = [];
 
       for (const lot of positionLots) {
+        const isBuyYesSide = lot.side === 'BUY_YES' || lot.side === 'FOR';
         // Determine if this position is a winner
-        const isWinner = (body.winningOutcome === 'YES' && lot.side === 'FOR') ||
-                        (body.winningOutcome === 'NO' && lot.side === 'LAY');
+        const isWinner = (body.winningOutcome === 'YES' && isBuyYesSide) ||
+                        (body.winningOutcome === 'NO' && !isBuyYesSide);
 
         const qtyMicros = BigInt(lot.qty_remaining_micros);
         const entryYesPts = BigInt(lot.entry_price_yes_pts);
@@ -231,7 +282,7 @@ export class AdminController {
         // FOR (BUY YES): locked = contracts × entry_price
         // LAY (SELL YES): locked = contracts × (1 - entry_price) = contracts × no_cost
         let lockedPence: bigint;
-        if (lot.side === 'FOR') {
+        if (isBuyYesSide) {
           // BUY YES: cost is yes price
           lockedPence = (qtyMicros * entryYesPts * CONTRACT_PAYOUT_PENCE) / (PRICE_SCALE * CONTRACT_SCALE);
         } else {
@@ -323,7 +374,7 @@ export class AdminController {
           body.winningOutcome,
           body.reason || null,
           positionLots.length,
-          cancelledOrdersResult.rows.length,
+          cancelledOrdersCount,
           totalPayoutGbp,
           winnersCount,
           losersCount,
@@ -384,7 +435,7 @@ export class AdminController {
         success: true,
         message: `Market ${body.marketId} resolved - Winner: ${body.winningOutcome}`,
         positionsSettled: positionLots.length,
-        ordersCancelled: cancelledOrdersResult.rows.length,
+        ordersCancelled: cancelledOrdersCount,
       };
     } catch (error) {
       this.logger.error('Failed to resolve market', error);
@@ -443,10 +494,11 @@ export class AdminController {
       for (const lot of positionLotsResult.rows) {
         const qtyMicros = BigInt(lot.qty_remaining_micros);
         const entryYesPts = BigInt(lot.entry_price_yes_pts);
+        const isBuyYesSide = lot.side === 'BUY_YES' || lot.side === 'FOR';
 
         // Calculate locked amount
         let lockedPence: bigint;
-        if (lot.side === 'FOR') {
+        if (isBuyYesSide) {
           lockedPence = (qtyMicros * entryYesPts * CONTRACT_PAYOUT_PENCE) / (PRICE_SCALE * CONTRACT_SCALE);
         } else {
           const noPts = PRICE_SCALE - entryYesPts;

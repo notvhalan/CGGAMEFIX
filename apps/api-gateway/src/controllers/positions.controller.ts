@@ -1,10 +1,7 @@
 import { Controller, Get, Post, Param, Req, Body } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { NatsClient } from '../nats/nats.client';
-import { NATS_SUBJECTS } from '../nats/subjects';
 import { PRICE_SCALE, CONTRACT_SCALE, CONTRACT_PAYOUT_PENCE } from '@betting-exchange/shared-types';
 import { RustExchangeService } from '../services/rust-exchange.service';
-import { v4 as uuidv4 } from 'uuid';
 
 interface TradePosition {
   sizePence: number;
@@ -31,9 +28,36 @@ interface Position {
 export class PositionsController {
   constructor(
     private readonly databaseService: DatabaseService,
-    private readonly natsClient: NatsClient,
     private readonly rustExchange: RustExchangeService,
   ) {}
+
+  private async waitForOrderCancellations(orderIds: string[], timeoutMs = 5000): Promise<number> {
+    if (orderIds.length === 0) {
+      return 0;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let pending = orderIds.length;
+
+    while (Date.now() < deadline) {
+      const pendingResult = await this.databaseService.query<{ pending: string }>(
+        `SELECT COUNT(*)::text AS pending
+         FROM orders
+         WHERE id = ANY($1::uuid[])
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
+        [orderIds]
+      );
+
+      pending = Number(pendingResult.rows[0]?.pending || '0');
+      if (pending === 0) {
+        return 0;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    return pending;
+  }
 
   /**
    * Get all active positions for the user across all markets
@@ -101,26 +125,35 @@ export class PositionsController {
       throw new Error('Position cannot be cashed out. No liquidity available.');
     }
 
-    // CRITICAL: Cancel all resting orders for this user/market to prevent reopening position
-    const cancelResult = await this.databaseService.query(
-      `UPDATE orders
-       SET status = 'CANCELLED', updated_at = NOW()
-       WHERE user_id = $1 
-       AND market_id = $2 
-       AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-       RETURNING id`,
+    // CRITICAL: Cancel all resting orders for this user/market to prevent reopening position.
+    const openOrdersResult = await this.databaseService.query<{ id: string }>(
+      `SELECT id
+       FROM orders
+       WHERE user_id = $1
+         AND market_id = $2
+         AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
       [userId, marketId]
     );
-    
-    // Publish cancel events to matching engine for each cancelled order
-    for (const row of cancelResult.rows) {
-      this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, {
-        orderId: row.id,
-        userId,
-        marketId,
-        reason: 'Cancelled before closing position',
-        timestamp: new Date().toISOString(),
-      });
+    const openOrderIds = openOrdersResult.rows.map(row => row.id);
+
+    if (openOrderIds.length > 0) {
+      const cancelResults = await Promise.allSettled(
+        openOrderIds.map(orderId =>
+          this.rustExchange.cancelOrder({
+            orderId,
+            userId,
+          })
+        )
+      );
+      const failedCancels = cancelResults.filter(result => result.status === 'rejected');
+      if (failedCancels.length > 0) {
+        throw new Error(`Failed to cancel ${failedCancels.length} resting orders`);
+      }
+
+      const pendingCancels = await this.waitForOrderCancellations(openOrderIds);
+      if (pendingCancels > 0) {
+        throw new Error(`Timed out waiting for ${pendingCancels} resting order cancellations`);
+      }
     }
 
     // Calculate contracts to close based on netContractsMicros
@@ -135,9 +168,10 @@ export class PositionsController {
     const isLong = netContracts > 0n;
     const closeSide = isLong ? 'LAY' : 'FOR';
     
-    // Use extreme price to sweep book
-    const yesPts = closeSide === 'FOR' ? PRICE_SCALE - 1 : 1;
-    const pPts = closeSide === 'FOR' ? yesPts : PRICE_SCALE - yesPts;
+    // Use aggressive but valid price bounds accepted by Rust exchange.
+    const MIN_PRICE_PTS = 10_000; // 0.1%
+    const MAX_PRICE_PTS = 9_990_000; // 99.9%
+    const yesPts = closeSide === 'FOR' ? MAX_PRICE_PTS : MIN_PRICE_PTS;
     
     // Use absolute value of closeContractsMicros for calculations
     const absCloseContractsMicros = closeContractsMicros < 0n ? -closeContractsMicros : closeContractsMicros;
@@ -146,76 +180,24 @@ export class PositionsController {
     const maxLossPerContract = closeSide === 'LAY' ? PRICE_SCALE - yesPts : yesPts;
     const maxLiabilityPence = Number((BigInt(maxLossPerContract) * absCloseContractsMicros * BigInt(CONTRACT_PAYOUT_PENCE)) / (BigInt(PRICE_SCALE) * BigInt(CONTRACT_SCALE)));
     
-    // Check and lock balance
-    const walletResult = await this.databaseService.query(
-      'SELECT balance FROM wallets WHERE user_id = $1',
-      [userId]
-    );
-    if (walletResult.rows.length === 0) {
-      throw new Error('Wallet not found');
-    }
-    const balancePence = Math.floor(parseFloat(walletResult.rows[0].balance) * 100);
-    if (balancePence < maxLiabilityPence) {
-      throw new Error(`Insufficient balance for close order`);
+    if (maxLiabilityPence < 100) {
+      throw new Error('Close size is below minimum order risk (GBP 1.00)');
     }
 
-    await this.databaseService.lockBalance(userId, maxLiabilityPence);
-    
-    // Create IOC order
-    const orderId = uuidv4();
-    const stakePence = closeSide === 'FOR' ? maxLiabilityPence : undefined;
-    const liabilityPence = closeSide === 'LAY' ? maxLiabilityPence : undefined;
-    
-    try {
-      await this.databaseService.query(
-        `INSERT INTO orders 
-          (id, market_id, user_id, side, p_pts, limit_price_yes_pts, stake_pence, liability_pence,
-           qty_remaining_micros, qty_original_micros, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', NOW(), NOW())`,
-        [
-          orderId, 
-          marketId, 
-          userId, 
-          closeSide, 
-          pPts, 
-          yesPts,
-          stakePence,
-          liabilityPence,
-          absCloseContractsMicros.toString(),
-          absCloseContractsMicros.toString()
-        ]
-      );
+    const rustResponse = await this.rustExchange.submitOrder({
+      marketId,
+      userId,
+      side: closeSide === 'FOR' ? 'BUY_YES' : 'SELL_YES',
+      riskPence: maxLiabilityPence,
+      limitYesPts: yesPts,
+      timeInForce: 'IOC',
+      reduceOnly: true,
+    });
 
-      // Publish IOC order to matching engine
-      const orderCommand = {
-        orderId,
-        userId,
-        marketId,
-        side: closeSide,
-        pPts,
-        yesPts,
-        stakePence: closeSide === 'FOR' ? maxLiabilityPence : undefined,
-        liabilityPence: closeSide === 'LAY' ? maxLiabilityPence : undefined,
-        originalContractsMicros: absCloseContractsMicros.toString(),
-        remainingContractsMicros: absCloseContractsMicros.toString(),
-        timeInForce: 'IOC',
-        timestamp: new Date().toISOString(),
-      };
-
-      this.natsClient.publish(NATS_SUBJECTS.ORDERS_SUBMIT, orderCommand);
-
-      return {
-        success: true,
-        message: `Close order submitted (${percentage}% of position). Order will match immediately or cancel.`,
-        orderId,
-      };
-    } catch (error) {
-      // Rollback balance lock on error
-      await this.databaseService.query(
-        'UPDATE wallets SET balance = balance + $1, locked_balance = locked_balance - $1 WHERE user_id = $2',
-        [maxLiabilityPence / 100, userId]
-      );
-      throw error;
-    }
+    return {
+      success: true,
+      message: `Close order submitted (${percentage}% of position) via Rust exchange. Unfilled portion will cancel.`,
+      orderId: rustResponse.order_id,
+    };
   }
 }

@@ -1,7 +1,5 @@
 import { Controller, Post, Delete, Param, Body, HttpCode, HttpStatus, Req, UnauthorizedException, Get, Query } from '@nestjs/common';
 import { Logger } from '@betting-exchange/shared-config';
-import { NatsClient } from '../nats/nats.client';
-import { NATS_SUBJECTS } from '../nats/subjects';
 import { CreateOrderDtoSchema } from '../dto';
 import { v4 as uuidv4 } from 'uuid';
 import { ZodError } from 'zod';
@@ -16,7 +14,6 @@ export class OrdersController {
   private readonly logger = new Logger('OrdersController');
 
   constructor(
-    private readonly natsClient: NatsClient,
     private readonly databaseService: DatabaseService,
     private readonly orderBookBroadcast: OrderBookBroadcastService,
     private readonly rustExchange: RustExchangeService,
@@ -206,26 +203,7 @@ export class OrdersController {
         throw new Error(`Order size too small. Minimum: ${minContracts} contracts. Increase your stake/liability to at least £${Math.ceil(liabilityPence * minContracts / 100) / 100}.`);
       }
       
-      // Lock balance before creating order (same amount for both sides - their max loss)
-      const requiredBalancePence = liabilityPence;
-      
       // NOTE: Balance locking now handled by Rust exchange, skip TypeScript database
-      
-      // Submit order directly to Rust exchange (skipping database.createOrder)
-      const command = {
-        orderId,
-        userId,
-        marketId: orderData.marketId,
-        outcomeId: orderData.outcomeId,
-        side,
-        pPts,
-        yesPts,
-        liabilityPence,
-        originalContractsMicros: contractsMicros.toString(),
-        remainingContractsMicros: contractsMicros.toString(),
-        timeInForce,
-        timestamp: new Date().toISOString(),
-      };
       
       // Submit order to Rust exchange instead of NATS
       let rustResponse;
@@ -292,74 +270,25 @@ export class OrdersController {
       if (!userId) {
         throw new UnauthorizedException('User not authenticated');
       }
-      
-      // Get the order BEFORE cancelling to calculate locked funds
-      const orders = await this.databaseService.getOrdersByUserId(userId, 1000);
-      const orderToCancel = orders.find(o => o.id === orderId);
-      
-      if (!orderToCancel) {
-        throw new Error('Order not found');
-      }
-      
-      // Only unlock if order is still active (OPEN or PARTIALLY_MATCHED)
-      if (orderToCancel.status === 'OPEN' || orderToCancel.status === 'PARTIALLY_MATCHED') {
-        // Calculate locked amount based on remaining liability
-        const remainingContracts = BigInt(orderToCancel.remainingContracts || '0');
-        const originalContracts = BigInt(orderToCancel.originalContracts || '0');
-        
-        if (remainingContracts > 0n && originalContracts > 0n) {
-          // Proportional liability based on remaining vs original contracts
-          const lockedPence = Math.floor(
-            (orderToCancel.liabilityPence * Number(remainingContracts)) / Number(originalContracts)
-          );
-          
-          if (lockedPence > 0) {
-            // Try to unlock the balance - don't fail if insufficient (could be old data or wrong currency)
-            try {
-              await this.databaseService.unlockBalance(userId, lockedPence);
-              this.logger.info('Balance unlocked for cancelled order', { 
-                orderId, 
-                userId, 
-                lockedPence, 
-                remainingContracts: remainingContracts.toString(),
-                originalContracts: originalContracts.toString(),
-                totalLiability: orderToCancel.liabilityPence
-              });
-            } catch (unlockError) {
-              // Log warning but don't fail the cancellation - wallet might have old data or wrong currency
-              this.logger.warn('Failed to unlock balance for cancelled order - continuing with cancellation', { 
-                orderId, 
-                userId, 
-                lockedPence,
-                error: unlockError.message
-              });
-            }
-          }
-        }
-      }
-      
-      // Update order status in database
-      await this.databaseService.updateOrderStatus(orderId, 'CANCELLED');
-      
-      // Publish order cancellation command to NATS
-      const command = {
-        orderId,
+
+      const rustResponse = await this.rustExchange.cancelOrder({ orderId, userId });
+      this.logger.info('Order cancellation requested via Rust exchange', {
+        orderId: rustResponse.order_id,
         userId,
-        timestamp: new Date().toISOString(),
-      };
-      
-      this.logger.info('Order cancelled', { orderId, userId });
-      this.natsClient.publish(NATS_SUBJECTS.ORDERS_CANCEL, command);
-      
-      // Broadcast order book update
-      setImmediate(() => {
-        this.orderBookBroadcast.broadcastOrderBookUpdate(orderToCancel.marketId);
+        status: rustResponse.status,
       });
-      
+
+      // Keep Socket.IO clients loosely in sync while Rust processes cancellation.
+      setImmediate(() => {
+        this.orderBookBroadcast.broadcastOrderBookUpdate(rustResponse.market_id);
+      });
+
       return {
-        orderId,
-        status: 'CANCELLED',
-        message: 'Order cancelled successfully',
+        orderId: rustResponse.order_id,
+        status: rustResponse.status,
+        message: rustResponse.status === 'PENDING_CANCEL'
+          ? 'Order cancellation requested'
+          : 'Order cancellation processed',
       };
     } catch (error) {
       this.logger.error('Failed to cancel order', error);

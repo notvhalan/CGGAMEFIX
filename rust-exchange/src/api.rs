@@ -66,6 +66,7 @@ pub struct CreateOrderRequest {
     risk_pence: i64,
     limit_yes_pts: i64,
     time_in_force: Option<TimeInForce>,
+    reduce_only: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -88,8 +89,15 @@ pub async fn create_order(
         .and_then(|s| Uuid::parse_str(s).ok())
         .unwrap_or_else(|| Uuid::parse_str("97344faa-ff14-498e-af84-88639c24edf6").unwrap());
     
-    tracing::info!("Creating order for user_id: {}, market: {}, side: {:?}, risk: {} pence, price: {} pts", 
-        user_id, req.market_id, req.side, req.risk_pence, req.limit_yes_pts);
+    tracing::info!(
+        "Creating order for user_id: {}, market: {}, side: {:?}, risk: {} pence, price: {} pts, reduce_only: {}",
+        user_id,
+        req.market_id,
+        req.side,
+        req.risk_pence,
+        req.limit_yes_pts,
+        req.reduce_only.unwrap_or(false)
+    );
     
     // Validate
     if req.risk_pence < 100 {
@@ -114,20 +122,79 @@ pub async fn create_order(
         return Err(AppError::BadRequest("Order too small".to_string()));
     }
 
-    // Calculate reserve needed (at limit price)
-    let reserve_pence = match req.side {
-        Side::BuyYes => calculate_risk_buyyes(contracts_micros, req.limit_yes_pts),
-        Side::SellYes => calculate_risk_sellyes(contracts_micros, req.limit_yes_pts),
-    };
-
     let order_id = Uuid::new_v4();
     let time_in_force = req.time_in_force.unwrap_or(TimeInForce::Gtc);
+    let reduce_only = req.reduce_only.unwrap_or(false);
+
+    if reduce_only && time_in_force != TimeInForce::Ioc {
+        return Err(AppError::BadRequest(
+            "reduce_only orders must use IOC".to_string(),
+        ));
+    }
+
+    if reduce_only {
+        let net_qty_micros = sqlx::query_scalar!(
+            r#"
+            SELECT COALESCE(net_qty_micros, 0)::bigint
+            FROM positions
+            WHERE user_id = $1 AND market_id = $2
+            "#,
+            user_id,
+            req.market_id
+        )
+        .fetch_optional(&app.db)
+        .await?
+        .flatten()
+        .unwrap_or(0);
+
+        if net_qty_micros == 0 {
+            return Err(AppError::BadRequest(
+                "No open position for reduce-only close".to_string(),
+            ));
+        }
+
+        let required_close_side = if net_qty_micros > 0 {
+            Side::SellYes
+        } else {
+            Side::BuyYes
+        };
+
+        if req.side != required_close_side {
+            return Err(AppError::BadRequest(format!(
+                "reduce_only side mismatch: expected {:?} for current position",
+                required_close_side
+            )));
+        }
+
+        if contracts_micros > net_qty_micros.abs() {
+            return Err(AppError::BadRequest(format!(
+                "reduce_only size exceeds position (requested {}, position {})",
+                contracts_micros,
+                net_qty_micros.abs()
+            )));
+        }
+    }
+
+    // Calculate reserve needed (at limit price).
+    // reduce_only IOC closes consume existing exposure; they do not reserve fresh order collateral.
+    let reserve_pence = if reduce_only {
+        0
+    } else {
+        match req.side {
+            Side::BuyYes => calculate_risk_buyyes(contracts_micros, req.limit_yes_pts),
+            Side::SellYes => calculate_risk_sellyes(contracts_micros, req.limit_yes_pts),
+        }
+    };
 
     // Start DB transaction
     let mut tx = app.db.begin().await?;
 
-    // 1. Reserve funds
-    app.wallet.reserve_for_order(&mut tx, user_id, reserve_pence).await?;
+    // 1. Reserve funds for non-reduce-only orders
+    if reserve_pence > 0 {
+        app.wallet
+            .reserve_for_order(&mut tx, user_id, reserve_pence)
+            .await?;
+    }
 
     // 2. Insert order
     let side_str = match req.side {
@@ -164,7 +231,7 @@ pub async fn create_order(
     tx.commit().await?;
 
     // 3. Send command to matching engine
-    app.match_tx.send(MatchCommand {
+    app.match_tx.send(EngineCommand::Submit(MatchCommand {
         order_id,
         user_id,
         market_id: req.market_id,
@@ -172,13 +239,63 @@ pub async fn create_order(
         limit_yes_pts: req.limit_yes_pts,
         qty_micros: contracts_micros,
         time_in_force,
-    })?;
+    }))?;
 
     Ok(Json(CreateOrderResponse {
         order_id,
         status: "PENDING".to_string(),
         contracts_micros,
         actual_risk_pence: reserve_pence,
+    }))
+}
+
+#[derive(Serialize)]
+pub struct CancelOrderResponse {
+    order_id: Uuid,
+    status: String,
+    market_id: Uuid,
+}
+
+pub async fn cancel_order(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Path(order_id): Path<Uuid>,
+) -> Result<Json<CancelOrderResponse>, AppError> {
+    let user_id = require_user_id(&headers)?;
+
+    let order = sqlx::query!(
+        r#"
+        SELECT market_id, COALESCE(status::text, 'OPEN') as "status!"
+        FROM orders
+        WHERE id = $1 AND user_id = $2
+        "#,
+        order_id,
+        user_id
+    )
+    .fetch_optional(&app.db)
+    .await?;
+
+    let Some(order) = order else {
+        return Err(AppError::BadRequest("Order not found".to_string()));
+    };
+
+    if order.status != "OPEN" && order.status != "PARTIALLY_MATCHED" {
+        return Ok(Json(CancelOrderResponse {
+            order_id,
+            status: order.status,
+            market_id: order.market_id,
+        }));
+    }
+
+    app.match_tx.send(EngineCommand::Cancel(CancelCommand {
+        order_id,
+        user_id,
+    }))?;
+
+    Ok(Json(CancelOrderResponse {
+        order_id,
+        status: "PENDING_CANCEL".to_string(),
+        market_id: order.market_id,
     }))
 }
 
@@ -328,19 +445,18 @@ pub async fn get_positions(
 
     let rows = sqlx::query!(
         r#"
-        SELECT 
-            pl.market_id,
-            COALESCE(SUM(CASE WHEN pl.side::text = 'BUY_YES' THEN pl.qty_remaining_micros ELSE -pl.qty_remaining_micros END), 0)::bigint as "net_qty_micros!",
+        SELECT
+            p.market_id,
+            COALESCE(p.net_qty_micros, 0)::bigint as "net_qty_micros!",
             COALESCE(p.avg_open_price_yes_pts, 0) as "avg_open_price_yes_pts!",
             COALESCE(p.realized_pnl_pence, 0) as "realized_pnl_pence!",
             COALESCE(p.fees_paid_pence, 0) as "fees_paid_pence!",
             m.name as market_question
-        FROM position_lots pl
-        JOIN markets m ON pl.market_id = m.id
-        LEFT JOIN positions p ON p.market_id = pl.market_id AND p.user_id = pl.user_id
-        WHERE pl.user_id = $1 AND pl.qty_remaining_micros > 0
-        GROUP BY pl.market_id, m.name, p.avg_open_price_yes_pts, p.realized_pnl_pence, p.fees_paid_pence
-        HAVING SUM(pl.qty_remaining_micros) > 0
+        FROM positions p
+        JOIN markets m ON p.market_id = m.id
+        WHERE p.user_id = $1
+          AND COALESCE(p.net_qty_micros, 0) <> 0
+        ORDER BY p.updated_at DESC
         "#,
         user_id
     )
@@ -449,6 +565,14 @@ pub async fn get_position_for_market(
     let mut sell_positions = Vec::new();
 
     for lot in lots {
+        // Use positions.net_qty_micros as source of truth and hide stale opposite-side lots.
+        if net_contracts_micros > 0 && lot.side != "BUY_YES" {
+            continue;
+        }
+        if net_contracts_micros < 0 && lot.side != "SELL_YES" {
+            continue;
+        }
+
         let qty = lot.qty_remaining_micros as i128;
         let price = lot.entry_price_yes_pts as i64;
         let notional_pence = (price as i128 * qty * PAYOUT_PENCE_PER_CONTRACT as i128)
@@ -514,7 +638,37 @@ pub async fn get_position_for_market(
     let net_yes_pence = (abs_contracts_micros * PAYOUT_PENCE_PER_CONTRACT as i128)
         / CONTRACT_SCALE_MICROS as i128;
 
-    let is_open = !buy_positions.is_empty() || !sell_positions.is_empty();
+    if net_contracts_micros != 0 && buy_positions.is_empty() && sell_positions.is_empty() {
+        // Fallback for legacy data drift: synthesize one lot from positions snapshot.
+        let synthetic_price = if avg_entry_yes_pts > 0 {
+            avg_entry_yes_pts
+        } else {
+            mark_yes_pts
+        };
+        let synthetic_notional = (synthetic_price as i128
+            * abs_contracts_micros
+            * PAYOUT_PENCE_PER_CONTRACT as i128)
+            / (PRICE_SCALE as i128 * CONTRACT_SCALE_MICROS as i128);
+        let synthetic = TradePosition {
+            size_pence: synthetic_notional as i64,
+            yes_price_pts: synthetic_price,
+            fee_pence: 0,
+            executed_at: Utc::now().to_rfc3339(),
+            contracts_micros: if net_contracts_micros > 0 {
+                abs_contracts_micros.to_string()
+            } else {
+                format!("-{}", abs_contracts_micros)
+            },
+        };
+
+        if net_contracts_micros > 0 {
+            buy_positions.push(synthetic);
+        } else {
+            sell_positions.push(synthetic);
+        }
+    }
+
+    let is_open = net_contracts_micros != 0;
     let mut unrealized_pnl_pence: i128 = 0;
     if is_open && avg_entry_yes_pts > 0 && abs_contracts_micros > 0 {
         let pnl_per_contract_pence = if net_contracts_micros > 0 {
@@ -529,7 +683,7 @@ pub async fn get_position_for_market(
             / CONTRACT_SCALE_MICROS as i128;
     }
 
-    let can_cash_out = is_open && (best_bid_yes > 0 || best_ask_yes < PRICE_SCALE);
+    let can_cash_out = net_contracts_micros != 0 && (best_bid_yes > 0 || best_ask_yes < PRICE_SCALE);
 
     Ok(Json(PositionResponse {
         market_id,
@@ -566,8 +720,8 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
-impl From<tokio::sync::mpsc::error::SendError<MatchCommand>> for AppError {
-    fn from(e: tokio::sync::mpsc::error::SendError<MatchCommand>) -> Self {
+impl From<tokio::sync::mpsc::error::SendError<EngineCommand>> for AppError {
+    fn from(e: tokio::sync::mpsc::error::SendError<EngineCommand>) -> Self {
         AppError::Internal(e.to_string())
     }
 }

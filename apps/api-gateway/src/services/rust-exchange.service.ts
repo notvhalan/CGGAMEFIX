@@ -7,12 +7,19 @@ interface RustOrderRequest {
   risk_pence: number;
   limit_yes_pts: number;
   time_in_force?: 'GTC' | 'IOC';
+  reduce_only?: boolean;
 }
 
 interface RustOrderResponse {
   order_id: string;
   contracts_micros: number;
   status: string;
+}
+
+interface RustCancelOrderResponse {
+  order_id: string;
+  status: string;
+  market_id: string;
 }
 
 interface RustOrdersResponse {
@@ -38,6 +45,7 @@ export class RustExchangeService {
     riskPence: number;
     limitYesPts: number;
     timeInForce?: 'GTC' | 'IOC';
+    reduceOnly?: boolean;
   }): Promise<RustOrderResponse> {
     try {
       const requestBody: RustOrderRequest = {
@@ -46,6 +54,7 @@ export class RustExchangeService {
         risk_pence: params.riskPence,
         limit_yes_pts: params.limitYesPts,
         time_in_force: params.timeInForce || 'GTC',
+        ...(params.reduceOnly ? { reduce_only: true } : {}),
       };
 
       this.logger.debug('Submitting order to Rust exchange', { requestBody });
@@ -69,6 +78,70 @@ export class RustExchangeService {
         response: error.response?.data,
         status: error.response?.status,
       });
+      throw new Error(`Rust exchange error: ${error.response?.data?.error || error.message}`);
+    }
+  }
+
+  /**
+   * Cancel an order via Rust exchange
+   */
+  async cancelOrder(params: {
+    orderId: string;
+    userId: string;
+  }): Promise<RustCancelOrderResponse> {
+    const cancelUrl = `${this.rustExchangeUrl}/api/orders/${params.orderId}`;
+    const headers = {
+      'X-User-Id': params.userId,
+    };
+
+    try {
+      const response = await axios.delete<RustCancelOrderResponse>(
+        cancelUrl,
+        {
+          headers,
+          timeout: 5000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      // Compatibility fallback for older deployments that exposed POST cancel route.
+      if (error.response?.status === 404) {
+        const legacyCancelUrl = `${this.rustExchangeUrl}/api/orders/${params.orderId}/cancel`;
+        try {
+          const legacyResponse = await axios.post<RustCancelOrderResponse>(
+            legacyCancelUrl,
+            undefined,
+            {
+              headers,
+              timeout: 5000,
+            },
+          );
+          this.logger.warn('Used legacy Rust cancel endpoint', {
+            orderId: params.orderId,
+            legacyCancelUrl,
+          });
+          return legacyResponse.data;
+        } catch {
+          // Fall through to structured error below.
+        }
+      }
+
+      this.logger.error('Failed to cancel order on Rust exchange', {
+        orderId: params.orderId,
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        cancelUrl,
+      });
+
+      if (error.response?.status === 404) {
+        throw new Error(
+          `Rust exchange cancel endpoint not found at ${cancelUrl}. ` +
+          `Restart rust-exchange from current code and verify RUST_EXCHANGE_URL.`
+        );
+      }
+
       throw new Error(`Rust exchange error: ${error.response?.data?.error || error.message}`);
     }
   }

@@ -233,16 +233,27 @@ export class LiquidityBotsService {
     const orderIds = bot.liveOrders.map(o => o.id);
     bot.liveOrders = [];
     
+    if (orderIds.length === 0) {
+      return;
+    }
+
     for (const orderId of orderIds) {
       try {
-        // Call Rust exchange cancel endpoint (would need to be implemented)
-        // For now, just mark orders as cancelled in DB
-        await this.databaseService.query(
-          `UPDATE orders SET status = 'CANCELLED' WHERE id = $1`,
-          [orderId]
-        );
+        await axios.delete(`${this.RUST_EXCHANGE_URL}/api/orders/${orderId}`, {
+          timeout: 5000,
+          headers: {
+            'X-User-Id': bot.userId,
+          },
+        });
       } catch (error) {
-        this.logger.warn(`Failed to cancel bot order ${orderId}:`, error);
+        if (axios.isAxiosError(error) && error.response) {
+          this.logger.warn(`Failed to cancel bot order ${orderId} via Rust exchange`, {
+            status: error.response.status,
+            data: error.response.data,
+          });
+        } else {
+          this.logger.warn(`Failed to cancel bot order ${orderId}:`, error);
+        }
       }
     }
   }

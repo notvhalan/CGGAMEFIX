@@ -1,5 +1,7 @@
 use tokio::sync::mpsc;
 use sqlx::PgPool;
+use sqlx::types::BigDecimal;
+use std::str::FromStr;
 use crate::types::*;
 use crate::wallet::WalletService;
 use crate::websocket::{WsBroadcaster, WsMessage};
@@ -168,6 +170,55 @@ impl ClearingService {
                         fill.qty_micros,
                     )
                     .await?;
+
+                // Write position close to wallet ledger_entries
+                let yes_notional_pence = calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts);
+                let cashflow_pence: i64 = match taker_order.side {
+                    Side::SellYes => yes_notional_pence,
+                    Side::BuyYes => -(yes_notional_pence as i64),
+                };
+                let wallet_row = sqlx::query!(
+                    r#"SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = 'GBP'"#,
+                    taker_order.user_id
+                )
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some(w) = wallet_row {
+                    let (debit, credit) = if cashflow_pence >= 0 {
+                        let c = BigDecimal::from_str(&format!("{:.2}", cashflow_pence as f64 / 100.0)).unwrap_or_default();
+                        (BigDecimal::from_str("0.00").unwrap_or_default(), c)
+                    } else {
+                        let d = BigDecimal::from_str(&format!("{:.2}", (-cashflow_pence) as f64 / 100.0)).unwrap_or_default();
+                        (d, BigDecimal::from_str("0.00").unwrap_or_default())
+                    };
+                    let side_label = match taker_order.side { Side::SellYes => "SELL", Side::BuyYes => "BUY" };
+                    let close_desc = format!(
+                        "Position close - {} YES at {:.4}%",
+                        side_label,
+                        fill.exec_yes_pts as f64 / 100_000.0
+                    );
+                    sqlx::query!(
+                        r#"
+                        INSERT INTO ledger_entries
+                            (id, user_id, wallet_id, entry_type, debit, credit, balance, reference_id, reference_type, description, created_at)
+                        VALUES
+                            (gen_random_uuid(), $1, $2, 'POSITION_CLOSE', $3, $4, $5, $6, 'TRADE', $7, NOW())
+                        "#,
+                        taker_order.user_id,
+                        w.id,
+                        debit,
+                        credit,
+                        w.balance,
+                        fill.trade_id,
+                        close_desc
+                    )
+                    .execute(&mut *tx)
+                    .await?;
+                    tracing::info!(
+                        "Ledger: POSITION_CLOSE trade={} user={} cashflow={}p",
+                        fill.trade_id, taker_order.user_id, cashflow_pence
+                    );
+                }
             } else {
                 self.wallet
                     .settle_fill(
@@ -435,6 +486,28 @@ impl ClearingService {
                 let would_remain = lot.qty_remaining_micros - close_qty;
                 if would_remain > 0 && would_remain < DUST_THRESHOLD {
                     close_qty = lot.qty_remaining_micros;
+                    // Record the snapped dust as fee revenue
+                    let dust_fee_pence = (calculate_risk_buyyes(would_remain, exec_yes_pts)).max(1) as i32;
+                    if let Err(e) = sqlx::query!(
+                        r#"
+                        INSERT INTO fee_revenue
+                            (id, trade_id, market_id, maker_fee_pence, taker_fee_pence)
+                        VALUES
+                            (gen_random_uuid(), $1, $2, 0, $3)
+                        "#,
+                        trade_id,
+                        market_id,
+                        dust_fee_pence
+                    )
+                    .execute(&mut **tx)
+                    .await {
+                        tracing::warn!("Failed to write dust fee to fee_revenue: {}", e);
+                    } else {
+                        tracing::info!(
+                            "Dust fee: {} micros snapped → {} pence in fee_revenue (trade={})",
+                            would_remain, dust_fee_pence, trade_id
+                        );
+                    }
                 }
                 let updated = sqlx::query!(
                     r#"

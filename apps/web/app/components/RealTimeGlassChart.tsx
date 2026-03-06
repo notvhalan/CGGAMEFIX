@@ -171,8 +171,7 @@ const RealTimeGlassChart = () => {
       <div className="glass-card" style={{ width: "100%", maxWidth: "800px", padding: "2rem" }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '0.5rem' }}>
           <div>
-            <span style={{ color: '#00f2ea', fontWeight: 'bold', fontSize: '1.1rem' }}>Man Utd vs Chelsea</span>
-            <span style={{ color: '#8b949e', fontSize: '0.8rem', marginLeft: '10px' }}>MU TO WIN BY FULL TIME</span>
+            <span style={{ color: '#00f2ea', fontWeight: 'bold', fontSize: '1.1rem' }}>P(Richter CAT 8 Tsunami before 29/11/2026)</span>
           </div>
           <div style={{ color: '#00f2ea', fontFamily: 'monospace' }}>
             Loading...
@@ -196,8 +195,7 @@ const RealTimeGlassChart = () => {
          paddingBottom: '0.4rem' 
        }}>
           <div>
-            <span style={{ color: '#00f2ea', fontWeight: 'bold', fontSize: '1.1rem' }}>Man Utd vs Chelsea</span>
-            <span style={{ color: '#8b949e', fontSize: '0.8rem', marginLeft: '10px' }}>MU TO WIN BY FULL TIME</span>
+            <span style={{ color: '#00f2ea', fontWeight: 'bold', fontSize: '1.1rem' }}>P(Richter CAT 8 Tsunami before 29/11/2026)</span>
           </div>
           <div style={{ color: '#00f2ea', fontFamily: 'monospace', fontSize: '1.1rem' }}>
             {lastCandleRef.current.y[3].toFixed(2)}%
@@ -210,19 +208,6 @@ const RealTimeGlassChart = () => {
         type="candlestick"
         height={320}
       />
-      
-      {/* Bottom text */}
-      <div style={{ 
-        marginTop: '0.75rem', 
-        paddingTop: '0.75rem', 
-        borderTop: '1px solid rgba(255,255,255,0.1)',
-        textAlign: 'center',
-        color: '#8b949e',
-        fontSize: '0.875rem',
-        lineHeight: '1.5'
-      }}>
-        Democratizing gambling with <span style={{ color: '#58a6ff', fontWeight: 800 }}>zero transaction fees</span>. Choose your odds, buy/sell positions, and cash out on your terms.
-      </div>
     </div>
   );
 };

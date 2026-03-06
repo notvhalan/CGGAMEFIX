@@ -1,0 +1,314 @@
+/* ─── Survival Market Model section ──────────────────────────── */
+
+.smm-section {
+  padding: 72px 20px;
+  background:
+    radial-gradient(1200px 700px at 12% 0%, rgba(88, 166, 255, 0.08), transparent 55%),
+    radial-gradient(900px 600px at 88% 10%, rgba(63, 185, 80, 0.05), transparent 50%);
+}
+
+.smm-container {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* Header */
+.smm-header {
+  max-width: 760px;
+  margin: 0 auto 72px;
+  text-align: center;
+}
+
+.smm-badge {
+  display: inline-block;
+  padding: 6px 14px;
+  color: #58a6ff;
+  font-size: 13px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+  letter-spacing: 0.5px;
+}
+
+.smm-title {
+  font-size: 38px;
+  margin: 0 0 14px;
+  color: #e6edf3;
+  letter-spacing: -0.6px;
+}
+
+.smm-intro {
+  font-size: 16px;
+  line-height: 1.8;
+  color: rgba(230, 237, 243, 0.76);
+  margin: 0 0 36px;
+}
+
+/* Cards */
+.smm-card {
+  padding: 0 0 30px;
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+
+.smm-card-sm {
+  padding: 0 0 24px;
+}
+
+.smm-card-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 24px;
+}
+
+.smm-card h3 {
+  font-size: 24px;
+  margin: 0 0 18px;
+  color: #e6edf3;
+}
+
+.smm-card p {
+  font-size: 15px;
+  line-height: 1.8;
+  color: rgba(230, 237, 243, 0.78);
+  margin: 0 0 18px;
+}
+
+.smm-card p:last-of-type {
+  margin-bottom: 0;
+}
+
+/* Alternating paired rows */
+.smm-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 56px;
+  align-items: center;
+  margin-bottom: 72px;
+}
+
+/* Flip: image moves to the left by reversing order */
+.smm-row-flip .smm-row-media { order: -1; }
+
+.smm-row-text h3 {
+  font-size: 26px;
+  margin: 0 0 16px;
+  color: #e6edf3;
+  letter-spacing: -0.4px;
+}
+
+.smm-row-text p {
+  font-size: 15px;
+  line-height: 1.85;
+  color: rgba(230, 237, 243, 0.78);
+  margin: 0 0 18px;
+}
+
+.smm-row-text p:last-of-type { margin-bottom: 0; }
+
+.smm-row-media img {
+  width: 100%;
+  display: block;
+  border-radius: 12px;
+  object-fit: contain;
+}
+
+/* Math blocks */
+.smm-math-block {
+  margin: 20px 0;
+  padding: 4px 0;
+}
+
+.smm-math-block .katex-display {
+  margin: 6px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* KaTeX color overrides for dark theme */
+.smm-section .katex {
+  color: #e6edf3;
+  font-size: 1.1em;
+}
+
+/* Muted separator equation (Y+N=1, P+Q=1) — last child of a block */
+.smm-math-block > :last-child .katex {
+  color: rgba(230, 237, 243, 0.55);
+}
+
+/* Green equations (hazard rate rows) */
+.smm-row:last-of-type .smm-math-block:first-of-type .katex,
+.smm-math-block--green .katex {
+  color: #3fb950;
+}
+
+/* Inline highlight spans */
+.smm-blue  { color: #58a6ff; }
+.smm-green { color: #3fb950; }
+
+/* Life insurance example panel */
+.smm-example-badge {
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: #58a6ff;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.smm-example-title {
+  font-size: 22px;
+  margin: 0 0 12px;
+  color: #e6edf3;
+}
+
+.smm-example-desc {
+  font-size: 14px;
+  line-height: 1.7;
+  color: rgba(230, 237, 243, 0.76);
+  margin: 0 0 14px;
+}
+
+.smm-price-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.smm-price-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.smm-price-label { color: #e6edf3; font-size: 14px; }
+.smm-price-yes   { color: #3fb950; font-weight: 700; font-size: 14px; }
+.smm-price-no    { color: #ff7b72; font-weight: 700; font-size: 14px; }
+
+/* Life insurance worked example — full-width band */
+.smm-example-row {
+  margin-bottom: 72px;
+  padding: 36px 40px;
+  background: rgba(88, 166, 255, 0.04);
+  border-radius: 16px;
+}
+
+.smm-example-row h3 {
+  font-size: 22px;
+  margin: 0 0 16px;
+  color: #e6edf3;
+  letter-spacing: -0.3px;
+}
+
+.smm-example-row p {
+  font-size: 15px;
+  line-height: 1.85;
+  color: rgba(230, 237, 243, 0.78);
+  margin: 0 0 16px;
+}
+
+.smm-example-row p:last-of-type { margin-bottom: 0; }
+
+/* Survival term structure table */
+.smm-survival-table {
+  margin: 20px 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(240, 246, 252, 0.07);
+  max-width: 520px;
+}
+
+.smm-survival-header {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px;
+  padding: 10px 18px;
+  background: rgba(22, 27, 34, 0.6);
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: rgba(230, 237, 243, 0.45);
+}
+
+.smm-survival-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px;
+  padding: 13px 18px;
+  align-items: center;
+  border-top: 1px solid rgba(240, 246, 252, 0.06);
+  transition: background 0.15s;
+}
+
+.smm-survival-row:hover {
+  background: rgba(88, 166, 255, 0.05);
+}
+
+.smm-survival-label {
+  font-size: 14px;
+  color: #e6edf3;
+}
+
+.smm-yes-col {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: #3fb950;
+  text-align: right;
+}
+
+.smm-no-col {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: #ff7b72;
+  text-align: right;
+}
+
+/* Interpretation mini-cards */
+.smm-interp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  margin-bottom: 48px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(240, 246, 252, 0.07);
+}
+
+.smm-interp-card {
+  padding: 0;
+}
+
+.smm-interp-card h4 {
+  font-size: 18px;
+  margin: 0 0 10px;
+  color: #e6edf3;
+}
+
+.smm-interp-card p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: rgba(230, 237, 243, 0.72);
+}
+
+/* Abstract */
+.smm-abstract {
+  padding: 0;
+  margin-top: 8px;
+}
+
+.smm-abstract h4 {
+  font-size: 16px;
+  margin: 0 0 10px;
+  color: #e6edf3;
+}
+
+.smm-abstract p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.75;
+  color: rgba(230, 237, 243, 0.76);
+}

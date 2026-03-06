@@ -203,17 +203,26 @@ export default function MarketDetail() {
   const marketStats = useMemo(() => {
     if (trades.length === 0) return null;
     
-    const sortedTrades = [...trades].sort((a, b) => 
+    const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
+    const trades24h = trades.filter((t: any) => new Date(t.executed_at).getTime() >= cutoff24h);
+
+    const sorted24h = [...trades24h].sort((a: any, b: any) =>
       new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
     );
+
+    // Price change vs 24h ago (fall back to all-time first if no 24h trades)
+    const allSorted = [...trades].sort((a: any, b: any) =>
+      new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
+    );
+    const lastPrice = allSorted[allSorted.length - 1].yes_pts;
+    const firstPrice24h = sorted24h[0]?.yes_pts ?? lastPrice;
+    const priceChange = lastPrice - firstPrice24h;
+    const priceChangePercent = firstPrice24h > 0
+      ? ((priceChange / firstPrice24h) * 100).toFixed(2)
+      : '0.00';
     
-    const lastPrice = sortedTrades[sortedTrades.length - 1].yes_pts;
-    const firstPrice = sortedTrades[0]?.yes_pts || lastPrice;
-    const priceChange = lastPrice - firstPrice;
-    const priceChangePercent = ((priceChange / firstPrice) * 100).toFixed(2);
-    
-    // 24h volume (sum cost_pence)
-    const volume24h = trades.reduce((sum, t) => sum + t.cost_pence, 0);
+    // 24h volume: only trades within the last 24 hours, converted pence → pounds
+    const volume24h = trades24h.reduce((sum: number, t: any) => sum + (Number(t.cost_pence) / 100), 0);
     
     // Spread calculation
     const bestBid = orderBook.bids?.[0]?.pPts || 0;
@@ -226,7 +235,7 @@ export default function MarketDetail() {
       priceChangePercent: parseFloat(priceChangePercent),
       volume24h,
       spread,
-      numTrades: trades.length,
+      numTrades: trades24h.length,
     };
   }, [trades, orderBook]);
 

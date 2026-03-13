@@ -435,8 +435,10 @@ export default function Login() {
         {/* Footer Links */}
         <div style={{ 
           display: 'flex', 
+          flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
+          gap: '1rem',
           paddingTop: '1.5rem',
           borderTop: '1px solid rgba(255, 255, 255, 0.1)'
         }}>
@@ -459,6 +461,21 @@ export default function Login() {
             </svg>
             Back to home
           </Link>
+          <a
+            href="https://carvum.shop"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              color: '#484f58',
+              fontSize: '0.75rem',
+              textDecoration: 'none',
+              transition: 'color 0.2s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.color = '#8b949e'}
+            onMouseLeave={(e) => e.currentTarget.style.color = '#484f58'}
+          >
+            Made by Carvum
+          </a>
         </div>
       </div>
     </div>

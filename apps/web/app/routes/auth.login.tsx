@@ -466,15 +466,34 @@ export default function Login() {
             target="_blank"
             rel="noopener noreferrer"
             style={{
-              color: '#484f58',
-              fontSize: '0.75rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              color: '#8b949e',
+              fontSize: '0.8125rem',
+              fontWeight: 500,
               textDecoration: 'none',
-              transition: 'color 0.2s'
+              padding: '0.375rem 0.875rem',
+              borderRadius: '999px',
+              border: '1px solid rgba(139, 148, 158, 0.25)',
+              background: 'rgba(139, 148, 158, 0.06)',
+              transition: 'color 0.2s, border-color 0.2s, background 0.2s'
             }}
-            onMouseEnter={(e) => e.currentTarget.style.color = '#8b949e'}
-            onMouseLeave={(e) => e.currentTarget.style.color = '#484f58'}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#58a6ff';
+              e.currentTarget.style.borderColor = 'rgba(88, 166, 255, 0.4)';
+              e.currentTarget.style.background = 'rgba(88, 166, 255, 0.08)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = '#8b949e';
+              e.currentTarget.style.borderColor = 'rgba(139, 148, 158, 0.25)';
+              e.currentTarget.style.background = 'rgba(139, 148, 158, 0.06)';
+            }}
           >
-            Made by Carvum
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" opacity="0.7">
+              <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>
+            </svg>
+            Made by <strong style={{ color: 'inherit', fontWeight: 700 }}>Carvum</strong>
           </a>
         </div>
       </div>

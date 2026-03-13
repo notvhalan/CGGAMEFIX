@@ -216,7 +216,7 @@ export default function About() {
         </div>
 
         {/* BACK TO HOME */}
-        <div style={{ paddingBottom: 40, textAlign: "center" }}>
+        <div style={{ paddingBottom: 40, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
           <Link
             to="/"
             style={{
@@ -234,6 +234,35 @@ export default function About() {
           >
             ← Back to home
           </Link>
+          <a
+            href="https://carvum.shop"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              color: '#8b949e',
+              fontSize: '0.8125rem',
+              fontWeight: 500,
+              textDecoration: 'none',
+              padding: '0.375rem 0.875rem',
+              borderRadius: '999px',
+              border: '1px solid rgba(139, 148, 158, 0.2)',
+              background: 'rgba(139, 148, 158, 0.05)',
+              transition: 'color 0.2s, border-color 0.2s'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#58a6ff';
+              e.currentTarget.style.borderColor = 'rgba(88, 166, 255, 0.35)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = '#8b949e';
+              e.currentTarget.style.borderColor = 'rgba(139, 148, 158, 0.2)';
+            }}
+          >
+            Made by <strong style={{ fontWeight: 700, marginLeft: '0.2rem' }}>Carvum</strong>
+          </a>
         </div>
       </Container>
     </div>

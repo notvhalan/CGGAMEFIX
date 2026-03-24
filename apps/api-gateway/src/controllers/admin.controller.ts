@@ -567,4 +567,162 @@ export class AdminController {
       throw error;
     }
   }
+
+  /**
+   * Bulk-create insurance contracts for a given category
+   */
+  @Post('insurance/bulk-create')
+  async bulkCreateInsuranceContracts(
+    @Body() body: {
+      slug: string;
+      count: number;
+      startOffsetDays: number;
+      spacingDays: number;
+      customName?: string;
+      conditionName?: string;
+    },
+    @Req() req: FastifyRequest & { session: any },
+  ) {
+    const userId = req.session?.userId;
+    if (!userId) {
+      throw new UnauthorizedException('Not authenticated');
+    }
+
+    await this.checkAdminAccess(userId);
+
+    const { slug, count = 6, startOffsetDays = 30, spacingDays = 30, customName, conditionName } = body;
+    if (!slug) {
+      throw new Error('slug is required');
+    }
+
+    // Look up the insurance category
+    const catResult = await this.databaseService.query<{
+      slug: string; title: string; question_template: string; condition_name: string;
+      settlement_source: string; oracle: string; base_yes_pts: number;
+    }>(
+      `SELECT slug, title, question_template, condition_name, settlement_source, oracle, base_yes_pts
+       FROM insurance_categories WHERE slug = $1 AND active = true`,
+      [slug],
+    );
+
+    if (catResult.rows.length === 0) {
+      throw new Error(`Insurance category '${slug}' not found or inactive`);
+    }
+
+    const cat = catResult.rows[0];
+    const created: string[] = [];
+
+    // Elegant contract series names per category
+    const CONTRACT_SERIES: Record<string, string> = {
+      life:        'Mortality Risk Index',
+      health:      'Critical Illness Tracker',
+      climate:     'Climate Risk Benchmark',
+      agriculture: 'Harvest Yield Contract',
+      liability:   'Liability Exposure Index',
+      travel:      'Travel Disruption Cover',
+    };
+
+    for (let i = 0; i < count; i++) {
+      const maturity = new Date();
+      maturity.setDate(maturity.getDate() + startOffsetDays + i * spacingDays);
+      const maturityStr = maturity.toISOString();
+      const dateLabel = maturity.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      const shortDate  = maturity.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+
+      const seriesName = CONTRACT_SERIES[slug] ?? cat.title;
+      const seriesIndex = String(i + 1).padStart(2, '0');
+      let name: string;
+      let question: string;
+      if (customName?.trim()) {
+        const resolved = customName.trim().replace(/\{date\}/gi, dateLabel);
+        name = `${resolved} [#${seriesIndex}]`;
+        question = resolved;
+      } else {
+        name = `${seriesName} · ${shortDate} [#${seriesIndex}]`;
+        question = cat.question_template.replace(/\{date\}/g, dateLabel);
+      }
+
+      const result = await this.databaseService.query<{ id: string }>(
+        `INSERT INTO markets (
+           name, description, type, status, event_id, outcomes,
+           start_time, end_time, min_stake, max_stake,
+           market_category, insurance_category, condition_name, question,
+           maturity_date, settlement_source, oracle, base_yes_pts, sort_order
+         ) VALUES (
+           $1, $2, 'BINARY', 'ACTIVE', uuid_generate_v4(), '{YES,NO}',
+           NOW(), $3::timestamptz, 1.00, 1000.00,
+           'INSURANCE', $4, $5, $6,
+           $3::timestamptz, $7, $8, $9, $10
+         ) RETURNING id`,
+        [
+          name,
+          question,
+          maturityStr,
+          slug,
+          conditionName?.trim() || cat.condition_name,
+          question,
+          cat.settlement_source,
+          cat.oracle,
+          cat.base_yes_pts,
+          i + 1,
+        ],
+      );
+
+      created.push(result.rows[0].id);
+    }
+
+    this.logger.info(`Admin ${userId} created ${created.length} insurance contracts for category '${slug}'`);
+
+    return {
+      success: true,
+      message: `Created ${created.length} insurance contracts for '${cat.title}'`,
+      marketIds: created,
+    };
+  }
+
+  /**
+   * Delete insurance contracts by category and optional condition name
+   */
+  @Post('insurance/delete-group')
+  async deleteInsuranceContracts(
+    @Body() body: { slug: string; conditionName?: string },
+    @Req() req: FastifyRequest & { session: any },
+  ) {
+    const userId = req.session?.userId;
+    if (!userId) throw new UnauthorizedException('Not authenticated');
+    await this.checkAdminAccess(userId);
+
+    const { slug, conditionName } = body;
+    if (!slug) throw new Error('slug is required');
+
+    let result: { rows: { count: string }[] };
+    if (conditionName?.trim()) {
+      result = await this.databaseService.query<{ count: string }>(
+        `WITH deleted AS (
+           DELETE FROM markets
+           WHERE market_category = 'INSURANCE'
+             AND insurance_category = $1
+             AND condition_name = $2
+             AND status IN ('ACTIVE', 'PENDING')
+           RETURNING id
+         ) SELECT COUNT(*)::text AS count FROM deleted`,
+        [slug, conditionName.trim()],
+      );
+    } else {
+      result = await this.databaseService.query<{ count: string }>(
+        `WITH deleted AS (
+           DELETE FROM markets
+           WHERE market_category = 'INSURANCE'
+             AND insurance_category = $1
+             AND status IN ('ACTIVE', 'PENDING')
+           RETURNING id
+         ) SELECT COUNT(*)::text AS count FROM deleted`,
+        [slug],
+      );
+    }
+
+    const deleted = Number(result.rows[0]?.count ?? 0);
+    this.logger.info(`Admin ${userId} deleted ${deleted} insurance contracts for '${slug}'${conditionName ? ` / '${conditionName}'` : ''}`);
+    return { success: true, deleted, message: `Deleted ${deleted} insurance contract${deleted !== 1 ? 's' : ''}` };
+  }
 }

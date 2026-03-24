@@ -87,6 +87,11 @@ pub struct MatchCommand {
     pub limit_yes_pts: i64,
     pub qty_micros: i64,
     pub time_in_force: TimeInForce,
+    /// For IOC (market) orders: the user's budget in pence.
+    /// When set, the matching engine fills by budget rather than
+    /// by a fixed contract quantity, so the full stake is utilised
+    /// even when fills happen at better-than-limit prices.
+    pub ioc_budget_pence: Option<i64>,
 }
 
 /// Cancel command sent to matching engine

@@ -59,6 +59,12 @@ export class CashoutController {
     @Req() req: FastifyRequest & { session: any },
   ) {
     try {
+      this.logger.info(`[quote] session debug`, {
+        hasSession: !!req.session,
+        sessionId: req.session?.sessionId,
+        userId: req.session?.userId,
+        cookieHeader: req.headers?.cookie?.substring(0, 120),
+      });
       const userId = req.session?.userId;
       if (!userId) {
         throw new UnauthorizedException('User not authenticated');
@@ -156,6 +162,8 @@ export class CashoutController {
       netContractsMicros: string;
       maxSlippagePts?: number;
       lotIds?: string[]; // Optional: target specific lots instead of FIFO
+      closeMode?: 'ioc' | 'limit'; // Default IOC (market). Limit = IOC at user-specified price.
+      limitYesPts?: number; // YES price in pts (7dp) when closeMode='limit'
     },
     @Req() req: FastifyRequest & { session: any },
   ) {
@@ -264,12 +272,25 @@ export class CashoutController {
         }
       }
 
-      // Use aggressive but valid price bounds accepted by Rust exchange.
-      // SELL_YES (closing long YES) uses the lowest allowed YES price.
-      // BUY_YES (closing short YES) uses the highest allowed YES price.
+      // Determine limit price.
+      // In 'limit' mode the user provides an explicit YES price.
+      // In default IOC (market) mode we use aggressive bounds so the order
+      // sweeps the entire book: sell at MIN_PRICE, buy at MAX_PRICE.
       const MIN_PRICE_PTS = 10_000; // 0.1%
       const MAX_PRICE_PTS = 9_990_000; // 99.9%
-      const yesPts = closeSide === OrderSide.FOR ? MAX_PRICE_PTS : MIN_PRICE_PTS;
+
+      let yesPts: number;
+      if (body.closeMode === 'limit' && body.limitYesPts != null) {
+        yesPts = body.limitYesPts;
+        // Clamp to valid range
+        if (yesPts < MIN_PRICE_PTS) yesPts = MIN_PRICE_PTS;
+        if (yesPts > MAX_PRICE_PTS) yesPts = MAX_PRICE_PTS;
+        this.logger.info(`Limit close: user-specified yesPts=${yesPts}`);
+      } else {
+        // SELL_YES (closing long YES) uses the lowest allowed YES price.
+        // BUY_YES (closing short YES) uses the highest allowed YES price.
+        yesPts = closeSide === OrderSide.FOR ? MAX_PRICE_PTS : MIN_PRICE_PTS;
+      }
 
       // Calculate max liability (max possible loss on this order)
       // For LAY: max loss is if YES wins, we pay (PRICE_SCALE - yesPts) per contract
@@ -279,23 +300,28 @@ export class CashoutController {
         : yesPts;
       const maxLiabilityPence = Number((BigInt(maxLossPerContract) * closeContractsMicros * BigInt(CONTRACT_PAYOUT_PENCE)) / (BigInt(PRICE_SCALE) * BigInt(CONTRACT_SCALE)));
 
-      if (maxLiabilityPence < 100) {
-        throw new Error('Close size is below minimum order risk (GBP 1.00)');
-      }
+      // For reduce_only orders Rust reserves 0 pence — riskPence is only used
+      // to size the order row, so allow any non-zero amount through.
+      // Floor to at least 1 so the Rust side doesn't reject a zero-risk order.
+      const effectiveLiability = Math.max(maxLiabilityPence, 1);
 
       const rustResponse = await this.rustExchange.submitOrder({
         marketId,
         userId,
         side: closeSide as 'BUY_YES' | 'SELL_YES',
-        riskPence: maxLiabilityPence,
+        riskPence: effectiveLiability,
         limitYesPts: yesPts,
         timeInForce: 'IOC',
         reduceOnly: true,
       });
 
       this.logger.info(
-        `Close order submitted via Rust exchange: ${rustResponse.order_id}, IOC, ${closeSide}, risk=${maxLiabilityPence}p`
+        `Close order submitted via Rust exchange: ${rustResponse.order_id}, IOC, ${closeSide}, risk=${effectiveLiability}p`
       );
+
+      // Wallet settlement, trade_settlements rows, and ledger entries are all
+      // handled by the Rust exchange inside its clearing transaction.
+      // Nothing else to do here.
 
       return {
         success: true,

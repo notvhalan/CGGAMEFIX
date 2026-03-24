@@ -65,6 +65,8 @@ interface CashoutExecuteRequest {
   netContractsMicros: string;
   maxSlippagePts: number;
   lotIds?: string[];
+  closeMode?: 'ioc' | 'limit';
+  limitYesPts?: number;
 }
 
 interface InlineNotice {
@@ -74,7 +76,6 @@ interface InlineNotice {
 
 export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, marketId, orderBook }: PositionsModalProps) {
   const [closeMode, setCloseMode] = useState<'ioc' | 'limit'>('ioc');
-  const [slippage, setSlippage] = useState(0.25);
   const [limitPrice, setLimitPrice] = useState('');
   const [sizeMode, setSizeMode] = useState<'all' | 'partial'>('all');
   const [partialPercent, setPartialPercent] = useState(100);
@@ -375,7 +376,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const groupedSellPositions = groupPositions(canonicalSellRows);
 
   const executeCashoutRequest = useCallback(async (requestBody: CashoutExecuteRequest) => {
-    console.log('[Cashout] Executing IOC close with body:', requestBody);
+    console.log('[Cashout] Executing close with body:', requestBody);
     setExecutingCashout(true);
     try {
       const apiUrl = getApiUrl();
@@ -417,19 +418,49 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     }
   }, [onCashoutSuccess, fetchCashoutQuote]);
 
+  // Apply partial percent to a bigint quantity, rounding to nearest tick (1000 micros = 0.001 ctr).
+  const applyPartial = (qty: bigint): bigint => {
+    if (sizeMode !== 'partial' || partialPercent >= 100) return qty;
+    const pct = Math.max(1, Math.min(100, partialPercent));
+    const abs = qty < 0n ? -qty : qty;
+    const sign = qty < 0n ? -1n : 1n;
+    let scaled = (abs * BigInt(pct)) / 100n;
+    // Round to nearest 1000 micros (0.001 contracts) to avoid dust
+    const TICK = 1000n;
+    scaled = ((scaled + TICK / 2n) / TICK) * TICK;
+    if (scaled < TICK) scaled = TICK; // minimum 0.001 contracts
+    return sign * scaled;
+  };
+
+  // Build common limit fields when in limit mode.
+  const buildLimitFields = (): Pick<CashoutExecuteRequest, 'closeMode' | 'limitYesPts'> => {
+    if (closeMode !== 'limit' || !limitPrice) return {};
+    const pricePct = parseFloat(limitPrice);
+    if (Number.isNaN(pricePct) || pricePct <= 0 || pricePct >= 100) return {};
+    return { closeMode: 'limit', limitYesPts: Math.round(pricePct * 100_000) };
+  };
+
   // Submit full-position close immediately (no browser popup/confirm).
   const handleCashout = async () => {
     console.log('[Cashout] Button clicked, cashoutQuote:', cashoutQuote);
 
-    if (!cashoutQuote || !cashoutQuote.success) {
+    if (closeMode === 'limit') {
+      const pricePct = parseFloat(limitPrice);
+      if (Number.isNaN(pricePct) || pricePct <= 0 || pricePct >= 100) {
+        setInlineNotice({ type: 'error', message: 'Enter a valid limit price between 0 and 100%.' });
+        return;
+      }
+    } else if (!cashoutQuote || !cashoutQuote.success) {
       console.error('[Cashout] No valid quote available');
       setInlineNotice({ type: 'error', message: 'No valid quote available yet.' });
       return;
     }
+    const qty = applyPartial(netContractsMicros);
     await executeCashoutRequest({
       marketId,
-      netContractsMicros: netContractsMicros.toString(),
+      netContractsMicros: qty.toString(),
       maxSlippagePts: 100000,
+      ...buildLimitFields(),
     });
   };
 
@@ -440,15 +471,24 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     totalContractsMicros: bigint,
     positions: any[]
   ) => {
-    const quote = groupQuotes.get(groupKey);
-    if (!quote || !quote.success) {
-      setInlineNotice({ type: 'error', message: 'No valid quote for this group. Get quote first.' });
-      return;
+    if (closeMode === 'limit') {
+      const pricePct = parseFloat(limitPrice);
+      if (Number.isNaN(pricePct) || pricePct <= 0 || pricePct >= 100) {
+        setInlineNotice({ type: 'error', message: 'Enter a valid limit price between 0 and 100%.' });
+        return;
+      }
+    } else {
+      const quote = groupQuotes.get(groupKey);
+      if (!quote || !quote.success) {
+        setInlineNotice({ type: 'error', message: 'No valid quote for this group. Get quote first.' });
+        return;
+      }
     }
     const abs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
     // BUY_YES lots are closed by selling → positive micros (SELL_YES order)
     // SELL_YES lots are closed by buying → negative micros (BUY_YES order)
-    const signed = side === 'BUY_YES' ? abs : -abs;
+    const fullSigned = side === 'BUY_YES' ? abs : -abs;
+    const signed = applyPartial(fullSigned);
     // Collect lot IDs so the server targets these specific lots instead of FIFO
     const lotIds = positions
       .map((p: any) => p.lotId)
@@ -458,6 +498,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
       netContractsMicros: signed.toString(),
       maxSlippagePts: 100000,
       ...(lotIds.length > 0 ? { lotIds } : {}),
+      ...buildLimitFields(),
     });
   };
 
@@ -502,6 +543,46 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
   const buyAgg = buildSideAggregate(canonicalBuyRows, 'BUY_YES');
   const sellAgg = buildSideAggregate(canonicalSellRows, 'SELL_YES');
+
+  // Compute PnL for a single position group.
+  // BUY YES: you paid `cost`, close value is what you receive when selling.
+  // SELL YES: you received `cost`, close value is what you pay to buy back.
+  // Uses the cashout quote for the group if one has been fetched; otherwise
+  // falls back to theoretical mark-to-market (contracts × markPercent pence).
+  const calcSidePnl = (
+    side: 'BUY_YES' | 'SELL_YES',
+    contracts: number,
+    cost: number,
+    quoteKey: string
+  ): number => {
+    const q = groupQuotes.get(quoteKey);
+    const closeVal =
+      q && q.success
+        ? Math.abs(Number(q.netValuePence))
+        : contracts * markPercent; // pence at mark price
+    return side === 'BUY_YES' ? closeVal - cost : cost - closeVal;
+  };
+
+  // Total unrealized PnL = BUY_YES PnL + SELL_YES PnL (computed independently).
+  // This is correct regardless of whether the net position is long, short, or mixed.
+  const computedUnrealizedPnlPence = Math.round(
+    (buyAgg
+      ? calcSidePnl(
+          'BUY_YES',
+          Number(buyAgg.totalContractsMicros) / 1_000_000,
+          buyAgg.totalSizePence,
+          buyAgg.key
+        )
+      : 0) +
+    (sellAgg
+      ? calcSidePnl(
+          'SELL_YES',
+          Number(sellAgg.totalContractsMicros) / 1_000_000,
+          sellAgg.totalSizePence,
+          sellAgg.key
+        )
+      : 0)
+  );
 
   const aggregatedRows: SideAgg[] = ([buyAgg, sellAgg] as (SideAgg | null)[]).filter((agg): agg is SideAgg => {
     if (!agg) return false;
@@ -635,10 +716,10 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
           <div>
             <span style={{ color: '#8b949e' }}>Unrealized P&L:</span>{' '}
             <span style={{ 
-              color: unrealizedPnlPence >= 0 ? '#3fb950' : '#f85149',
+              color: computedUnrealizedPnlPence >= 0 ? '#3fb950' : '#f85149',
               fontWeight: 700
             }}>
-              {unrealizedPnlPence >= 0 ? '+' : ''}{formatPence(unrealizedPnlPence)}
+              {computedUnrealizedPnlPence >= 0 ? '+' : ''}{formatPence(computedUnrealizedPnlPence)}
             </span>
           </div>
           <div style={{ marginLeft: 'auto' }}>
@@ -795,8 +876,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 const avgEntry = agg.yesPricePts / 100_000;
                 const contracts = Number(agg.totalContractsMicros) / 1_000_000;
                 const cost = agg.totalSizePence;
-                const markValue = contracts * (markPercent / 100) * 100;
-                const pnl = agg.side === 'BUY_YES' ? (markValue - cost) : (cost - markValue);
+                const pnl = calcSidePnl(agg.side, contracts, cost, agg.key);
                 return (
                   <div
                     key={agg.key}
@@ -837,10 +917,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                 const avgEntry = group.yesPricePts / 100_000;
                 const contracts = Math.abs(Number(group.totalContractsMicros) / 1_000_000);
                 const cost = group.totalSizePence;
-                const markValue = contracts * (markPercent / 100) * 100; // Value at mark
-                const pnl = group.side === 'BUY_YES' 
-                  ? (markValue - cost)
-                  : (cost - markValue);
+                const pnl = calcSidePnl(group.side, contracts, cost, group.key);
 
                 return (
                   <div key={group.key}>
@@ -1079,7 +1156,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                       fontFamily: 'monospace'
                     }}
                   >
-                    IOC
+                    Market (IOC)
                   </button>
                   <button
                     onClick={() => setCloseMode('limit')}
@@ -1098,118 +1175,155 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                     Limit
                   </button>
                 </div>
+                {closeMode === 'ioc' && (
+                  <div style={{ color: '#6e7681', fontSize: '0.5625rem', marginTop: '0.25rem', fontFamily: 'monospace' }}>
+                    Fills at best available price. Unfilled portion is cancelled.
+                  </div>
+                )}
+                {closeMode === 'limit' && (
+                  <div style={{ color: '#6e7681', fontSize: '0.5625rem', marginTop: '0.25rem', fontFamily: 'monospace' }}>
+                    Fills at limit price or better. Unfilled portion is cancelled.
+                  </div>
+                )}
               </div>
 
-              {/* IOC Options */}
-              {closeMode === 'ioc' && (
-                <>
-                  <div>
-                    <div style={{ color: '#8b949e', marginBottom: '0.375rem', fontSize: '0.625rem', textTransform: 'uppercase', fontWeight: 600 }}>
-                      Max Slippage (%)
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
-                      <input
-                        type="number"
-                        value={slippage}
-                        onChange={(e) => setSlippage(parseFloat(e.target.value) || 0)}
-                        step="0.1"
-                        style={{
-                          width: '4rem',
-                          padding: '0.375rem',
-                          background: '#161b22',
-                          border: '1px solid #30363d',
-                          borderRadius: '3px',
-                          color: '#c9d1d9',
-                          fontSize: '0.7rem',
-                          fontFamily: 'monospace'
-                        }}
-                      />
-                      {[0.1, 0.25, 0.5, 1.0].map(val => (
+              {/* Limit Price Input */}
+              {closeMode === 'limit' && (
+                <div>
+                  <div style={{ color: '#8b949e', marginBottom: '0.375rem', fontSize: '0.625rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                    YES Limit Price (%)
+                  </div>
+                  <input
+                    type="number"
+                    value={limitPrice}
+                    onChange={(e) => setLimitPrice(e.target.value)}
+                    placeholder={markPercent.toFixed(2)}
+                    step="0.01"
+                    min="0.01"
+                    max="99.99"
+                    style={{
+                      width: '100%',
+                      padding: '0.5rem',
+                      background: '#161b22',
+                      border: '1px solid #30363d',
+                      borderRadius: '4px',
+                      color: '#c9d1d9',
+                      fontSize: '0.75rem',
+                      fontFamily: 'monospace'
+                    }}
+                  />
+                  <div style={{
+                    display: 'flex',
+                    gap: '0.25rem',
+                    marginTop: '0.375rem'
+                  }}>
+                    {isLong ? (
+                      /* Closing long = selling → want highest price */
+                      <>
                         <button
-                          key={val}
-                          onClick={() => setSlippage(val)}
+                          onClick={() => setLimitPrice(liveBestBid > 0 ? (liveBestBid / 100_000).toFixed(2) : markPercent.toFixed(2))}
                           style={{
-                            padding: '0.375rem 0.5rem',
-                            background: slippage === val ? '#238636' : '#161b22',
+                            padding: '0.25rem 0.5rem',
+                            background: '#161b22',
                             border: '1px solid #30363d',
                             borderRadius: '3px',
-                            color: slippage === val ? '#c9d1d9' : '#8b949e',
+                            color: '#8b949e',
                             fontSize: '0.625rem',
                             cursor: 'pointer',
                             fontFamily: 'monospace',
                             flex: 1
                           }}
                         >
-                          {val}%
+                          Best Bid
                         </button>
-                      ))}
-                    </div>
+                        <button
+                          onClick={() => setLimitPrice(markPercent.toFixed(2))}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#161b22',
+                            border: '1px solid #30363d',
+                            borderRadius: '3px',
+                            color: '#8b949e',
+                            fontSize: '0.625rem',
+                            cursor: 'pointer',
+                            fontFamily: 'monospace',
+                            flex: 1
+                          }}
+                        >
+                          Mid
+                        </button>
+                        <button
+                          onClick={() => setLimitPrice((avgEntryPercent).toFixed(2))}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#161b22',
+                            border: '1px solid #30363d',
+                            borderRadius: '3px',
+                            color: '#8b949e',
+                            fontSize: '0.625rem',
+                            cursor: 'pointer',
+                            fontFamily: 'monospace',
+                            flex: 1
+                          }}
+                        >
+                          Entry
+                        </button>
+                      </>
+                    ) : (
+                      /* Closing short = buying back → want lowest price */
+                      <>
+                        <button
+                          onClick={() => setLimitPrice(liveBestAsk > 0 ? (liveBestAsk / 100_000).toFixed(2) : markPercent.toFixed(2))}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#161b22',
+                            border: '1px solid #30363d',
+                            borderRadius: '3px',
+                            color: '#8b949e',
+                            fontSize: '0.625rem',
+                            cursor: 'pointer',
+                            fontFamily: 'monospace',
+                            flex: 1
+                          }}
+                        >
+                          Best Ask
+                        </button>
+                        <button
+                          onClick={() => setLimitPrice(markPercent.toFixed(2))}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#161b22',
+                            border: '1px solid #30363d',
+                            borderRadius: '3px',
+                            color: '#8b949e',
+                            fontSize: '0.625rem',
+                            cursor: 'pointer',
+                            fontFamily: 'monospace',
+                            flex: 1
+                          }}
+                        >
+                          Mid
+                        </button>
+                        <button
+                          onClick={() => setLimitPrice((avgEntryPercent).toFixed(2))}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#161b22',
+                            border: '1px solid #30363d',
+                            borderRadius: '3px',
+                            color: '#8b949e',
+                            fontSize: '0.625rem',
+                            cursor: 'pointer',
+                            fontFamily: 'monospace',
+                            flex: 1
+                          }}
+                        >
+                          Entry
+                        </button>
+                      </>
+                    )}
                   </div>
-                </>
-              )}
-
-              {/* Limit Options */}
-              {closeMode === 'limit' && (
-                <>
-                  <div>
-                    <div style={{ color: '#8b949e', marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 600 }}>
-                      YES Limit Price (%)
-                    </div>
-                    <input
-                      type="number"
-                      value={limitPrice}
-                      onChange={(e) => setLimitPrice(e.target.value)}
-                      placeholder={markPercent.toFixed(2)}
-                      step="0.01"
-                      style={{
-                        width: '100%',
-                        padding: '0.5rem',
-                        background: '#161b22',
-                        border: '1px solid #30363d',
-                        borderRadius: '4px',
-                        color: '#c9d1d9',
-                        fontSize: '0.75rem',
-                        fontFamily: 'monospace'
-                      }}
-                    />
-                    <div style={{
-                      display: 'flex',
-                      gap: '0.25rem',
-                      marginTop: '0.5rem'
-                    }}>
-                      <button
-                        onClick={() => setLimitPrice(markPercent.toFixed(2))}
-                        style={{
-                          padding: '0.25rem 0.5rem',
-                          background: '#161b22',
-                          border: '1px solid #30363d',
-                          borderRadius: '3px',
-                          color: '#8b949e',
-                          fontSize: '0.7rem',
-                          cursor: 'pointer',
-                          fontFamily: 'monospace'
-                        }}
-                      >
-                        MID
-                      </button>
-                      <button
-                        onClick={() => setLimitPrice((markPercent - 0.5).toFixed(2))}
-                        style={{
-                          padding: '0.25rem 0.5rem',
-                          background: '#161b22',
-                          border: '1px solid #30363d',
-                          borderRadius: '3px',
-                          color: '#8b949e',
-                          fontSize: '0.7rem',
-                          cursor: 'pointer',
-                          fontFamily: 'monospace'
-                        }}
-                      >
-                        BEST
-                      </button>
-                    </div>
-                  </div>
-                </>
+                </div>
               )}
 
               {/* Size Control */}
@@ -1432,7 +1546,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                   fontFamily: 'monospace'
                 }}
               >
-                {executingCashout ? '⟳ Executing...' : '→ Submit Close Order'}
+                {executingCashout ? '⟳ Executing...' : closeMode === 'limit' ? '→ Submit Limit Close' : '→ Submit Market Close'}
               </button>
               <button
                 onClick={onClose}
@@ -1477,18 +1591,18 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button
               onClick={handleCashout}
-              disabled={!cashoutQuote || !cashoutQuote.success || executingCashout}
+              disabled={closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)}
               style={{
                 padding: '0.5rem 1rem',
-                background: (!cashoutQuote || !cashoutQuote.success || executingCashout) ? '#30363d' : '#8957e5',
+                background: (closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)) ? '#30363d' : '#8957e5',
                 border: 'none',
                 borderRadius: '4px',
                 color: '#c9d1d9',
                 fontWeight: 700,
                 fontSize: '0.75rem',
-                cursor: (!cashoutQuote || !cashoutQuote.success || executingCashout) ? 'not-allowed' : 'pointer',
+                cursor: (closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)) ? 'not-allowed' : 'pointer',
                 fontFamily: 'monospace',
-                opacity: (!cashoutQuote || !cashoutQuote.success || executingCashout) ? 0.5 : 1
+                opacity: (closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)) ? 0.5 : 1
               }}
             >
               ✕ Close All Positions

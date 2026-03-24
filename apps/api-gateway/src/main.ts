@@ -86,8 +86,7 @@ async function bootstrap() {
       secure: secureCookies,
       httpOnly: true,
       maxAge: SESSION_TTL_SECONDS * 1000,
-      sameSite: 'lax',
-      // No domain restriction — host-scoped cookie works for both localhost and api.gamefix.fun
+      sameSite: secureCookies ? 'none' : 'lax',
       domain: process.env.COOKIE_DOMAIN || undefined,
     },
     saveUninitialized: false,

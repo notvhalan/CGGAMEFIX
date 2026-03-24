@@ -36,19 +36,30 @@ docker build `
 Write-Host "`nPushing to ECR..." -ForegroundColor Yellow
 docker push $ECR_REPO`:latest
 
-# Force new deployment
+# Register updated task definition (port 80 for Cloudflare proxied mode)
+Write-Host "`nRegistering task definition (port 80)..." -ForegroundColor Yellow
+# Re-save as UTF-8 no BOM to avoid AWS CLI parse errors
+$taskDefJson = Get-Content "$PSScriptRoot\task-def-port80.json" -Raw
+[System.IO.File]::WriteAllText("$PSScriptRoot\task-def-port80.json", $taskDefJson, [System.Text.UTF8Encoding]::new($false))
+$taskDefArn = aws ecs register-task-definition `
+    --region $REGION `
+    --cli-input-json "file://$PSScriptRoot/task-def-port80.json" `
+    --query 'taskDefinition.taskDefinitionArn' `
+    --output text
+Write-Host "  Registered: $taskDefArn" -ForegroundColor Green
+
+# Force new deployment with the new task definition
 Write-Host "`nForcing new deployment..." -ForegroundColor Yellow
 aws ecs update-service `
     --region $REGION `
     --cluster $CLUSTER `
     --service web-frontend `
     --force-new-deployment `
-    --task-definition web-frontend-hybrid
+    --task-definition $taskDefArn
 
 Write-Host "`n========================================" -ForegroundColor Green
 Write-Host "Deployment Started!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "`nWait 3-4 minutes for deployment, then:" -ForegroundColor Yellow
-Write-Host "1. Get new IP: .\update-dns-after-deploy.ps1" -ForegroundColor Cyan
-Write-Host "2. Test on gamefix.fun" -ForegroundColor Cyan
-Write-Host "`nWebSocket and API will now work!" -ForegroundColor Green
+Write-Host "`nWait 3-4 minutes for the new task to start." -ForegroundColor Yellow
+Write-Host "Site will be live at https://gamefix.fun (Cloudflare proxied → port 80)" -ForegroundColor Green
+Write-Host "`nIf the ECS task IP changes, run: .\update-after-deploy.ps1" -ForegroundColor Gray

@@ -12,7 +12,8 @@ interface Trade {
   id?: string;
   market_id?: string;
   yes_pts: number;
-  contracts: number;
+  contracts?: number;
+  qtyMicros?: number;
   executed_at: string | Date;
 }
 
@@ -130,6 +131,9 @@ export function PriceChart({
 
   // Tracks the live candle being updated by real-time trades
   const liveBarRef = useRef<{ bucket: number; open: number; high: number; low: number; close: number; volume: number } | null>(null);
+  // Tracks the last bar time from the most recent setData() call so incremental
+  // update() calls never target an older-than-last bar (would throw in lightweight-charts)
+  const lastSeededEndRef = useRef<number>(0);
 
   // Create chart once
   useEffect(() => {
@@ -238,6 +242,7 @@ export function PriceChart({
     if (candles.length === 0) return;
 
     liveBarRef.current = null; // reset live bar on full reseed
+    lastSeededEndRef.current = candles[candles.length - 1].time; // track latest seeded bar
 
     if (chartType === "line") {
       candleSeries.setData(candles.map((c) => ({ time: c.time, value: c.close })));
@@ -280,6 +285,9 @@ export function PriceChart({
     const vol = Number(lastTrade.qtyMicros ?? lastTrade.contracts ?? 0) || 0;
     const tradeSec = toSec(lastTrade.executed_at);
 
+    // Guard: invalid timestamp (missing executed_at)
+    if (!isFinite(tradeSec)) return;
+
     // Which timeframe bucket does this trade belong to?
     let bucketSec: number;
     if (timeframe === "tick") {
@@ -288,6 +296,12 @@ export function PriceChart({
       const tfSec = intervalSec(timeframe);
       bucketSec = Math.floor(tradeSec / tfSec) * tfSec;
     }
+
+    // Guard: skip if this bucket is older than the last seeded bar — calling update()
+    // on a non-last bar throws "Cannot update oldest data" in lightweight-charts.
+    // This race happens when revalidate() re-seeds the chart with fresher data while
+    // a stale lastTrade effect is also firing (e.g. right after placing an order).
+    if (bucketSec < lastSeededEndRef.current) return;
 
     const live = liveBarRef.current;
     if (!live || live.bucket !== bucketSec) {
@@ -308,25 +322,34 @@ export function PriceChart({
     }
 
     const c = liveBarRef.current!;
-    if (chartType === "line") {
-      candleSeries.update({ time: bucketSec, value: c.close });
-    } else {
-      candleSeries.update({
+    try {
+      if (chartType === "line") {
+        candleSeries.update({ time: bucketSec, value: c.close });
+      } else {
+        candleSeries.update({
+          time: bucketSec,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        });
+      }
+      volSeries.update({
         time: bucketSec,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
+        value: c.volume,
+        color:
+          c.close >= c.open
+            ? "rgba(16,185,129,0.30)"
+            : "rgba(239,68,68,0.30)",
       });
+      // Update the seeded-end marker so future trades in this bucket are accepted
+      if (bucketSec > lastSeededEndRef.current) {
+        lastSeededEndRef.current = bucketSec;
+      }
+    } catch (err) {
+      // Silently ignore stale-update errors (e.g. chart was just re-seeded with newer data)
+      console.warn("[PriceChart] Skipped stale incremental update:", err);
     }
-    volSeries.update({
-      time: bucketSec,
-      value: c.volume,
-      color:
-        c.close >= c.open
-          ? "rgba(16,185,129,0.30)"
-          : "rgba(239,68,68,0.30)",
-    });
   }, [lastTrade, chartType, timeframe]);
 
   if (!priceBars || priceBars.length === 0) {

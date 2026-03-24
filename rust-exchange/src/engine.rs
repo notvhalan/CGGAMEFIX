@@ -166,6 +166,7 @@ impl MatchingEngine {
             cmd.side,
             cmd.limit_yes_pts,
             cmd.qty_micros,
+            cmd.ioc_budget_pence,
         );
 
         // Track if orderbook changed

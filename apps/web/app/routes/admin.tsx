@@ -2,17 +2,95 @@ import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-r
 import { Form, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
 import { getAuthenticatedUser } from "~/lib/auth.server";
 import { getMarkets } from "~/lib/api.server";
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 const API_BASE_URL = typeof window !== 'undefined' && window.ENV?.API_URL 
   ? window.ENV.API_URL 
   : (process.env.API_BASE_URL || 'http://localhost:3000');
 
+const SUBCATEGORIES: Record<string, { slug: string; label: string; template: string }[]> = {
+  life: [
+    { slug: 'paralysis-cure',    label: 'Paralysis Cure',            template: 'Will a cure for paralysis be discovered before {date}?' },
+    { slug: 'alzheimers-cure',   label: "Alzheimer's Cure",          template: "Will an approved cure for Alzheimer's disease be available before {date}?" },
+    { slug: 'parkinsons-cure',   label: "Parkinson's Cure",          template: "Will an approved Parkinson's disease reversal therapy be available before {date}?" },
+    { slug: 'cancer-universal',  label: 'Universal Cancer Cure',     template: 'Will a universal cancer cure receive regulatory approval before {date}?' },
+    { slug: 'heart-reversal',    label: 'Heart Disease Reversal',    template: 'Will a restorative coronary heart disease therapy be approved before {date}?' },
+    { slug: 'diabetes-cure',     label: 'Type 1 Diabetes Cure',      template: 'Will a clinical cure for Type 1 diabetes be approved before {date}?' },
+  ],
+  health: [
+    { slug: 'ae-wait-12h',       label: 'A&E 12h Wait Threshold',    template: 'Will UK A&E average wait times exceed 12 hours nationally before {date}?' },
+    { slug: 'nhs-emergency',     label: 'NHS Financial Emergency',   template: 'Will NHS England declare a financial emergency before {date}?' },
+    { slug: 'amr-deaths',        label: 'AMR Deaths Threshold',      template: 'Will AMR-related UK hospital deaths exceed 50,000 in the year ending {date}?' },
+    { slug: 'winter-crisis',     label: 'NHS Winter Beds Crisis',    template: 'Will NHS England report fewer than 2,000 spare acute beds on any day before {date}?' },
+  ],
+  climate: [
+    { slug: 'hurricane-us',      label: 'US Hurricane Landfall',     template: 'Will a Category 4+ hurricane make US mainland landfall before {date}?' },
+    { slug: 'uk-major-flood',    label: 'UK Major Flood',            template: 'Will a major UK flood event displace 10,000+ residents before {date}?' },
+    { slug: 'arctic-ice-free',   label: 'Arctic Ice-Free Day',       template: 'Will the Arctic Ocean be effectively ice-free in September before {date}?' },
+    { slug: 'global-temp-record',label: 'Global Temp Record',        template: 'Will a new global mean surface temperature record be set before {date}?' },
+  ],
+  agriculture: [
+    { slug: 'wheat-yield',       label: 'UK Wheat Shortfall',        template: 'Will UK national wheat yield fall below 7.5 t/ha before {date}?' },
+    { slug: 'uk-drought',        label: 'Severe UK Drought',         template: 'Will the Met Office declare a national drought before {date}?' },
+    { slug: 'crop-blight',       label: 'Crop Blight Outbreak',      template: 'Will a crop blight reduce UK harvest by 20%+ before {date}?' },
+    { slug: 'food-price-spike',  label: 'Food Price Spike',          template: 'Will UK food CPI inflation exceed 15% year-on-year before {date}?' },
+  ],
+  liability: [
+    { slug: 'auto-claims-500m',  label: 'Auto Liability £500M',      template: 'Will aggregate UK auto liability claims exceed £500M before {date}?' },
+    { slug: 'cyber-1b',          label: 'Cyber Incident £1B',        template: 'Will a single cyber event cause £1B+ UK economic damage before {date}?' },
+    { slug: 'product-recall-1m', label: 'Mass Product Recall',       template: 'Will a UK product recall affect 1M+ consumers before {date}?' },
+    { slug: 'class-action',      label: 'Major Class Action',        template: 'Will a UK class action lawsuit exceed £100M in claimed damages before {date}?' },
+  ],
+  travel: [
+    { slug: 'lhr-jfk-cancel',    label: 'LHR–JFK Cancellation Rate', template: 'Will LHR–JFK cancellation rate exceed 15% weekly before {date}?' },
+    { slug: 'ash-cloud-48h',     label: 'Volcanic Ash Closure',      template: 'Will volcanic ash close European airspace for 48+ hours before {date}?' },
+    { slug: 'who-travel-ban',    label: 'WHO Travel Ban',            template: 'Will the WHO declare a travel restriction affecting UK airports before {date}?' },
+    { slug: 'uk-airport-strike', label: 'UK Airport Strike',         template: 'Will a UK airport worker strike cancel 500+ flights before {date}?' },
+  ],
+};
+
+const BOT_PRESETS = [
+  { label: '⚡ Fastest',        mid: 50, spread: 0.5, taker: 40, levels: 3,  size: 5,  delay: 0,    delayVar: 0,    sizeVar: 0, priceVar: 0, refresh: 1000,  drift: 50000,  vol: 0.5 },
+  { label: '💧 Deep Liquidity', mid: 50, spread: 5,   taker: 5,  levels: 15, size: 20, delay: 5000, delayVar: 1000, sizeVar: 0, priceVar: 0, refresh: 15000, drift: 50000,  vol: 0.1 },
+  { label: '⚖️ Balanced',       mid: 50, spread: 2.5, taker: 10, levels: 8,  size: 10, delay: 2000, delayVar: 1000, sizeVar: 0, priceVar: 0, refresh: 5000,  drift: 200000, vol: 0.3 },
+  { label: '🎯 Tight Market',   mid: 50, spread: 1,   taker: 20, levels: 5,  size: 8,  delay: 1000, delayVar: 500,  sizeVar: 0, priceVar: 0, refresh: 3000,  drift: 150000, vol: 0.4 },
+] as const;
+
+type BotPreset = typeof BOT_PRESETS[number];
+
 // Bot control inputs component
-function BotControlInputs({ disabled }: { disabled: boolean }) {
-  const [midPrice, setMidPrice] = useState(50);
-  const [spread, setSpread] = useState(2.5);
-  const [takerChance, setTakerChance] = useState(10);
+function BotControlInputs({
+  disabled,
+  initMidPrice = 50,
+  initSpread = 2.5,
+  initTakerChance = 10,
+  initLevels = 8,
+  initSizeContracts = 10.0,
+  initOrderDelayMs = 12000,
+  initOrderDelayVarianceMs = 2000,
+  initSizeVariance = 0,
+  initPriceVariance = 0,
+  initRefreshIntervalMs = 5000,
+  initPriceDriftPts = 200000,
+  initVolatility = 0.3,
+}: {
+  disabled: boolean;
+  initMidPrice?: number;
+  initSpread?: number;
+  initTakerChance?: number;
+  initLevels?: number;
+  initSizeContracts?: number;
+  initOrderDelayMs?: number;
+  initOrderDelayVarianceMs?: number;
+  initSizeVariance?: number;
+  initPriceVariance?: number;
+  initRefreshIntervalMs?: number;
+  initPriceDriftPts?: number;
+  initVolatility?: number;
+}) {
+  const [midPrice, setMidPrice] = useState(initMidPrice);
+  const [spread, setSpread] = useState(initSpread);
+  const [takerChance, setTakerChance] = useState(initTakerChance);
 
   return (
     <>
@@ -99,7 +177,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
           name="levels"
           min="1"
           max="20"
-          defaultValue="8"
+          defaultValue={initLevels}
           disabled={disabled}
           style={{
             width: '100%',
@@ -137,7 +215,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
           min="2.0"
           max="20"
           step="0.5"
-          defaultValue="10.0"
+          defaultValue={initSizeContracts}
           disabled={disabled}
           style={{
             width: '100%',
@@ -225,7 +303,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="30000"
             step="1000"
-            defaultValue="12000"
+            defaultValue={initOrderDelayMs}
             disabled={disabled}
             placeholder="12000"
             style={{
@@ -259,7 +337,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="10000"
             step="500"
-            defaultValue="2000"
+            defaultValue={initOrderDelayVarianceMs}
             disabled={disabled}
             placeholder="2000"
             style={{
@@ -293,7 +371,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="1"
             step="0.05"
-            defaultValue="0"
+            defaultValue={initSizeVariance}
             disabled={disabled}
             placeholder="0 = no variance"
             style={{
@@ -327,7 +405,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="500000"
             step="10000"
-            defaultValue="0"
+            defaultValue={initPriceVariance}
             disabled={disabled}
             placeholder="0 = no variance"
             style={{
@@ -378,7 +456,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="60000"
             step="1000"
-            defaultValue="5000"
+            defaultValue={initRefreshIntervalMs}
             disabled={disabled}
             placeholder="0 = never refresh"
             style={{
@@ -412,7 +490,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="1000000"
             step="50000"
-            defaultValue="200000"
+            defaultValue={initPriceDriftPts}
             disabled={disabled}
             placeholder="0 = no drift"
             style={{
@@ -446,7 +524,7 @@ function BotControlInputs({ disabled }: { disabled: boolean }) {
             min="0"
             max="1"
             step="0.1"
-            defaultValue="0.3"
+            defaultValue={initVolatility}
             disabled={disabled}
             placeholder="0 = calm, 1 = very volatile"
             style={{
@@ -492,6 +570,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             'Content-Type': 'application/json',
             'Cookie': request.headers.get('Cookie') || '',
           },
+          body: JSON.stringify({}),
         });
         
         if (botUsersResponse.ok) {
@@ -798,7 +877,66 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  return json({ success: false, error: 'Invalid action' }, { status: 400 });
+  if (action === 'bulk-create-insurance') {
+    const slug = formData.get('insCategory') as string;
+    const count = Number(formData.get('insCount') || 6);
+    const startOffsetDays = Number(formData.get('insStartOffset') || 30);
+    const spacingDays = Number(formData.get('insSpacingDays') || 30);
+
+    if (!slug) {
+      return json({ success: false, error: 'Insurance category is required' }, { status: 400 });
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/insurance/bulk-create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookieHeader || '',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ slug, count, startOffsetDays, spacingDays, customName: formData.get('insCustomName') as string || undefined, conditionName: formData.get('insConditionName') as string || undefined }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        return json({ success: false, error }, { status: response.status });
+      }
+
+      const result = await response.json();
+      return json({ success: true, message: result.message });
+    } catch (error) {
+      return json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to create insurance contracts',
+      }, { status: 500 });
+    }
+  }
+
+  if (action === 'delete-insurance-group') {
+    const slug = formData.get('delCategory') as string;
+    const conditionName = formData.get('delCondition') as string | null;
+    if (!slug) return json({ success: false, error: 'Category is required' }, { status: 400 });
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/insurance/delete-group`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieHeader || '' },
+        credentials: 'include',
+        body: JSON.stringify({ slug, conditionName: conditionName || undefined }),
+      });
+      if (!response.ok) {
+        const error = await response.text();
+        return json({ success: false, error }, { status: response.status });
+      }
+      const result = await response.json();
+      return json({ success: true, message: result.message });
+    } catch (error) {
+      return json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete insurance contracts',
+      }, { status: 500 });
+    }
+  }
 }
 
 export default function Admin() {
@@ -807,6 +945,84 @@ export default function Admin() {
   const navigation = useNavigation();
   const [selectedMarket, setSelectedMarket] = useState(markets[0]?.id || '');
   const [userCount, setUserCount] = useState(Math.min(20, botUsers?.length || 20));
+
+  // Bot preset state
+  const [botPresetKey, setBotPresetKey] = useState(0);
+  const [botInit, setBotInit] = useState({
+    midPrice: 50, spread: 2.5, takerChance: 10, levels: 8, sizeContracts: 10.0,
+    orderDelayMs: 12000, orderDelayVarianceMs: 2000, sizeVariance: 0, priceVariance: 0,
+    refreshIntervalMs: 5000, priceDriftPts: 200000, volatility: 0.3,
+  });
+  const applyBotPreset = (p: BotPreset) => {
+    setBotInit({
+      midPrice: p.mid, spread: p.spread, takerChance: p.taker, levels: p.levels,
+      sizeContracts: p.size, orderDelayMs: p.delay, orderDelayVarianceMs: p.delayVar,
+      sizeVariance: p.sizeVar, priceVariance: p.priceVar, refreshIntervalMs: p.refresh,
+      priceDriftPts: p.drift, volatility: p.vol,
+    });
+    setBotPresetKey(k => k + 1);
+  };
+
+  // Insurance contract factory state
+  const [insCategory, setInsCategory] = useState('life');
+  const [insSubcategory, setInsSubcategory] = useState('');
+  const [insCount, setInsCount] = useState(6);
+  const [insStartOffset, setInsStartOffset] = useState(30);
+  const [insSpacingDays, setInsSpacingDays] = useState(30);
+  const [insCustomName, setInsCustomName] = useState('');
+
+  const handleInsCategory = (cat: string) => {
+    setInsCategory(cat);
+    setInsSubcategory('');
+    setInsCustomName('');
+  };
+  const handleInsSubcategory = (subSlug: string) => {
+    setInsSubcategory(subSlug);
+    const sub = SUBCATEGORIES[insCategory]?.find(s => s.slug === subSlug);
+    if (sub) setInsCustomName(sub.template);
+    else if (!subSlug) setInsCustomName('');
+  };
+  const activeSubLabel = insSubcategory
+    ? (SUBCATEGORIES[insCategory]?.find(s => s.slug === insSubcategory)?.label ?? '')
+    : '';
+
+  const INS_SERIES: Record<string, { icon: string; label: string; series: string }> = {
+    life:        { icon: '🫀', label: 'Life / Mortality',         series: 'Mortality Risk Index' },
+    health:      { icon: '🏥', label: 'Health / Critical Illness', series: 'Critical Illness Tracker' },
+    climate:     { icon: '🌡️', label: 'Climate / Weather',         series: 'Climate Risk Benchmark' },
+    agriculture: { icon: '🌾', label: 'Agriculture / Crop',        series: 'Harvest Yield Contract' },
+    liability:   { icon: '⚖️', label: 'Liability / Legal',         series: 'Liability Exposure Index' },
+    travel:      { icon: '✈️', label: 'Travel / Cancellation',     series: 'Travel Disruption Cover' },
+  };
+
+  const insSeries = INS_SERIES[insCategory]?.series ?? insCategory;
+  const insPreviewContracts = Array.from({ length: Math.min(insCount, 12) }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + insStartOffset + i * insSpacingDays);
+    const shortDate = d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+    const longDate  = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const idx = String(i + 1).padStart(2, '0');
+    let displayName: string;
+    if (insCustomName.trim()) {
+      const resolved = insCustomName.trim().replace(/\{date\}/gi, shortDate);
+      displayName = `${resolved} [#${idx}]`;
+    } else {
+      displayName = `${insSeries} · ${shortDate} [#${idx}]`;
+    }
+    return { name: displayName, maturity: longDate };
+  });
+
+  const isCreatingInsurance = navigation.state === 'submitting' && navigation.formData?.get('action') === 'bulk-create-insurance';
+  const isDeletingInsurance  = navigation.state === 'submitting' && navigation.formData?.get('action') === 'delete-insurance-group';
+
+  const [delCategory,  setDelCategory]  = useState('life');
+  const [delCondition, setDelCondition] = useState('');
+  const [delConfirmed, setDelConfirmed] = useState(false);
+
+  // Reset confirm state after a delete action lands
+  const prevDeleting = useRef(false);
+  if (isDeletingInsurance) prevDeleting.current = true;
+  else if (prevDeleting.current) { prevDeleting.current = false; setDelConfirmed(false); }
 
   const isStarting = navigation.state === 'submitting' && navigation.formData?.get('action') === 'start-bots';
   const isStopping = navigation.state === 'submitting' && navigation.formData?.get('action') === 'stop-bots';
@@ -1012,7 +1228,63 @@ export default function Admin() {
               )}
             </div>
 
-            <BotControlInputs disabled={!isAdmin} />
+            {/* Bot Quick Presets */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '0.5rem',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: '#cbd5e1'
+              }}>
+                ⚡ Quick Presets
+              </label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                {BOT_PRESETS.map(preset => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    disabled={!isAdmin}
+                    onClick={() => applyBotPreset(preset)}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: '#1e293b',
+                      border: '1px solid #475569',
+                      borderRadius: '6px',
+                      color: '#e2e8f0',
+                      fontSize: '0.8125rem',
+                      fontWeight: 600,
+                      cursor: isAdmin ? 'pointer' : 'not-allowed',
+                      transition: 'border-color 0.15s',
+                    }}
+                    onMouseEnter={e => { if (isAdmin) (e.target as HTMLButtonElement).style.borderColor = '#667eea'; }}
+                    onMouseLeave={e => { (e.target as HTMLButtonElement).style.borderColor = '#475569'; }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <p style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.5rem' }}>
+                Presets auto-fill all parameters below. Click a preset, then hit Start Bots.
+              </p>
+            </div>
+
+            <BotControlInputs
+              key={botPresetKey}
+              disabled={!isAdmin}
+              initMidPrice={botInit.midPrice}
+              initSpread={botInit.spread}
+              initTakerChance={botInit.takerChance}
+              initLevels={botInit.levels}
+              initSizeContracts={botInit.sizeContracts}
+              initOrderDelayMs={botInit.orderDelayMs}
+              initOrderDelayVarianceMs={botInit.orderDelayVarianceMs}
+              initSizeVariance={botInit.sizeVariance}
+              initPriceVariance={botInit.priceVariance}
+              initRefreshIntervalMs={botInit.refreshIntervalMs}
+              initPriceDriftPts={botInit.priceDriftPts}
+              initVolatility={botInit.volatility}
+            />
 
             <div style={{ display: 'flex', gap: '0.75rem' }}>
               <button
@@ -1317,6 +1589,391 @@ export default function Admin() {
               📝 Create Batch Orders
             </button>
           </Form>
+        </div>
+
+        {/* Insurance Contract Factory */}
+        <div style={{
+          background: '#1a1f2e',
+          borderRadius: '12px',
+          border: '1px solid #4c1d95',
+          borderLeft: '4px solid #8b5cf6',
+          padding: '1.5rem',
+          marginBottom: '1.5rem',
+        }}>
+          {/* Panel Header */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', marginBottom: '1.5rem' }}>
+            <div style={{
+              width: '2.5rem', height: '2.5rem', borderRadius: '8px',
+              background: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '1.125rem', flexShrink: 0,
+            }}>🏥</div>
+            <div>
+              <h2 style={{ fontSize: '1.125rem', fontWeight: 700, color: '#e2e8f0', margin: 0 }}>
+                Insurance Contract Factory
+              </h2>
+              <p style={{ color: '#94a3b8', fontSize: '0.8125rem', marginTop: '0.25rem', lineHeight: '1.5' }}>
+                Generate a dated series of insurance contracts. Names follow the{' '}
+                <span style={{ color: '#a78bfa', fontStyle: 'italic' }}>"Series · Month YYYY [#NN]"</span> convention.
+              </p>
+            </div>
+          </div>
+
+          <Form method="post">
+            <input type="hidden" name="action" value="bulk-create-insurance" />
+            <input type="hidden" name="insSpacingDays" value={String(insSpacingDays)} />
+            <input type="hidden" name="insConditionName" value={activeSubLabel} />
+
+            {/* Custom contract name */}
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                Contract Question <span style={{ color: '#475569', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional — leave blank for default series name)</span>
+              </label>
+              <input
+                type="text"
+                name="insCustomName"
+                value={insCustomName}
+                onChange={e => setInsCustomName(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="e.g. Will a cure for paralysis be discovered before {date}?"
+                style={{
+                  width: '100%', padding: '0.625rem 0.75rem',
+                  background: '#0f172a', border: `1px solid ${insCustomName.trim() ? '#8b5cf6' : '#334155'}`,
+                  borderRadius: '8px', color: '#e2e8f0', fontSize: '0.875rem',
+                  outline: 'none', fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <p style={{ fontSize: '0.75rem', color: '#475569', marginTop: '0.375rem', lineHeight: 1.5 }}>
+                Use <code style={{ background: '#1e293b', padding: '0.1em 0.35em', borderRadius: '3px', color: '#a78bfa', fontSize: '0.7rem' }}>&#123;date&#125;</code>
+                {' '}as a placeholder — it will be substituted with each contract&apos;s maturity month.
+              </p>
+            </div>
+
+            {/* Row 1: Category + Count */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Category
+                </label>
+                <select
+                  name="insCategory"
+                  value={insCategory}
+                  onChange={e => handleInsCategory(e.target.value)}
+                  disabled={!isAdmin}
+                  style={{ width: '100%', padding: '0.625rem 0.75rem', background: '#0f172a', border: '1px solid #334155', borderRadius: '8px', color: '#e2e8f0', fontSize: '0.875rem', outline: 'none' }}
+                >
+                  {Object.entries(INS_SERIES).map(([slug, v]) => (
+                    <option key={slug} value={slug}>{v.icon} {v.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Subcategory
+                </label>
+                <select
+                  value={insSubcategory}
+                  onChange={e => handleInsSubcategory(e.target.value)}
+                  disabled={!isAdmin}
+                  style={{
+                    width: '100%', padding: '0.625rem 0.75rem', background: '#0f172a',
+                    border: `1px solid ${insSubcategory ? '#8b5cf6' : '#334155'}`,
+                    borderRadius: '8px', color: insSubcategory ? '#c4b5fd' : '#94a3b8',
+                    fontSize: '0.875rem', outline: 'none',
+                  }}
+                >
+                  <option value="">— select or type custom below —</option>
+                  {SUBCATEGORIES[insCategory]?.map(s => (
+                    <option key={s.slug} value={s.slug}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Number of Contracts
+                </label>
+                <input
+                  type="number"
+                  name="insCount"
+                  min="1" max="24"
+                  value={insCount}
+                  onChange={e => setInsCount(Math.max(1, Math.min(24, Number(e.target.value))))}
+                  disabled={!isAdmin}
+                  style={{ width: '100%', padding: '0.625rem 0.75rem', background: '#0f172a', border: '1px solid #334155', borderRadius: '8px', color: '#e2e8f0', fontSize: '0.875rem' }}
+                />
+              </div>
+            </div>
+
+            {/* Row 2: Start offset + Spacing */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  First Maturity (days from today)
+                </label>
+                <input
+                  type="number"
+                  name="insStartOffset"
+                  min="1" max="365"
+                  value={insStartOffset}
+                  onChange={e => setInsStartOffset(Number(e.target.value))}
+                  disabled={!isAdmin}
+                  style={{ width: '100%', padding: '0.625rem 0.75rem', background: '#0f172a', border: '1px solid #334155', borderRadius: '8px', color: '#e2e8f0', fontSize: '0.875rem' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Contract Spacing
+                </label>
+                <div style={{ display: 'flex', gap: '0.375rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  {[{ label: 'Weekly', days: 7 }, { label: 'Fortnightly', days: 14 }, { label: 'Monthly', days: 30 }, { label: 'Quarterly', days: 90 }].map(opt => (
+                    <button
+                      key={opt.days}
+                      type="button"
+                      onClick={() => setInsSpacingDays(opt.days)}
+                      style={{
+                        padding: '0.375rem 0.625rem',
+                        background: insSpacingDays === opt.days ? 'rgba(139,92,246,0.2)' : 'transparent',
+                        border: `1px solid ${insSpacingDays === opt.days ? '#8b5cf6' : '#334155'}`,
+                        borderRadius: '6px', color: insSpacingDays === opt.days ? '#a78bfa' : '#94a3b8',
+                        fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min="1" max="365"
+                    value={insSpacingDays}
+                    onChange={e => setInsSpacingDays(Number(e.target.value))}
+                    disabled={!isAdmin}
+                    title="Custom spacing in days"
+                    style={{ width: '64px', padding: '0.375rem 0.5rem', background: '#0f172a', border: '1px solid #334155', borderRadius: '6px', color: '#e2e8f0', fontSize: '0.75rem', textAlign: 'center' }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Contract Name Preview */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.625rem', fontWeight: 600, fontSize: '0.8125rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                Contract Name Preview
+              </label>
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', overflow: 'hidden' }}>
+                {/* Table header */}
+                <div style={{ display: 'grid', gridTemplateColumns: '2.5rem 1fr 7rem', padding: '0.5rem 0.75rem', borderBottom: '1px solid #1e293b', background: '#0a0f1a' }}>
+                  <span style={{ fontSize: '0.6875rem', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>#</span>
+                  <span style={{ fontSize: '0.6875rem', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Contract Name</span>
+                  <span style={{ fontSize: '0.6875rem', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'right' }}>Maturity</span>
+                </div>
+                {/* Rows */}
+                {insPreviewContracts.map((contract, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'grid', gridTemplateColumns: '2.5rem 1fr 7rem',
+                      padding: '0.5rem 0.75rem',
+                      borderBottom: i < insPreviewContracts.length - 1 ? '1px solid #1e293b' : 'none',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span style={{
+                      fontSize: '0.6875rem', fontWeight: 700, color: '#7c3aed',
+                      fontFamily: 'monospace',
+                      background: 'rgba(139,92,246,0.1)', borderRadius: '4px',
+                      padding: '0.125rem 0.375rem', display: 'inline-block',
+                    }}>
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span style={{ fontSize: '0.8125rem', color: '#e2e8f0', paddingLeft: '0.25rem', fontFamily: 'monospace', letterSpacing: '-0.01em' }}>
+                      {contract.name}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: '#64748b', textAlign: 'right' }}>
+                      {contract.maturity}
+                    </span>
+                  </div>
+                ))}
+                {insCount > 12 && (
+                  <div style={{ padding: '0.5rem 0.75rem', textAlign: 'center', fontSize: '0.75rem', color: '#4b5563' }}>
+                    ·· {insCount - 12} more contracts not shown ··
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={!isAdmin || isCreatingInsurance}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: isAdmin ? 'linear-gradient(135deg, #7c3aed, #4f46e5)' : '#374151',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: 700,
+                fontSize: '0.875rem',
+                cursor: isAdmin ? 'pointer' : 'not-allowed',
+                opacity: isCreatingInsurance ? 0.7 : 1,
+                width: '100%',
+                letterSpacing: '0.02em',
+              }}
+            >
+              {isCreatingInsurance
+                ? '⏳ Creating contracts…'
+                : `Generate ${insCount} × ${INS_SERIES[insCategory]?.series ?? insCategory}`}
+            </button>
+          </Form>
+
+          {/* ── Delete Insurance Contracts ──────────────────────────────── */}
+          <div style={{
+            marginTop: '1.5rem',
+            border: '1px solid rgba(239,68,68,0.25)',
+            borderRadius: '10px',
+            overflow: 'hidden',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '0.625rem 1rem',
+              background: 'rgba(239,68,68,0.07)',
+              borderBottom: '1px solid rgba(239,68,68,0.18)',
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+            }}>
+              <span style={{ fontSize: '0.875rem' }}>🗑️</span>
+              <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#fca5a5' }}>Delete Insurance Contracts</span>
+              <span style={{ fontSize: '0.75rem', color: 'rgba(239,68,68,0.6)', marginLeft: '0.25rem' }}>
+                Removes ACTIVE / PENDING contracts only
+              </span>
+            </div>
+
+            <div style={{ padding: '1rem' }}>
+              <Form method="post" onSubmit={() => setDelConfirmed(false)}>
+                <input type="hidden" name="action" value="delete-insurance-group" />
+                <input type="hidden" name="delCondition" value={delCondition} />
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.875rem' }}>
+                  {/* Category */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.375rem', fontWeight: 600, fontSize: '0.75rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                      Category
+                    </label>
+                    <select
+                      name="delCategory"
+                      value={delCategory}
+                      onChange={e => { setDelCategory(e.target.value); setDelCondition(''); setDelConfirmed(false); }}
+                      disabled={!isAdmin}
+                      style={{ width: '100%', padding: '0.5rem 0.625rem', background: '#0f172a', border: '1px solid #334155', borderRadius: '7px', color: '#e2e8f0', fontSize: '0.8125rem', outline: 'none' }}
+                    >
+                      {Object.entries(INS_SERIES).map(([slug, v]) => (
+                        <option key={slug} value={slug}>{v.icon} {v.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Subcategory / condition */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.375rem', fontWeight: 600, fontSize: '0.75rem', color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                      Subcategory
+                    </label>
+                    <select
+                      value={delCondition}
+                      onChange={e => { setDelCondition(e.target.value); setDelConfirmed(false); }}
+                      disabled={!isAdmin}
+                      style={{
+                        width: '100%', padding: '0.5rem 0.625rem', background: '#0f172a',
+                        border: `1px solid ${delCondition ? 'rgba(239,68,68,0.4)' : '#334155'}`,
+                        borderRadius: '7px',
+                        color: delCondition ? '#fca5a5' : '#94a3b8',
+                        fontSize: '0.8125rem', outline: 'none',
+                      }}
+                    >
+                      <option value="">— All contracts in category —</option>
+                      {SUBCATEGORIES[delCategory]?.map(s => (
+                        <option key={s.slug} value={s.label}>{s.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Scope hint */}
+                <div style={{
+                  padding: '0.5rem 0.75rem',
+                  background: 'rgba(239,68,68,0.06)',
+                  border: '1px solid rgba(239,68,68,0.15)',
+                  borderRadius: '6px',
+                  fontSize: '0.8rem',
+                  color: 'rgba(252,165,165,0.8)',
+                  marginBottom: '0.875rem',
+                  lineHeight: 1.5,
+                }}>
+                  Will delete all <strong>ACTIVE</strong> / <strong>PENDING</strong> markets in{' '}
+                  <span style={{ color: '#fca5a5', fontWeight: 600 }}>
+                    {INS_SERIES[delCategory]?.label ?? delCategory}
+                    {delCondition ? ` › ${delCondition}` : ' (entire category)'}
+                  </span>
+                </div>
+
+                {/* Confirm toggle + button */}
+                {!delConfirmed ? (
+                  <button
+                    type="button"
+                    disabled={!isAdmin}
+                    onClick={() => setDelConfirmed(true)}
+                    style={{
+                      width: '100%', padding: '0.6rem 1rem',
+                      background: 'transparent',
+                      border: '1px solid rgba(239,68,68,0.5)',
+                      borderRadius: '7px',
+                      color: '#fca5a5',
+                      fontWeight: 600, fontSize: '0.875rem',
+                      cursor: isAdmin ? 'pointer' : 'not-allowed',
+                      opacity: isAdmin ? 1 : 0.5,
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    🗑️ Delete Group…
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => setDelConfirmed(false)}
+                      style={{
+                        flex: 1, padding: '0.6rem 1rem',
+                        background: 'transparent',
+                        border: '1px solid #334155',
+                        borderRadius: '7px',
+                        color: '#94a3b8',
+                        fontWeight: 600, fontSize: '0.875rem',
+                        cursor: 'pointer',
+                      }}
+                    >Cancel</button>
+                    <button
+                      type="submit"
+                      disabled={!isAdmin || isDeletingInsurance}
+                      style={{
+                        flex: 2, padding: '0.6rem 1rem',
+                        background: 'rgba(239,68,68,0.15)',
+                        border: '1px solid rgba(239,68,68,0.6)',
+                        borderRadius: '7px',
+                        color: '#f87171',
+                        fontWeight: 700, fontSize: '0.875rem',
+                        cursor: isAdmin ? 'pointer' : 'not-allowed',
+                        opacity: isDeletingInsurance ? 0.6 : 1,
+                        letterSpacing: '0.02em',
+                      }}
+                    >
+                      {isDeletingInsurance ? '⏳ Deleting…' : '⚠️ Confirm Delete'}
+                    </button>
+                  </div>
+                )}
+              </Form>
+            </div>
+          </div>
+
         </div>
 
         {/* Market Settlement Section */}

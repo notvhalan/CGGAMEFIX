@@ -47,18 +47,20 @@ export default function Index() {
           <Link to="/" className="nav-link active">Home</Link>
           <Link to="/about" className="nav-link">About</Link>
           <Link to="/story" className="nav-link">Story</Link>
-          <Link to="/auth/login" className="nav-login-btn">Login</Link>
+          <Link to="/app" className="nav-login-btn">Browse</Link>
         </div>
       </nav>
 
       {/* Hero */}
       <section className="hero-section">
-        {/* Background image (animated zoom-in) */}
-        <div
+        {/* Background video on loop */}
+        <video
           className="hero-bg"
-          style={{
-            backgroundImage: "url(/media/img/fan1.png)",
-          }}
+          src="/media/video/herom3.mp4"
+          autoPlay
+          loop
+          muted
+          playsInline
         />
 
         {/* Overlay */}
@@ -422,8 +424,8 @@ export default function Index() {
               </Link>
 
               <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                <Link to="/auth/login" style={{ padding: "12px 24px", background: "#238636", color: "white", textDecoration: "none", fontSize: "15px", fontWeight: "600", borderRadius: "10px", boxShadow: "0 4px 12px rgba(35, 134, 54, 0.3)" }}>
-                  Start now →
+                <Link to="/app" style={{ padding: "12px 24px", background: "#238636", color: "white", textDecoration: "none", fontSize: "15px", fontWeight: "600", borderRadius: "10px", boxShadow: "0 4px 12px rgba(35, 134, 54, 0.3)" }}>
+                  Browse →
                 </Link>
                 <Link to="/story" style={{ padding: "12px 24px", background: "rgba(240, 246, 252, 0.06)", color: "#e6edf3", textDecoration: "none", fontSize: "15px", fontWeight: "600", borderRadius: "10px", border: "1px solid rgba(240, 246, 252, 0.1)" }}>
                   Read the story

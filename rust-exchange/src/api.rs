@@ -113,18 +113,28 @@ pub async fn create_order(
     }
 
     // Calculate contracts
-    let contracts_micros = match req.side {
+    let base_contracts_micros = match req.side {
         Side::BuyYes => buyyes_contracts_from_risk(req.risk_pence, req.limit_yes_pts),
         Side::SellYes => sellyes_contracts_from_risk(req.risk_pence, req.limit_yes_pts),
     };
 
-    if contracts_micros < 10_000 { // Minimum 0.01 contracts
+    if base_contracts_micros < 10_000 { // Minimum 0.01 contracts
         return Err(AppError::BadRequest("Order too small".to_string()));
     }
 
     let order_id = Uuid::new_v4();
     let time_in_force = req.time_in_force.unwrap_or(TimeInForce::Gtc);
     let reduce_only = req.reduce_only.unwrap_or(false);
+
+    // For IOC (market) non-reduce-only orders, use budget-aware matching:
+    // Double the quantity headroom so the budget (not quantity) is the binding
+    // constraint when fills happen at better-than-limit prices.
+    let is_ioc_budget = time_in_force == TimeInForce::Ioc && !reduce_only;
+    let contracts_micros = if is_ioc_budget {
+        base_contracts_micros * 2
+    } else {
+        base_contracts_micros
+    };
 
     if reduce_only && time_in_force != TimeInForce::Ioc {
         return Err(AppError::BadRequest(
@@ -133,52 +143,52 @@ pub async fn create_order(
     }
 
     if reduce_only {
-        let net_qty_micros = sqlx::query_scalar!(
+        // Validate against the gross qty of the lots that will actually be consumed,
+        // not the net position. This allows closing e.g. 105 BUY_YES lots with a
+        // SELL_YES reduce_only order even when 38 SELL_YES lots make the net only 67.
+        let consumed_side_str = match req.side {
+            Side::SellYes => "BUY_YES",
+            Side::BuyYes  => "SELL_YES",
+        };
+
+        let gross_qty_micros = sqlx::query_scalar!(
             r#"
-            SELECT COALESCE(net_qty_micros, 0)::bigint
-            FROM positions
-            WHERE user_id = $1 AND market_id = $2
+            SELECT COALESCE(SUM(qty_remaining_micros), 0)::bigint as "total!"
+            FROM position_lots
+            WHERE user_id = $1
+              AND market_id = $2
+              AND side::text = $3
+              AND qty_remaining_micros > 0
             "#,
             user_id,
-            req.market_id
+            req.market_id,
+            consumed_side_str
         )
-        .fetch_optional(&app.db)
-        .await?
-        .flatten()
-        .unwrap_or(0);
+        .fetch_one(&app.db)
+        .await?;
 
-        if net_qty_micros == 0 {
+        if gross_qty_micros == 0 {
             return Err(AppError::BadRequest(
                 "No open position for reduce-only close".to_string(),
             ));
         }
 
-        let required_close_side = if net_qty_micros > 0 {
-            Side::SellYes
-        } else {
-            Side::BuyYes
-        };
-
-        if req.side != required_close_side {
-            return Err(AppError::BadRequest(format!(
-                "reduce_only side mismatch: expected {:?} for current position",
-                required_close_side
-            )));
-        }
-
-        if contracts_micros > net_qty_micros.abs() {
+        if contracts_micros > gross_qty_micros {
             return Err(AppError::BadRequest(format!(
                 "reduce_only size exceeds position (requested {}, position {})",
                 contracts_micros,
-                net_qty_micros.abs()
+                gross_qty_micros
             )));
         }
     }
 
     // Calculate reserve needed (at limit price).
     // reduce_only IOC closes consume existing exposure; they do not reserve fresh order collateral.
+    // IOC budget orders reserve the exact budget so the user's full stake is utilised.
     let reserve_pence = if reduce_only {
         0
+    } else if is_ioc_budget {
+        req.risk_pence
     } else {
         match req.side {
             Side::BuyYes => calculate_risk_buyyes(contracts_micros, req.limit_yes_pts),
@@ -239,6 +249,7 @@ pub async fn create_order(
         limit_yes_pts: req.limit_yes_pts,
         qty_micros: contracts_micros,
         time_in_force,
+        ioc_budget_pence: if is_ioc_budget { Some(req.risk_pence) } else { None },
     }))?;
 
     Ok(Json(CreateOrderResponse {

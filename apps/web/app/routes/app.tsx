@@ -4,7 +4,7 @@
 
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { Outlet, Link, useLoaderData, useLocation } from "@remix-run/react";
-import { requireUser } from "~/lib/auth.server";
+import { getAuthenticatedUser } from "~/lib/auth.server";
 import { getWallet, getMarkets } from "~/lib/api.server";
 import { useState } from "react";
 import { Icons } from "~/config/icons";
@@ -21,9 +21,9 @@ import "~/styles/components/wallet-chip.css";
 import "~/styles/components/dashboard-nav.css";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const user = await requireUser(request);
+  // Allow unauthenticated browsing — no redirect
+  const user = await getAuthenticatedUser(request);
   
-  // Fetch real wallet balance and markets from API
   let wallet = {
     availablePence: 0,
     reservedPence: 0,
@@ -32,18 +32,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
   let markets: any[] = [];
   
   try {
+    // Only fetch wallet when logged in
     const [walletData, marketsData] = await Promise.all([
-      getWallet(request),
+      user ? getWallet(request) : Promise.resolve(null),
       getMarkets()
     ]);
     
-    // Database stores values in pounds, but component expects pence
-    // So multiply by 100 to convert pounds to pence
-    wallet = {
-      availablePence: (walletData.balance || 0) * 100,
-      reservedPence: (walletData.lockedBalance || 0) * 100,
-      equityPence: ((walletData.balance || 0) + (walletData.lockedBalance || 0)) * 100
-    };
+    if (walletData) {
+      wallet = {
+        availablePence: (walletData.balance || 0) * 100,
+        reservedPence: (walletData.lockedBalance || 0) * 100,
+        equityPence: ((walletData.balance || 0) + (walletData.lockedBalance || 0)) * 100
+      };
+    }
     
     markets = marketsData.markets || [];
   } catch (error) {
@@ -117,42 +118,69 @@ export default function AppLayout() {
 
         <div style={{ flex: 1 }} className="spacer" />
 
-        <WalletChip
-          availablePence={wallet.availablePence}
-          reservedPence={wallet.reservedPence}
-          equityPence={wallet.equityPence}
-          compact={true}
-        />
+        {user ? (
+          <>
+            <WalletChip
+              availablePence={wallet.availablePence}
+              reservedPence={wallet.reservedPence}
+              equityPence={wallet.equityPence}
+              compact={true}
+            />
 
-        <div className="ws-status" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-          <FiActivity size={14} style={{ color: '#3fb950' }} />
-          <span>Live</span>
-        </div>
+            <div className="ws-status" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+              <FiActivity size={14} style={{ color: '#3fb950' }} />
+              <span>Live</span>
+            </div>
 
-        <Link
-          to="/app/wallet"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            padding: '0.5rem 0.875rem',
-            background: '#1f6feb',
-            color: 'white',
-            borderRadius: '6px',
-            textDecoration: 'none',
-            fontSize: '0.8125rem',
-            fontWeight: 600,
-            transition: 'background 0.2s',
-            whiteSpace: 'nowrap'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.background = '#388bfd'}
-          onMouseLeave={(e) => e.currentTarget.style.background = '#1f6feb'}
-        >
-          <FiDownload size={16} />
-          Deposit
-        </Link>
+            <Link
+              to="/app/wallet"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.5rem 0.875rem',
+                background: '#1f6feb',
+                color: 'white',
+                borderRadius: '6px',
+                textDecoration: 'none',
+                fontSize: '0.8125rem',
+                fontWeight: 600,
+                transition: 'background 0.2s',
+                whiteSpace: 'nowrap'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = '#388bfd'}
+              onMouseLeave={(e) => e.currentTarget.style.background = '#1f6feb'}
+            >
+              <FiDownload size={16} />
+              Deposit
+            </Link>
 
-        <UserMenu user={user} compact={true} />
+            <UserMenu user={user} compact={true} />
+          </>
+        ) : (
+          <Link
+            to="/auth/login"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.375rem 0.875rem',
+              background: '#238636',
+              color: 'white',
+              borderRadius: '6px',
+              textDecoration: 'none',
+              fontSize: '0.8125rem',
+              fontWeight: 600,
+              transition: 'background 0.2s',
+              whiteSpace: 'nowrap',
+              border: '1px solid rgba(240,246,252,0.1)'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = '#2ea043'}
+            onMouseLeave={(e) => e.currentTarget.style.background = '#238636'}
+          >
+            Login
+          </Link>
+        )}
       </header>
 
       <div style={{ display: 'flex', flex: 1 }}>

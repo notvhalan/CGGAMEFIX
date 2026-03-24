@@ -9,11 +9,11 @@ import { PositionsController } from './controllers/positions.controller';
 import { CashoutController } from './controllers/cashout.controller';
 import { AdminController } from './controllers/admin.controller';
 import { SettlementsController } from './controllers/settlements.controller';
+import { InsuranceController } from './controllers/insurance.controller';
 import { EventsGateway } from './gateways/events.gateway';
 import { OrderBookBroadcastService } from './services/orderbook-broadcast.service';
 import { LiquidityBotsService } from './services/liquidity-bots.service';
 import { PositionLotsService } from './services/position-lots.service';
-import { OrderEventsService } from './services/order-events.service';
 import { RustExchangeService } from './services/rust-exchange.service';
 
 @Module({
@@ -30,7 +30,8 @@ import { RustExchangeService } from './services/rust-exchange.service';
     CashoutController,
     AdminController,
     SettlementsController,
+    InsuranceController,
   ],
-  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService, OrderEventsService, RustExchangeService],
+  providers: [EventsGateway, OrderBookBroadcastService, LiquidityBotsService, PositionLotsService, RustExchangeService],
 })
 export class AppModule {}

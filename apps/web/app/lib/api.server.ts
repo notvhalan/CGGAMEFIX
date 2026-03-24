@@ -48,7 +48,7 @@ export async function getMarketTrades(marketId: string, limit = 50) {
 
 export async function getMarketPriceBars(marketId: string, limit = 6000) {
   return fetchApi<{ marketId: string; bars: any[]; count: number }>(`/v1/markets/${marketId}/price-bars?limit=${limit}`);
-}
+} 
 
 // Position APIs
 export async function getPosition(request: Request, marketId: string) {
@@ -268,6 +268,63 @@ export async function saveUserPreferences(request: Request, preferences: any) {
   } catch (error) {
     // Silently fail if API not available
     return { success: false };
+  }
+}
+
+// ── Insurance APIs ────────────────────────────────────────────────────────
+
+export interface InsuranceCategory {
+  slug: string;
+  icon: string;
+  title: string;
+  description: string;
+  questionTemplate: string;
+  conditionName: string;
+  settlementSource: string;
+  oracle: string;
+  baseYesPts: number;
+  maxYesPts: number;
+  curveShape: 'slow' | 'fast' | 'linear';
+  tags: string[];
+  contractCount: number;
+}
+
+export interface InsuranceContract {
+  marketId: string;
+  name: string;
+  question: string | null;
+  conditionName: string;
+  maturityDate: string | null;
+  settlementSource: string;
+  oracle: string;
+  tags: string[];
+  status: string;
+  yesPts: number;
+  noPts: number;
+  spread: number | null;
+  bestBidYes: number | null;
+  bestAskYes: number | null;
+  lastTradeYes: number | null;
+  volume24hPence: number;
+  oiPence: number;
+}
+
+export async function getInsuranceCategories(): Promise<{ categories: InsuranceCategory[] }> {
+  try {
+    return await fetchApi<{ categories: InsuranceCategory[] }>('/v1/insurance/categories');
+  } catch {
+    return { categories: [] };
+  }
+}
+
+export async function getInsuranceCategoryWithContracts(slug: string): Promise<{
+  category: InsuranceCategory;
+  contracts: InsuranceContract[];
+} | null> {
+  try {
+    return await fetchApi(`/v1/insurance/categories/${slug}`);
+  } catch {
+    return null;
   }
 }
 

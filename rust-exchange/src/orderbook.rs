@@ -2,9 +2,14 @@ use std::collections::{BTreeMap, VecDeque};
 use uuid::Uuid;
 use crate::types::*;
 
+/// Minimum fill size in micro-contracts for budget matching.
+/// Below this threshold we consider the remaining budget exhausted (≤1p).
+const BUDGET_MIN_FILL_MICROS: i64 = 1_000;
+
 /// Minimum contract size in microcontracts (0.001 contracts)
 /// Orders below this threshold are considered "dust" and treated as trading fees
 /// This caps the maximum dust fee at 0.1% per order
+#[allow(dead_code)]
 const MIN_CONTRACT_MICROS: i64 = 1000;
 
 /// Price-time priority orderbook
@@ -60,13 +65,14 @@ impl OrderBook {
         taker_side: Side,
         limit_yes_pts: i64,
         mut qty_remaining_micros: i64,
+        mut budget_remaining_pence: Option<i64>,
     ) -> (Vec<Fill>, i64) {
         let mut fills = Vec::new();
 
         match taker_side {
             Side::BuyYes => {
                 // Match against asks (sellers)
-                while qty_remaining_micros > 0 {
+                'outer_buy: while qty_remaining_micros > 0 {
                     // Find best ask (lowest price)
                     let best_ask_price = match self.asks.keys().next() {
                         Some(&price) if price <= limit_yes_pts => price,
@@ -88,7 +94,23 @@ impl OrderBook {
                             continue;
                         }
 
-                        let fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
+                        let mut fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
+
+                        // Budget constraint: cap fill_qty so cost ≤ remaining budget
+                        if let Some(budget) = budget_remaining_pence.as_mut() {
+                            let max_from_budget = buyyes_contracts_from_risk(*budget, best_ask_price);
+                            if max_from_budget < BUDGET_MIN_FILL_MICROS {
+                                // Budget exhausted (< 1p at this price)
+                                break 'outer_buy;
+                            }
+                            fill_qty = fill_qty.min(max_from_budget);
+                            let cost = calculate_risk_buyyes(fill_qty, best_ask_price);
+                            *budget -= cost.max(1); // deduct at least 1p to avoid infinite loop
+                        }
+
+                        if fill_qty <= 0 {
+                            break 'outer_buy;
+                        }
 
                         fills.push(Fill {
                             trade_id: Uuid::new_v4(),
@@ -117,7 +139,7 @@ impl OrderBook {
             }
             Side::SellYes => {
                 // Match against bids (buyers)
-                while qty_remaining_micros > 0 {
+                'outer_sell: while qty_remaining_micros > 0 {
                     // Find best bid (highest price)
                     let best_bid_price = match self.bids.keys().rev().next() {
                         Some(&price) if price >= limit_yes_pts => price,
@@ -138,7 +160,22 @@ impl OrderBook {
                             continue;
                         }
 
-                        let fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
+                        let mut fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
+
+                        // Budget constraint: cap fill_qty so cost ≤ remaining budget
+                        if let Some(budget) = budget_remaining_pence.as_mut() {
+                            let max_from_budget = sellyes_contracts_from_risk(*budget, best_bid_price);
+                            if max_from_budget < BUDGET_MIN_FILL_MICROS {
+                                break 'outer_sell;
+                            }
+                            fill_qty = fill_qty.min(max_from_budget);
+                            let cost = calculate_risk_sellyes(fill_qty, best_bid_price);
+                            *budget -= cost.max(1);
+                        }
+
+                        if fill_qty <= 0 {
+                            break 'outer_sell;
+                        }
 
                         fills.push(Fill {
                             trade_id: Uuid::new_v4(),
@@ -235,6 +272,7 @@ mod tests {
             Side::BuyYes,
             5_000_000,
             12_000_000,
+            None,
         );
 
         assert_eq!(fills.len(), 2);

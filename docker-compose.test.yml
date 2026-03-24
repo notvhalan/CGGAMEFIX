@@ -1,0 +1,68 @@
+# Isolated test infrastructure — separate ports, separate volumes, separate DB.
+# Usage:  docker compose -f docker-compose.test.yml up -d
+#         pnpm run test:e2e
+#         docker compose -f docker-compose.test.yml down -v
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: betting-exchange-postgres-test
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: betting_exchange_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: betting-exchange-redis-test
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_test_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats-test:
+    image: nats:2.10-alpine
+    container_name: betting-exchange-nats-test
+    ports:
+      - "4223:4222"
+      - "8223:8222"
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    volumes:
+      - nats_test_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_test_data:
+    driver: local
+  redis_test_data:
+    driver: local
+  nats_test_data:
+    driver: local
+
+networks:
+  default:
+    name: betting-exchange-test-network

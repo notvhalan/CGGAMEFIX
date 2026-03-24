@@ -116,7 +116,7 @@ impl WsBroadcaster {
         .bind(market_id)
         .fetch_all(&self.db)
         .await?;
-        tracing::debug!("Found {} orders for market {}: {:?}", all_orders.len(), market_id, all_orders);
+        // tracing::debug!("Found {} orders for market {}: {:?}", all_orders.len(), market_id, all_orders);
         
         // Query database for open orders
         let bids_raw: Vec<(i64, i64)> = sqlx::query_as(
@@ -133,7 +133,7 @@ impl WsBroadcaster {
         .fetch_all(&self.db)
         .await?;
         
-        tracing::debug!("Bids query returned {} rows", bids_raw.len());
+        // tracing::debug!("Bids query returned {} rows", bids_raw.len());
         
         let asks_raw: Vec<(i64, i64)> = sqlx::query_as(
             "SELECT limit_price_yes_pts, SUM(qty_remaining_micros)::bigint as total_qty 
@@ -149,7 +149,7 @@ impl WsBroadcaster {
         .fetch_all(&self.db)
         .await?;
         
-        tracing::debug!("Asks query returned {} rows", asks_raw.len());
+        // tracing::debug!("Asks query returned {} rows", asks_raw.len());
         
         let bids: Vec<Level> = bids_raw.into_iter()
             .map(|(price, qty)| Level { price_yes_pts: price, qty_micros: qty })
@@ -168,12 +168,12 @@ impl WsBroadcaster {
         tracing::info!("Sending orderbook snapshot to client {}: {} bids, {} asks", client_id, bids.len(), asks.len());
         
         let json = serde_json::to_string(&snapshot)?;
-        tracing::debug!("Snapshot JSON: {}", json);
+        // tracing::debug!("Snapshot JSON: {}", json);
         
         // Send to specific client
         let clients = self.clients.read().await;
         if let Some(client) = clients.get(client_id) {
-            tracing::debug!("Found client {}, attempting to send {} bytes", client_id, json.len());
+            // tracing::debug!("Found client {}, attempting to send {} bytes", client_id, json.len());
             if let Err(e) = client.sender.send(Message::Text(json)) {
                 tracing::error!("Failed to send message to client {}: {}", client_id, e);
                 return Err(Box::new(e));

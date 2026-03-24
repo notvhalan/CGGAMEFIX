@@ -23,17 +23,25 @@
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
-    "setup": "pnpm install && pnpm run docker:up"
+    "setup": "pnpm install && pnpm run docker:up",
+    "test:e2e": "vitest run --config vitest.config.e2e.ts",
+    "test:e2e:watch": "vitest --config vitest.config.e2e.ts",
+    "test:e2e:infra": "docker-compose -f docker-compose.test.yml up -d"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "@types/pg": "^8.11.0",
+    "@types/ws": "^8.5.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
+    "dotenv": "^16.4.0",
     "eslint": "^8.54.0",
     "eslint-config-prettier": "^9.0.0",
     "prettier": "^3.1.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.0",
+    "ws": "^8.18.0"
   },
   "dependencies": {
     "pg": "^8.18.0"

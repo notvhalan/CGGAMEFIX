@@ -284,59 +284,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /**
-   * Lock balance for an order (move from balance to locked_balance)
-   */
-  async lockBalance(
-    userId: string,
-    amountPence: number,
-    currency = 'GBP'
-  ): Promise<WalletAccount> {
-    const amountPounds = amountPence / 100;
-    
-    const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallets 
-       SET balance = balance - $1, 
-           locked_balance = locked_balance + $1, 
-           updated_at = NOW() 
-       WHERE user_id = $2 AND currency = $3 AND balance >= $1
-       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
-      [amountPounds, userId, currency]
-    );
-    
-    if (result.rows.length === 0) {
-      throw new Error('Insufficient balance');
-    }
-    
-    return result.rows[0];
-  }
-
-  /**
-   * Unlock balance (move from locked_balance back to balance)
-   */
-  async unlockBalance(
-    userId: string,
-    amountPence: number,
-    currency = 'GBP'
-  ): Promise<WalletAccount> {
-    const amountPounds = amountPence / 100;
-    
-    const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallets 
-       SET balance = balance + $1, 
-           locked_balance = locked_balance - $1, 
-           updated_at = NOW() 
-       WHERE user_id = $2 AND currency = $3 AND locked_balance >= $1
-       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
-      [amountPounds, userId, currency]
-    );
-    
-    if (result.rows.length === 0) {
-      throw new Error('Insufficient locked balance');
-    }
-    
-    return result.rows[0];
-  }
+  // ──────────────────────────────────────────────────────────────
+  // lockBalance() and unlockBalance() REMOVED.
+  // Wallet lock/unlock lifecycle is owned exclusively by the Rust
+  // exchange (wallet.rs).  Having a parallel path in the gateway
+  // caused a double-settlement bug that drove locked_balance
+  // negative.  Do not re-add wallet mutations here.
+  // ──────────────────────────────────────────────────────────────
 
   /**
    * Execute a database transaction
@@ -367,86 +321,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return `${sign}${pounds.toString()}.${pennies.toString().padStart(2, '0')}`;
   }
 
-  /**
-   * Insert settlement record for idempotency (prevents double-settlement)
-   */
-  async insertSettlementOnce(
-    client: PoolClient,
-    tradeId: string,
-    orderId: string,
-    userId: string
-  ): Promise<boolean> {
-    const res = await client.query(
-      `INSERT INTO trade_settlements (trade_id, order_id, user_id)
-       VALUES ($1, $2, $3)
-       ON CONFLICT DO NOTHING
-       RETURNING trade_id`,
-      [tradeId, orderId, userId]
-    );
-    return res.rowCount === 1;
-  }
+  // insertSettlementOnce() and getOrderForSettlement() REMOVED.
+  // trade_settlements rows are now written by the Rust exchange inside
+  // its clearing transaction (clearing.rs step 7.1).
 
-  /**
-   * Get order fields needed for settlement
-   */
-  async getOrderForSettlement(
-    client: PoolClient,
-    orderId: string
-  ): Promise<{ user_id: string; side: string; liability_pence: string; qty_original_micros: string } | null> {
-    const res = await client.query(
-      `SELECT user_id, side, liability_pence, qty_original_micros
-       FROM orders
-       WHERE id = $1`,
-      [orderId]
-    );
-    return res.rows[0] || null;
-  }
-
-  /**
-   * Lock funds in wallet (for placing orders)
-   */
-  async lockWalletFunds(
-    userId: string, 
-    amount: number, 
-    currency = 'USD'
-  ): Promise<WalletAccount> {
-    const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallets 
-       SET balance = balance - $1, locked_balance = locked_balance + $1, updated_at = NOW() 
-       WHERE user_id = $2 AND currency = $3 AND balance >= $1
-       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
-      [amount, userId, currency]
-    );
-    
-    if (result.rows.length === 0) {
-      throw new Error('Insufficient balance or wallet not found');
-    }
-    
-    return result.rows[0];
-  }
-
-  /**
-   * Unlock funds in wallet (for cancelled orders)
-   */
-  async unlockWalletFunds(
-    userId: string, 
-    amount: number, 
-    currency = 'USD'
-  ): Promise<WalletAccount> {
-    const result = await this.pool.query<WalletAccount>(
-      `UPDATE wallets 
-       SET balance = balance + $1, locked_balance = locked_balance - $1, updated_at = NOW() 
-       WHERE user_id = $2 AND currency = $3 AND locked_balance >= $1
-       RETURNING id, user_id as "userId", balance, locked_balance as "lockedBalance", currency, created_at as "createdAt", updated_at as "updatedAt"`,
-      [amount, userId, currency]
-    );
-    
-    if (result.rows.length === 0) {
-      throw new Error('Insufficient locked balance or wallet not found');
-    }
-    
-    return result.rows[0];
-  }
+  // lockBalance/unlockBalance/lockWalletFunds/unlockWalletFunds REMOVED.
+  // Wallet lock lifecycle belongs to Rust only.
   
   /**
    * Get all markets
@@ -474,6 +354,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
               outcomes, start_time as "startTime", end_time as "endTime", 
               settlement_time as "settlementTime",
               min_stake as "minStake", max_stake as "maxStake",
+              market_category as "marketCategory",
+              insurance_category as "insuranceCategory",
+              condition_name as "conditionName",
+              question,
+              maturity_date as "maturityDate",
               created_at as "createdAt", updated_at as "updatedAt"
        FROM markets 
        WHERE id = $1`,

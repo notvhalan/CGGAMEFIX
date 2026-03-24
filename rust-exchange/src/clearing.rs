@@ -1,9 +1,7 @@
 use tokio::sync::mpsc;
 use sqlx::PgPool;
-use sqlx::types::BigDecimal;
-use std::str::FromStr;
 use crate::types::*;
-use crate::wallet::WalletService;
+use crate::wallet::{WalletService, pence_to_pounds};
 use crate::websocket::{WsBroadcaster, WsMessage};
 
 /// Clearing service that processes fills from matching engine
@@ -48,6 +46,9 @@ impl ClearingService {
         
         // Dust threshold (1 full contract)
         const MIN_CONTRACT_MICROS: i64 = 1_000_000;
+
+        // Track taker's cumulative actual fill cost (for budget-aware IOC release)
+        let mut taker_actual_cost_pence: i64 = 0;
         
         // Process each fill in a transaction
         for fill in fills {
@@ -160,6 +161,14 @@ impl ClearingService {
 
             // 5. Settle taker wallet
             let taker_reduce_only = taker_order.liability_pence == 0 && taker_order.time_in_force == "IOC";
+
+            // IOC budget order: reserved the raw budget (not contracts × limit).
+            // Settle at exec price so locked -= actual cost (no per-fill improvement;
+            // the unspent budget is returned at IOC cancel time).
+            let taker_is_ioc_budget = !taker_reduce_only
+                && taker_order.time_in_force == "IOC"
+                && taker_order.liability_pence > 0;
+
             if taker_reduce_only {
                 self.wallet
                     .settle_reduce_only_fill(
@@ -184,12 +193,11 @@ impl ClearingService {
                 .fetch_optional(&mut *tx)
                 .await?;
                 if let Some(w) = wallet_row {
+                    let zero = pence_to_pounds(0);
                     let (debit, credit) = if cashflow_pence >= 0 {
-                        let c = BigDecimal::from_str(&format!("{:.2}", cashflow_pence as f64 / 100.0)).unwrap_or_default();
-                        (BigDecimal::from_str("0.00").unwrap_or_default(), c)
+                        (zero, pence_to_pounds(cashflow_pence))
                     } else {
-                        let d = BigDecimal::from_str(&format!("{:.2}", (-cashflow_pence) as f64 / 100.0)).unwrap_or_default();
-                        (d, BigDecimal::from_str("0.00").unwrap_or_default())
+                        (pence_to_pounds(-cashflow_pence), zero)
                     };
                     let side_label = match taker_order.side { Side::SellYes => "SELL", Side::BuyYes => "BUY" };
                     let close_desc = format!(
@@ -220,16 +228,34 @@ impl ClearingService {
                     );
                 }
             } else {
+                // For IOC budget orders, use exec_price as effective limit so that
+                // settle_fill deducts actual cost from lock (reserved=actual, improvement=0).
+                // For GTC limit orders, use the order's limit price (normal path).
+                let effective_limit = if taker_is_ioc_budget {
+                    fill.exec_yes_pts
+                } else {
+                    taker_order.limit_price_yes_pts
+                };
+
                 self.wallet
                     .settle_fill(
                         &mut tx,
                         taker_order.user_id,
                         taker_order.side,
-                        taker_order.limit_price_yes_pts,
+                        effective_limit,
                         fill.exec_yes_pts,
                         fill.qty_micros,
                     )
                     .await?;
+            }
+
+            // Track actual cost for budget-aware IOC release
+            if taker_is_ioc_budget {
+                let fill_cost = match taker_order.side {
+                    Side::BuyYes => calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts),
+                    Side::SellYes => calculate_risk_sellyes(fill.qty_micros, fill.exec_yes_pts),
+                };
+                taker_actual_cost_pence += fill_cost;
             }
 
             // 6. Charge taker fee
@@ -278,6 +304,22 @@ impl ClearingService {
                 fill.qty_micros,
                 cost_pence,
                 fee as i32
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            // 7.1 Insert trade_settlements rows (idempotency + audit)
+            sqlx::query!(
+                r#"
+                INSERT INTO trade_settlements (trade_id, order_id, user_id)
+                VALUES ($1::text, $2::text, $3), ($1::text, $4::text, $5)
+                ON CONFLICT DO NOTHING
+                "#,
+                fill.trade_id.to_string(),
+                fill.maker_order_id.to_string(),
+                fill.maker_user_id,
+                fill.taker_order_id.to_string(),
+                fill.taker_user_id
             )
             .execute(&mut *tx)
             .await?;
@@ -339,7 +381,7 @@ impl ClearingService {
         }
 
         if let Some(taker_order_id) = taker_order_id {
-            if let Some(market_id) = self.finalize_ioc_remainder(taker_order_id).await? {
+            if let Some(market_id) = self.finalize_ioc_remainder(taker_order_id, taker_actual_cost_pence).await? {
                 affected_markets.insert(market_id);
             }
         }
@@ -358,6 +400,7 @@ impl ClearingService {
     async fn finalize_ioc_remainder(
         &self,
         taker_order_id: uuid::Uuid,
+        taker_actual_cost_pence: i64,
     ) -> anyhow::Result<Option<uuid::Uuid>> {
         let order = sqlx::query!(
             r#"
@@ -382,35 +425,58 @@ impl ClearingService {
             return Ok(None);
         };
 
-        if order.time_in_force != "IOC"
-            || (order.status != "OPEN" && order.status != "PARTIALLY_MATCHED")
-            || order.qty_remaining_micros <= 0
-        {
+        if order.time_in_force != "IOC" {
             return Ok(None);
+        }
+
+        // All non-reduce-only IOC orders with liability use budget-aware path.
+        // Detection via order metadata (not taker_actual_cost_pence > 0) so that
+        // the correct path is taken even when every fill rounds its cost to 0p.
+        let is_budget_ioc = order.liability_pence > 0;
+
+        // Non-budget IOC: only finalize if still open with remaining qty
+        if !is_budget_ioc {
+            if (order.status != "OPEN" && order.status != "PARTIALLY_MATCHED")
+                || order.qty_remaining_micros <= 0
+            {
+                return Ok(None);
+            }
         }
 
         let mut tx = self.pool.begin().await?;
-        let update_result = sqlx::query!(
-            r#"
-            UPDATE orders
-            SET status = 'CANCELLED',
-                qty_remaining_micros = 0,
-                updated_at = NOW()
-            WHERE id = $1
-              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-              AND qty_remaining_micros > 0
-            "#,
-            taker_order_id
-        )
-        .execute(&mut *tx)
-        .await?;
 
-        if update_result.rows_affected() == 0 {
-            tx.rollback().await?;
-            return Ok(None);
+        // Mark as CANCELLED if the order is still open/partially matched
+        if (order.status == "OPEN" || order.status == "PARTIALLY_MATCHED")
+            && order.qty_remaining_micros > 0
+        {
+            let update_result = sqlx::query!(
+                r#"
+                UPDATE orders
+                SET status = 'CANCELLED',
+                    qty_remaining_micros = 0,
+                    updated_at = NOW()
+                WHERE id = $1
+                  AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+                  AND qty_remaining_micros > 0
+                "#,
+                taker_order_id
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            if update_result.rows_affected() == 0 && !is_budget_ioc {
+                // Non-budget: another process already handled it
+                tx.rollback().await?;
+                return Ok(None);
+            }
         }
 
-        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
+        // Calculate how much locked_balance to release
+        let release_pence = if is_budget_ioc && order.liability_pence > 0 {
+            // Budget-aware: release = budget − actual spend (exact, no rounding gap)
+            (order.liability_pence - taker_actual_cost_pence).max(0)
+        } else if order.liability_pence > 0 && order.qty_original_micros > 0 {
+            // Proportional: release = liability × remaining / original
             ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
                 / order.qty_original_micros as i128) as i64
         } else {
@@ -425,9 +491,12 @@ impl ClearingService {
 
         tx.commit().await?;
         tracing::info!(
-            "IOC taker order {} cancelled remainder and {}p released",
+            "IOC taker order {} finalized: released {}p (actual_cost={}p, liability={}p, status={})",
             taker_order_id,
-            release_pence
+            release_pence,
+            taker_actual_cost_pence,
+            order.liability_pence,
+            order.status
         );
 
         Ok(Some(order.market_id))

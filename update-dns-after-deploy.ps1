@@ -1,8 +1,8 @@
 # This script gets the current ECS task IP and updates Cloudflare DNS automatically
 # Run this after each deployment to update gamefix.fun to point to the new IP
 
-$CLOUDFLARE_API_TOKEN = "" # Get from: https://dash.cloudflare.com/profile/api-tokens
-$CLOUDFLARE_ZONE_ID = ""   # Get from: https://dash.cloudflare.com/ → gamefix.fun → Overview (right sidebar)
+$CLOUDFLARE_API_TOKEN = "cfut_uTEkEurbqZWNdZDlJvlTC0e6iLQRhYa4mWkcnAyg5d40e0c8"
+$CLOUDFLARE_ZONE_ID = ""   # Auto-fetched below if empty
 $DOMAIN = "gamefix.fun"
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -25,7 +25,7 @@ $newIP = aws ec2 describe-network-interfaces --region us-east-1 --network-interf
 Write-Host "New IP: $newIP" -ForegroundColor Green
 
 # Check if Cloudflare credentials are set
-if (-not $CLOUDFLARE_API_TOKEN -or -not $CLOUDFLARE_ZONE_ID) {
+if (-not $CLOUDFLARE_API_TOKEN) {
     Write-Host "`n========================================" -ForegroundColor Yellow
     Write-Host "Manual Update Required" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Yellow
@@ -38,15 +38,26 @@ if (-not $CLOUDFLARE_API_TOKEN -or -not $CLOUDFLARE_ZONE_ID) {
     Write-Host "2. Click: gamefix.fun → DNS → Records" -ForegroundColor Cyan
     Write-Host "3. Edit the '@' A record" -ForegroundColor Cyan
     Write-Host "4. Change IP to: $newIP" -ForegroundColor Green
-    Write-Host "5. Save" -ForegroundColor Cyan
+    Write-Host "5. Ensure 'Proxy status' is ORANGE (Proxied) for HTTPS" -ForegroundColor Green
+    Write-Host "6. Save" -ForegroundColor Cyan
     exit 0
 }
 
-# Get DNS record ID
-Write-Host "`nFinding DNS record..." -ForegroundColor Yellow
 $headers = @{
     "Authorization" = "Bearer $CLOUDFLARE_API_TOKEN"
     "Content-Type" = "application/json"
+}
+
+# Auto-fetch Zone ID if not set
+if (-not $CLOUDFLARE_ZONE_ID) {
+    Write-Host "`nLooking up Zone ID for $DOMAIN..." -ForegroundColor Yellow
+    $zoneResponse = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" -Headers $headers -Method Get
+    if ($zoneResponse.result.Count -eq 0) {
+        Write-Host "ERROR: Could not find zone for $DOMAIN. Check your API token has 'Edit zone DNS' permission." -ForegroundColor Red
+        exit 1
+    }
+    $CLOUDFLARE_ZONE_ID = $zoneResponse.result[0].id
+    Write-Host "  Zone ID: $CLOUDFLARE_ZONE_ID" -ForegroundColor Green
 }
 
 $listUrl = "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records?type=A&name=$DOMAIN"
@@ -76,7 +87,7 @@ $body = @{
     name = "@"
     content = $newIP
     ttl = 1
-    proxied = $false
+    proxied = $true
 } | ConvertTo-Json
 
 $updateResponse = Invoke-RestMethod -Uri $updateUrl -Headers $headers -Method Put -Body $body
@@ -87,7 +98,7 @@ if ($updateResponse.success) {
     Write-Host "========================================" -ForegroundColor Green
     Write-Host "`nOld IP: $oldIP" -ForegroundColor Gray
     Write-Host "New IP: $newIP" -ForegroundColor Green
-    Write-Host "`nYour site will be live at http://gamefix.fun:3001 in 1-2 minutes" -ForegroundColor Cyan
+    Write-Host "`nYour site will be live at https://gamefix.fun in 1-2 minutes" -ForegroundColor Cyan
 } else {
     Write-Host "ERROR: Failed to update DNS" -ForegroundColor Red
     Write-Host $updateResponse.errors

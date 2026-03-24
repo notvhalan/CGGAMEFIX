@@ -5,6 +5,14 @@ use anyhow::Result;
 use std::str::FromStr;
 use crate::types::*;
 
+/// Convert pence (i64) to pounds BigDecimal without floating-point.
+/// e.g. 706 → "7.06", -294 → "-2.94", 0 → "0.00"
+pub(crate) fn pence_to_pounds(pence: i64) -> BigDecimal {
+    let sign = if pence < 0 { "-" } else { "" };
+    let abs = pence.unsigned_abs() as u64;
+    BigDecimal::from_str(&format!("{}{}.{:02}", sign, abs / 100, abs % 100)).unwrap()
+}
+
 /// Wallet operations with proper locking model
 #[derive(Clone)]
 pub struct WalletService {
@@ -24,8 +32,8 @@ impl WalletService {
         user_id: Uuid,
         reserve_pence: i64,
     ) -> Result<()> {
-        // Convert pence to pounds (NUMERIC in DB)
-        let amount_pounds = BigDecimal::from_str(&format!("{}", reserve_pence as f64 / 100.0))?;
+        // Convert pence to pounds (NUMERIC in DB) — no floating-point
+        let amount_pounds = pence_to_pounds(reserve_pence);
         
         let result = sqlx::query!(
             r#"
@@ -78,14 +86,15 @@ impl WalletService {
         let improvement_pence = reserved_pence - actual_pence;
 
         if improvement_pence >= 0 {
-            // Normal case: release reserved, lock actual, return improvement
-            let reserved_pounds = BigDecimal::from_str(&format!("{}", reserved_pence as f64 / 100.0))?;
-            let improvement_pounds = BigDecimal::from_str(&format!("{}", improvement_pence as f64 / 100.0))?;
+            // Normal case: release reserved from lock, return improvement to available
+            let reserved_pounds = pence_to_pounds(reserved_pence);
+            let improvement_pounds = pence_to_pounds(improvement_pence);
             
+            // Clamp so locked_balance never goes negative
             sqlx::query!(
                 r#"
                 UPDATE wallets
-                SET locked_balance = locked_balance - $1,
+                SET locked_balance = GREATEST(locked_balance - $1, 0),
                     balance = balance + $2,
                     updated_at = NOW()
                 WHERE user_id = $3 AND currency = 'GBP'
@@ -111,13 +120,16 @@ impl WalletService {
         user_id: Uuid,
         release_pence: i64,
     ) -> Result<()> {
-        let release_pounds = BigDecimal::from_str(&format!("{}", release_pence as f64 / 100.0))?;
+        let release_pounds = pence_to_pounds(release_pence);
         
+        // Use LEAST to clamp: never release more than what is actually locked.
+        // This prevents locked_balance from going negative if prior rounding
+        // errors or double-settlement left it lower than expected.
         sqlx::query!(
             r#"
             UPDATE wallets
-            SET balance = balance + $1,
-                locked_balance = locked_balance - $1,
+            SET balance = balance + LEAST($1, locked_balance),
+                locked_balance = GREATEST(locked_balance - $1, 0),
                 updated_at = NOW()
             WHERE user_id = $2 AND currency = 'GBP'
             "#,
@@ -137,7 +149,7 @@ impl WalletService {
         user_id: Uuid,
         fee_pence: i64,
     ) -> Result<()> {
-        let fee_pounds = BigDecimal::from_str(&format!("{}", fee_pence as f64 / 100.0))?;
+        let fee_pounds = pence_to_pounds(fee_pence);
         
         sqlx::query!(
             r#"
@@ -172,7 +184,7 @@ impl WalletService {
         };
 
         if cashflow_pence >= 0 {
-            let credit_pounds = BigDecimal::from_str(&format!("{}", cashflow_pence as f64 / 100.0))?;
+            let credit_pounds = pence_to_pounds(cashflow_pence);
             sqlx::query!(
                 r#"
                 UPDATE wallets
@@ -188,7 +200,7 @@ impl WalletService {
             .await?;
         } else {
             let debit_pence = -cashflow_pence;
-            let debit_pounds = BigDecimal::from_str(&format!("{}", debit_pence as f64 / 100.0))?;
+            let debit_pounds = pence_to_pounds(debit_pence);
             let updated = sqlx::query!(
                 r#"
                 UPDATE wallets
@@ -226,11 +238,30 @@ impl WalletService {
         .fetch_one(&self.pool)
         .await?;
 
-        // Convert from NUMERIC (which sqlx reads as BigDecimal) to pence
-        // For now, use a simple string parse (in production, use bigdecimal crate)
-        let balance_pence = (row.balance.to_string().parse::<f64>()? * 100.0) as i64;
-        let locked_pence = (row.locked_balance.to_string().parse::<f64>()? * 100.0) as i64;
+        // Convert BigDecimal pounds to i64 pence without floating-point.
+        // BigDecimal::to_string() produces e.g. "12.34" — parse the integer
+        // and fractional parts directly.
+        let balance_pence = pounds_str_to_pence(&row.balance.to_string());
+        let locked_pence = pounds_str_to_pence(&row.locked_balance.to_string());
 
         Ok((balance_pence, locked_pence))
     }
+}
+
+/// Convert a pounds string like "12.34" or "12" to pence (i64).
+/// Handles negative values, missing decimals, and single-digit fractions.
+fn pounds_str_to_pence(s: &str) -> i64 {
+    let negative = s.starts_with('-');
+    let s = s.trim_start_matches('-');
+    let (whole, frac) = if let Some(dot) = s.find('.') {
+        (&s[..dot], &s[dot + 1..])
+    } else {
+        (s, "00")
+    };
+    let whole: i64 = whole.parse().unwrap_or(0);
+    // Pad or truncate fraction to exactly 2 digits
+    let frac_str = format!("{:0<2}", &frac[..frac.len().min(2)]);
+    let frac_val: i64 = frac_str.parse().unwrap_or(0);
+    let pence = whole * 100 + frac_val;
+    if negative { -pence } else { pence }
 }

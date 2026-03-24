@@ -1,4 +1,4 @@
-﻿{
+{
     "memory":  "512",
     "executionRoleArn":  "arn:aws:iam::474668399531:role/ecsTaskExecutionRole",
     "family":  "web-frontend-hybrid",

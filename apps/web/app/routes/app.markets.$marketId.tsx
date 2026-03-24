@@ -165,12 +165,14 @@ export default function MarketDetail() {
     setUserOrders(loaderData.userOrders);
   }, [loaderData.userOrders]);
   
-  // Callback to refetch data after cashout
+  // Callback to refetch data after cashout.
+  // Settlement is triggered immediately server-side after order submission,
+  // so a short series of revalidations is enough to catch the cleared position.
   const handleCashoutSuccess = () => {
     revalidator.revalidate();
-    // Close execution returns quickly; clearing/position updates may land shortly after.
-    setTimeout(() => revalidator.revalidate(), 400);
-    setTimeout(() => revalidator.revalidate(), 1200);
+    setTimeout(() => revalidator.revalidate(), 500);
+    setTimeout(() => revalidator.revalidate(), 1500);
+    setTimeout(() => revalidator.revalidate(), 3000);
   };
 
   // Show feedback from action results
@@ -317,6 +319,65 @@ export default function MarketDetail() {
         padding: '0.75rem 1rem',
         flexShrink: 0
       }}>
+        {/* Insurance back-link + question banner */}
+        {market.marketCategory === 'INSURANCE' && (
+          <div style={{
+            marginBottom: '0.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            paddingBottom: '0.5rem',
+            borderBottom: '1px solid rgba(139,92,246,0.2)',
+          }}>
+            <Link
+              to={`/app/insurance/${market.insuranceCategory}`}
+              style={{
+                fontSize: '0.75rem',
+                color: '#a78bfa',
+                textDecoration: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                padding: '0.2rem 0.5rem',
+                borderRadius: '5px',
+                border: '1px solid rgba(139,92,246,0.3)',
+                background: 'rgba(139,92,246,0.08)',
+                flexShrink: 0,
+                fontWeight: 600,
+              }}
+            >
+              ← Insurance / {market.insuranceCategory
+                ? market.insuranceCategory.charAt(0).toUpperCase() + market.insuranceCategory.slice(1)
+                : ''}
+            </Link>
+            {market.conditionName && (
+              <span style={{
+                fontSize: '0.6875rem', fontWeight: 600,
+                color: '#c4b5fd',
+                padding: '0.15rem 0.5rem',
+                borderRadius: '5px',
+                background: 'rgba(139,92,246,0.12)',
+                border: '1px solid rgba(139,92,246,0.2)',
+              }}>{market.conditionName}</span>
+            )}
+            {market.maturityDate && (
+              <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                Matures: {new Date(market.maturityDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </span>
+            )}
+            {market.question && (
+              <span style={{
+                fontSize: '0.8125rem',
+                color: '#94a3b8',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1,
+                minWidth: 0,
+              }}>{market.question}</span>
+            )}
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             <h1 style={{ 

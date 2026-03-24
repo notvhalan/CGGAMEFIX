@@ -51,11 +51,11 @@ COPY --from=builder /app/apps/web/public ./apps/web/public
 
 WORKDIR /app/apps/web
 
-# Expose port 3001
-EXPOSE 3001
+# Expose port 80 (Cloudflare proxied mode connects on port 80)
+EXPOSE 80
 
 # Set runtime environment variables
-ENV PORT=3001
+ENV PORT=80
 ENV API_BASE_URL=https://api.gamefix.fun
 ENV VITE_API_URL=https://api.gamefix.fun
 ENV VITE_WS_URL=https://api.gamefix.fun

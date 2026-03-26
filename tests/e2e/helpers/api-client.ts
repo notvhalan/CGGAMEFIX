@@ -109,4 +109,39 @@ export class TestApiClient {
     }
     return data;
   }
+
+  // ─── Cashout (close position) shortcuts ───────────────────
+
+  async cashoutQuote(opts: {
+    marketId: string;
+    netContractsMicros: string;
+  }): Promise<{
+    filledContractsMicros: string;
+    unfilledContractsMicros: string;
+    avgYesPts: number;
+    costPence: number;
+    estimatedFeePence: number;
+    netValuePence: number;
+    quoteTimestamp: number;
+  }> {
+    const { status, data } = await this.post('/v1/cashout/quote', opts);
+    if (status >= 400) {
+      throw new Error(`cashoutQuote failed (${status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
+
+  async cashoutExecute(opts: {
+    marketId: string;
+    netContractsMicros: string;
+    closeMode?: 'ioc' | 'limit';
+    limitYesPts?: number;
+    lotIds?: string[];
+  }): Promise<{ orderId: string; success: boolean }> {
+    const { status, data } = await this.post('/v1/cashout/execute', opts);
+    if (status >= 400) {
+      throw new Error(`cashoutExecute failed (${status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
 }

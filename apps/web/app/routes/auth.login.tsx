@@ -23,6 +23,9 @@ export async function action({ request }: ActionFunctionArgs) {
   const name = formData.get("name");
 
   const API_BASE_URL = process.env.API_BASE_URL || process.env.VITE_API_URL || 'http://localhost:3000';
+  // Always use the explicit success URL so the redirect is never downgraded to http://
+  // by the ECS container (which receives plain HTTP from Cloudflare Flexible SSL).
+  const SUCCESS_URL = process.env.AUTH_SUCCESS_REDIRECT || '/app';
 
   try {
     const endpoint = mode === "signup" ? "/v1/auth/signup" : "/v1/auth/login";
@@ -34,7 +37,6 @@ export async function action({ request }: ActionFunctionArgs) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      credentials: "include",
     });
 
     const data = await response.json();
@@ -43,13 +45,24 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({ error: data.message || "Authentication failed" }, { status: response.status });
     }
 
-    // Forward the Set-Cookie header from backend to browser
-    const setCookie = response.headers.get("Set-Cookie");
-    
-    // Redirect to app on success with the session cookie
-    return redirect("/app", {
-      headers: setCookie ? { "Set-Cookie": setCookie } : {},
-    });
+    // Forward the Set-Cookie header from backend to browser.
+    // Use getSetCookie() (array API) when available to avoid the Headers.get()
+    // comma-joining quirk, then fall back to .get() for older Node versions.
+    const cookieHeaders: HeadersInit = {};
+    if (typeof (response.headers as any).getSetCookie === 'function') {
+      const cookies = (response.headers as any).getSetCookie() as string[];
+      if (cookies.length > 0) {
+        // Pass all Set-Cookie headers to the browser
+        cookieHeaders['Set-Cookie'] = cookies.join(', ');
+      }
+    } else {
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookieHeaders['Set-Cookie'] = setCookie;
+    }
+
+    // Use explicit absolute URL so the browser always lands on HTTPS,
+    // not http:// (which happens when ECS interprets the request as HTTP).
+    return redirect(SUCCESS_URL, { headers: cookieHeaders });
   } catch (error) {
     return json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
@@ -87,6 +100,48 @@ export default function Login() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const [clientError, setClientError] = useState<string | null>(null);
+  const [clientLoading, setClientLoading] = useState(false);
+
+  /**
+   * Client-side submit handler — calls the API directly from the browser so the
+   * browser owns the Set-Cookie handshake (no Remix SSR cookie forwarding).
+   * This avoids the ECS HTTP→HTTPS downgrade issue with Cloudflare Flexible SSL.
+   */
+  const handleClientSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    // Only intercept when running in the browser (not SSR pre-render)
+    if (typeof window === 'undefined') return;
+    e.preventDefault();
+    setClientError(null);
+    setClientLoading(true);
+    const form = e.currentTarget;
+    const email = (form.elements.namedItem('email') as HTMLInputElement)?.value;
+    const password = (form.elements.namedItem('password') as HTMLInputElement)?.value;
+    const name = (form.elements.namedItem('name') as HTMLInputElement)?.value;
+    const endpoint = mode === 'signup' ? '/v1/auth/signup' : '/v1/auth/login';
+    const body = mode === 'signup'
+      ? { email, password, name }
+      : { email, password };
+    try {
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        credentials: 'include', // browser stores the Set-Cookie directly
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setClientError(data.message || 'Authentication failed');
+        setClientLoading(false);
+        return;
+      }
+      // Full navigation keeps the URL HTTPS and sends the new cookie immediately
+      window.location.href = '/app';
+    } catch {
+      setClientError('Something went wrong. Please try again.');
+      setClientLoading(false);
+    }
+  };
 
   return (
     <div style={{ 
@@ -229,7 +284,7 @@ export default function Login() {
         </div>
 
         {/* Error Message */}
-        {actionData?.error && (
+        {(actionData?.error || clientError) && (
           <div style={{
             padding: '1rem',
             background: 'rgba(248, 81, 73, 0.1)',
@@ -239,12 +294,12 @@ export default function Login() {
             fontSize: '0.875rem',
             marginBottom: '1.25rem'
           }}>
-            {actionData.error}
+            {clientError || actionData?.error}
           </div>
         )}
 
         {/* Email/Password Form */}
-        <Form method="post" style={{ marginBottom: '1.5rem' }}>
+        <Form method="post" style={{ marginBottom: '1.5rem' }} onSubmit={handleClientSubmit}>
           <input type="hidden" name="mode" value={mode} />
 
           {mode === "signup" && (
@@ -377,11 +432,11 @@ export default function Login() {
 
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || clientLoading}
             style={{
               width: '100%',
               padding: '1rem',
-              background: isSubmitting 
+              background: (isSubmitting || clientLoading)
                 ? 'rgba(88, 166, 255, 0.3)'
                 : 'linear-gradient(135deg, #58a6ff 0%, #409eff 100%)',
               color: 'white',
@@ -389,11 +444,11 @@ export default function Login() {
               borderRadius: '8px',
               fontSize: '1.0625rem',
               fontWeight: 600,
-              cursor: isSubmitting ? 'not-allowed' : 'pointer',
+              cursor: (isSubmitting || clientLoading) ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s'
             }}
           >
-            {isSubmitting ? "Please wait..." : mode === "signup" ? "Create Account" : "Log In"}
+            {(isSubmitting || clientLoading) ? "Please wait..." : mode === "signup" ? "Create Account" : "Log In"}
           </button>
         </Form>
 

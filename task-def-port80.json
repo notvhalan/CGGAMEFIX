@@ -32,8 +32,20 @@
                                                              "name":  "VITE_API_URL"
                                                          },
                                                          {
+                                                             "value":  "https://api.gamefix.fun",
+                                                             "name":  "API_BASE_URL"
+                                                         },
+                                                         {
+                                                             "value":  "https://gamefix.fun/app",
+                                                             "name":  "AUTH_SUCCESS_REDIRECT"
+                                                         },
+                                                         {
                                                              "value":  "wss://api.gamefix.fun",
                                                              "name":  "VITE_WS_URL"
+                                                         },
+                                                         {
+                                                             "value":  "wss://ws.gamefix.fun/ws",
+                                                             "name":  "VITE_RUST_WS_URL"
                                                          }
                                                      ],
                                      "essential":  true,

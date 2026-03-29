@@ -337,6 +337,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
               outcomes, start_time as "startTime", end_time as "endTime", 
               settlement_time as "settlementTime",
               min_stake as "minStake", max_stake as "maxStake",
+              market_category as "marketCategory",
+              insurance_category as "insuranceCategory",
+              condition_name as "conditionName",
+              question, tags,
+              maturity_date as "maturityDate",
               created_at as "createdAt", updated_at as "updatedAt"
        FROM markets 
        WHERE status = 'ACTIVE'

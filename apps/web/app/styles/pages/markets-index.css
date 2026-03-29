@@ -1,98 +1,463 @@
-/* Markets Index Page Styles - Dark Theme */
+/* ============================================================
+   GameFix — Markets Categories Page
+   ============================================================ */
 
-.markets-page {
-  min-height: 100vh;
-  background: var(--terminal-bg);
-  padding: 1.5rem;
-  width: 100%;
-  max-width: none;
+/* ── Page shell ──────────────────────────────────────────── */
+.mkt-page {
+  padding: 1.5rem 2rem;
+  max-width: 1280px;
+  margin: 0 auto;
 }
 
-.markets-header {
-  margin-bottom: 2rem;
+/* ── Header ──────────────────────────────────────────────── */
+.mkt-header {
+  margin-bottom: 1.5rem;
 }
 
-.markets-title {
-  font-size: 2rem;
+.mkt-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.mkt-title {
+  font-size: 1.5rem;
   font-weight: 700;
-  margin-bottom: 0.5rem;
   color: var(--text-primary);
-  background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  margin: 0 0 0.25rem;
 }
 
-.markets-subtitle {
+.mkt-subtitle {
   color: var(--text-secondary);
-  font-size: 1rem;
+  font-size: 0.875rem;
+  margin: 0;
+  line-height: 1.4;
 }
 
-.markets-search-container {
-  margin-bottom: 2rem;
+.mkt-header-stats {
+  display: flex;
+  gap: 1.5rem;
+  flex-shrink: 0;
 }
 
-.markets-search-input {
+.mkt-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.mkt-stat-value {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.mkt-stat-label {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Search ──────────────────────────────────────────────── */
+.mkt-search-wrap {
+  position: relative;
+  max-width: 480px;
+}
+
+.mkt-search-icon {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.mkt-search {
   width: 100%;
-  max-width: 500px;
-  padding: 0.875rem 1rem;
+  padding: 0.5rem 2rem 0.5rem 2.25rem;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-primary);
   border-radius: 8px;
-  font-size: 1rem;
+  font-size: 0.875rem;
   color: var(--text-primary);
   outline: none;
-  transition: all 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.markets-search-input::placeholder {
-  color: var(--text-muted);
-}
-
-.markets-search-input:focus {
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
-  background: var(--bg-primary);
-}
-
-.markets-empty-state {
-  padding: 3rem;
-  text-align: center;
-  background: var(--bg-secondary);
-  border-radius: 12px;
-  border: 1px solid var(--border-color);
-}
-
-.markets-empty-title {
-  font-size: 1.25rem;
+.mkt-search::placeholder {
   color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.mkt-search:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.12);
+}
+
+.mkt-search-clear {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  line-height: 1;
+}
+
+.mkt-search-clear:hover {
+  color: var(--text-primary);
+}
+
+/* ── Category section ────────────────────────────────────── */
+.mkt-category {
   margin-bottom: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-secondary);
 }
 
-.markets-empty-subtitle {
-  color: var(--text-muted);
+.mkt-category--insurance {
+  border-color: rgba(125, 86, 194, 0.3);
 }
 
+.mkt-cat-header {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.875rem 1.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  transition: background 0.1s;
+}
+
+.mkt-cat-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mkt-cat-icon {
+  font-size: 1.375rem;
+  width: 2rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.mkt-cat-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.mkt-cat-badge {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: 9999px;
+  padding: 0.15rem 0.5rem;
+}
+
+.mkt-cat-badge--count {
+  color: var(--accent-green);
+  background: rgba(63, 185, 80, 0.08);
+  border-color: rgba(63, 185, 80, 0.2);
+}
+
+.mkt-cat-chevron {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.mkt-cat-chevron--open {
+  transform: rotate(90deg);
+}
+
+/* ── Subcategories container ─────────────────────────────── */
+.mkt-subcats {
+  border-top: 1px solid var(--border-primary);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+/* ── Subcategory card ────────────────────────────────────── */
+.mkt-subcat {
+  background: var(--terminal-bg);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mkt-subcat-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.mkt-subcat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  flex-shrink: 0;
+}
+
+.mkt-subcat-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mkt-subcat-count {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* ── Market rows inside a subcategory ────────────────────── */
+.mkt-subcat-markets {
+  display: flex;
+  flex-direction: column;
+}
+
+.mkt-market-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  text-decoration: none;
+  color: var(--text-primary);
+  transition: background 0.1s;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.mkt-market-row:last-child {
+  border-bottom: none;
+}
+
+.mkt-market-row:hover {
+  background: rgba(88, 166, 255, 0.06);
+}
+
+.mkt-market-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mkt-market-type {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--accent-blue);
+  background: rgba(88, 166, 255, 0.1);
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.mkt-market-status {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--accent-green);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.mkt-market-arrow {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* ── Insurance subcategory cards ─────────────────────────── */
+.mkt-ins-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  background: var(--terminal-bg);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text-primary);
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+
+.mkt-ins-card:hover {
+  border-color: rgba(125, 86, 194, 0.5);
+  background: rgba(125, 86, 194, 0.04);
+  transform: translateY(-1px);
+}
+
+.mkt-ins-card-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.mkt-ins-icon {
+  font-size: 1.5rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.mkt-ins-title {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.mkt-ins-desc {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 0.125rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+
+.mkt-ins-card-right {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  flex-shrink: 0;
+}
+
+.mkt-ins-tags {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.mkt-ins-tag {
+  font-size: 0.625rem;
+  font-weight: 500;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(125, 86, 194, 0.1);
+  color: #a371f7;
+  border: 1px solid rgba(125, 86, 194, 0.25);
+}
+
+.mkt-ins-count {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.mkt-ins-arrow {
+  font-size: 0.75rem;
+  color: var(--accent-blue);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Empty state ─────────────────────────────────────────── */
+.mkt-empty {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+}
+
+.mkt-empty-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+  opacity: 0.4;
+}
+
+.mkt-empty-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mkt-empty-desc {
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .mkt-page {
+    padding: 1rem;
+  }
+
+  .mkt-header-top {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .mkt-header-stats {
+    width: 100%;
+    justify-content: space-around;
+  }
+
+  .mkt-ins-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.625rem;
+  }
+
+  .mkt-ins-card-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .mkt-ins-desc {
+    white-space: normal;
+    max-width: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .mkt-cat-badge {
+    display: none;
+  }
+}
+
+/* ── Legacy grid (kept for compatibility) ────────────────── */
 .markets-grid {
   display: grid;
   gap: 1.5rem;
   grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-}
-
-@media (max-width: 768px) {
-  .markets-page {
-    padding: 1rem;
-  }
-
-  .markets-title {
-    font-size: 1.5rem;
-  }
-
-  .markets-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .markets-search-input {
-    max-width: 100%;
-  }
 }

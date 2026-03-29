@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/* Admin dashboard custom theme layer */
+@theme {
+  --color-admin-bg: #0b0f19;
+  --color-admin-surface: #111827;
+  --color-admin-surface-2: #1a2234;
+  --color-admin-surface-3: #1f2b3d;
+  --color-admin-border: #1e293b;
+  --color-admin-border-2: #334155;
+  --color-admin-text: #e2e8f0;
+  --color-admin-text-muted: #94a3b8;
+  --color-admin-text-dim: #64748b;
+  --color-admin-accent: #3b82f6;
+  --color-admin-accent-2: #6366f1;
+  --color-admin-green: #22c55e;
+  --color-admin-amber: #f59e0b;
+  --color-admin-red: #ef4444;
+  --color-admin-cyan: #06b6d4;
+}
+
+/* Sidebar transition */
+.admin-sidebar {
+  transition: width 0.2s ease;
+}
+
+/* Table row hover */
+.admin-table-row:hover {
+  background: var(--color-admin-surface-2);
+}
+
+/* Scrollbar styling */
+.admin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.admin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.admin-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--color-admin-border-2);
+  border-radius: 3px;
+}
+.admin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* KPI card hover */
+.kpi-card {
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.kpi-card:hover {
+  border-color: var(--color-admin-accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
+}
+
+/* Tab active indicator */
+.admin-tab-active {
+  border-bottom: 2px solid var(--color-admin-accent);
+  color: var(--color-admin-text);
+}
+
+/* Status dot animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.status-dot-pulse {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Slider styling */
+input[type="range"].admin-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--color-admin-border-2);
+  border-radius: 2px;
+  outline: none;
+}
+input[type="range"].admin-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-admin-accent);
+  cursor: pointer;
+}
+
+/* Chart placeholder */
+.chart-placeholder {
+  background: linear-gradient(135deg, var(--color-admin-surface-2) 0%, var(--color-admin-surface) 100%);
+}
+
+/* Confirmation modal overlay */
+.modal-overlay {
+  backdrop-filter: blur(4px);
+}

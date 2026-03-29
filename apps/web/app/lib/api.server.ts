@@ -329,3 +329,103 @@ export async function getInsuranceCategoryWithContracts(slug: string): Promise<{
 }
 
 export { API_BASE_URL };
+
+// ── Ladder APIs ───────────────────────────────────────────────────────────
+
+export interface LadderSubcategory {
+  conditionName: string;
+  contractCount: number;
+  firstMaturity: string | null;
+  lastMaturity: string | null;
+  firstMarketId: string | null;
+}
+
+export interface LadderGroup {
+  id: string;
+  slug: string;
+  title: string;
+  groupType: string;
+  eventKey: string;
+  category: string;
+  description: string | null;
+  resolutionSource: string | null;
+  contractCount: number;
+  firstMaturity: string | null;
+  lastMaturity: string | null;
+  subcategories: LadderSubcategory[];
+}
+
+export interface LadderPoint {
+  marketId: string;
+  maturity: string;
+  instrumentSymbol: string | null;
+  rawYes: number | null;
+  fittedYes: number;
+  intervalProb: number;
+  violated: boolean;
+  bestBidYes: number | null;
+  bestAskYes: number | null;
+  lastTradeYes: number | null;
+  openInterestPence: number;
+  volume24hPence: number;
+}
+
+export interface LadderInterval {
+  startMaturity: string | null;
+  endMaturity: string;
+  label: string;
+  price: number;
+  buyLegs: { marketId: string; side: string; ratio: number }[];
+  sellLegs: { marketId: string; side: string; ratio: number }[];
+}
+
+export interface LadderData {
+  groupId: string;
+  slug: string;
+  title: string;
+  eventKey: string;
+  category: string;
+  description: string | null;
+  resolutionSource: string | null;
+  pointCount: number;
+  points: LadderPoint[];
+  intervals: LadderInterval[];
+}
+
+export async function getLadderGroups(): Promise<{ groups: LadderGroup[] }> {
+  try {
+    return await fetchApi<{ groups: LadderGroup[] }>('/v1/ladder');
+  } catch {
+    return { groups: [] };
+  }
+}
+
+export async function getLadder(groupSlug: string): Promise<LadderData | null> {
+  try {
+    return await fetchApi<LadderData>(`/v1/ladder/${groupSlug}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function submitIntervalOrder(request: Request, data: {
+  groupSlug: string;
+  startMaturity: string | null;
+  endMaturity: string;
+  direction: 'BUY' | 'SELL';
+  contracts: number;
+  executionMode: 'quote_only' | 'submit';
+}) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<any>(`/v1/ladder/${data.groupSlug}/interval-orders`, {
+    method: 'POST',
+    headers: cookie ? { Cookie: cookie } : {},
+    body: JSON.stringify({
+      startMaturity: data.startMaturity,
+      endMaturity: data.endMaturity,
+      direction: data.direction,
+      contracts: data.contracts,
+      executionMode: data.executionMode,
+    }),
+  });
+}

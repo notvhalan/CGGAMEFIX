@@ -197,6 +197,8 @@ export default function AppLayout() {
           }}>
             <NavItem to="/app" icon={Icons.home} label="Dashboard" end compact />
             <NavItem to="/app/markets" icon={Icons.markets} label="Markets" compact />
+            <NavItem to="/app/insurance" icon={Icons.live} label="Insurance" compact />
+            <NavItem to="/app/ladder" icon={Icons.trade} label="Ladder" compact />
             <NavItem to="/app/positions" icon={Icons.positions} label="Positions" compact />
             <NavItem to="/app/orders" icon={Icons.orders} label="Orders" compact />
             <NavItem to="/app/trades" icon={Icons.trades} label="Trades" compact />

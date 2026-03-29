@@ -5,14 +5,18 @@ import { json, redirect } from "@remix-run/node";
 import { Form, useActionData, useNavigation } from "@remix-run/react";
 import "~/styles/pages/landing.css";
 
-// Use window.ENV if available, otherwise default to localhost
+// Use window.ENV if available.
+// On localhost, return '' so fetch uses a relative path (e.g. /v1/auth/login)
+// that the Vite dev-server proxy forwards to localhost:3000, rewriting
+// the Set-Cookie header so the browser accepts the session cookie.
 const getApiUrl = () => {
-  if (typeof window !== 'undefined' && (window as any).ENV?.API_BASE_URL) {
-    return (window as any).ENV.API_BASE_URL;
-  }
-  return typeof window !== 'undefined' && window.ENV?.API_URL 
-    ? window.ENV.API_URL 
-    : 'http://localhost:3000';
+  if (typeof window === 'undefined') return 'http://localhost:3000'; // SSR
+  if (window.location.hostname === 'localhost') return ''; // Vite proxy path
+  return (
+    (window as any).ENV?.API_BASE_URL ||
+    window.ENV?.API_URL ||
+    'https://api.gamefix.fun'
+  );
 };
 
 export async function action({ request }: ActionFunctionArgs) {

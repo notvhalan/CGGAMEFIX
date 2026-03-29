@@ -1,8 +1,9 @@
-import { json, type LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, Link } from "@remix-run/react";
+import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
+import { useLoaderData, Link, useFetcher } from "@remix-run/react";
 import { useState, useRef, useMemo, memo, useEffect, useCallback } from "react";
 import type { MetaFunction } from "@remix-run/node";
-import { getInsuranceCategoryWithContracts } from "~/lib/api.server";
+import { getInsuranceCategoryWithContracts, getLadder, submitIntervalOrder } from "~/lib/api.server";
+import type { LadderPoint, LadderInterval, LadderData } from "~/lib/api.server";
 import "~/styles/pages/insurance.css";
 
 // ── Category catalogue ────────────────────────────────────────────────────
@@ -157,9 +158,13 @@ function genContracts(baseProb: number, maxProb: number, curve: "slow" | "fast" 
 // ── Loader ─────────────────────────────────────────────────────────────────
 export async function loader({ params }: LoaderFunctionArgs) {
   const slug = params.category ?? "life";
+  const subcategorySlug = (params as any).subcategory ?? null;
 
-  // 1. Try DB first
-  const dbData = await getInsuranceCategoryWithContracts(slug);
+  // Fetch DB contracts + ladder data in parallel
+  const [dbData, ladderData] = await Promise.all([
+    getInsuranceCategoryWithContracts(slug),
+    getLadder(slug),
+  ]);
 
   let contracts: (ReturnType<typeof genContracts>[number] & {
     bestBidYes: number | null;
@@ -171,7 +176,6 @@ export async function loader({ params }: LoaderFunctionArgs) {
   let source: "live" | "generated" = "generated";
 
   if (dbData && dbData.contracts.length > 0) {
-    // 2a. Real markets exist — map DB contracts to standard shape
     source = "live";
     const today = new Date("2026-03-16");
     contracts = dbData.contracts.map((c) => {
@@ -196,7 +200,6 @@ export async function loader({ params }: LoaderFunctionArgs) {
         oi: c.oiPence > 0
           ? `£${(c.oiPence / 100).toLocaleString()}`
           : "—",
-        // extra live fields surfaced in the trade ticket
         bestBidYes: c.bestBidYes ?? null,
         bestAskYes: c.bestAskYes ?? null,
         lastTradeYes: c.lastTradeYes ?? null,
@@ -205,7 +208,6 @@ export async function loader({ params }: LoaderFunctionArgs) {
       };
     });
   } else {
-    // 2b. No real markets yet — generate curve preview from CATEGORY_CONFIG
     const cfg = CATEGORY_CONFIG[slug] ?? CATEGORY_CONFIG.life;
     contracts = genContracts(cfg.baseProb, cfg.maxProb, cfg.curve).map((c) => ({
       ...c,
@@ -217,8 +219,65 @@ export async function loader({ params }: LoaderFunctionArgs) {
     }));
   }
 
-  // Don't pass cfg through JSON (contains function); client re-looks it up by slug.
-  return json({ slug, contracts, source });
+  // Build condition summary from ALL contracts (before filtering) for the tab bar
+  const allConditionSummary: { name: string; count: number; nearYes: number | null; farYes: number | null }[] = [];
+  {
+    const cMap = new Map<string, typeof contracts>();
+    for (const c of contracts) {
+      const key = c.conditionName ?? "Other";
+      if (!cMap.has(key)) cMap.set(key, []);
+      cMap.get(key)!.push(c);
+    }
+    for (const [name, rows] of cMap) {
+      allConditionSummary.push({
+        name,
+        count: rows.length,
+        nearYes: rows[0]?.yesPts ?? null,
+        farYes: rows[rows.length - 1]?.yesPts ?? null,
+      });
+    }
+  }
+
+  // If a subcategory slug is provided, filter contracts to that condition
+  // Slugs are lowercased/stripped versions of conditionName, e.g. "paralysiscure" → "Paralysis Cure"
+  let initialCondition: string | null = null;
+  if (subcategorySlug && contracts.length > 0) {
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const match = contracts.find(c =>
+      c.conditionName && normalize(c.conditionName) === normalize(subcategorySlug)
+    );
+    if (match?.conditionName) {
+      initialCondition = match.conditionName;
+      contracts = contracts.filter(c => c.conditionName === initialCondition);
+    }
+  }
+
+  return json({ slug, contracts, source, ladder: ladderData, initialCondition, allConditionSummary });
+}
+
+// ── Action (interval order submission) ─────────────────────────────────────
+export async function action({ request, params }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  const groupSlug = params.category ?? "";
+  const startMaturity = formData.get("startMaturity") as string | null;
+  const endMaturity = formData.get("endMaturity") as string;
+  const direction = formData.get("direction") as "BUY" | "SELL";
+  const contracts = Number(formData.get("contracts") || 1);
+  const executionMode = (formData.get("executionMode") as string) || "submit";
+
+  try {
+    const result = await submitIntervalOrder(request, {
+      groupSlug,
+      startMaturity: startMaturity || null,
+      endMaturity,
+      direction,
+      contracts,
+      executionMode: executionMode as "quote_only" | "submit",
+    });
+    return json({ success: true, result });
+  } catch (e: any) {
+    return json({ success: false, error: e.message || "Order failed" }, { status: 400 });
+  }
 }
 
 export const meta: MetaFunction<typeof loader> = ({ data }) => [
@@ -444,16 +503,360 @@ function timeLeft(days: number) {
   return `${(days / 365).toFixed(1)}y`;
 }
 
+// ── Ladder helpers ─────────────────────────────────────────────────────────
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${d.getUTCDate()} ${months[d.getUTCMonth()]}`;
+}
+function pct(n: number | null) {
+  if (n == null) return "—";
+  return `${n.toFixed(1)}%`;
+}
+function fmtPence(p: number) {
+  if (p >= 100_00) return `£${(p / 100).toLocaleString("en-GB", { minimumFractionDigits: 0 })}`;
+  return `${p}p`;
+}
+
+// ── PAVA Ladder Chart (TradingView lightweight-charts) ────────────────────
+const LadderChart = memo(function LadderChart({ points }: { points: LadderPoint[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const fittedRef = useRef<any>(null);
+  const rawRef = useRef<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Convert points → {time, value} sorted & deduplicated by maturity date
+  // lightweight-charts requires strictly ascending unique timestamps
+  const fittedData = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const p of points) {
+      const t = Math.floor(new Date(p.maturity).getTime() / 1000);
+      const prev = map.get(t);
+      // average if multiple points share the same timestamp
+      map.set(t, prev != null ? (prev + p.fittedYes) / 2 : p.fittedYes);
+    }
+    return Array.from(map, ([time, value]) => ({ time: time as number, value }))
+      .sort((a, b) => a.time - b.time);
+  }, [points]);
+
+  const rawData = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const p of points) {
+      if (p.rawYes == null) continue;
+      const t = Math.floor(new Date(p.maturity).getTime() / 1000);
+      const prev = map.get(t);
+      map.set(t, prev != null ? (prev + p.rawYes) / 2 : p.rawYes);
+    }
+    return Array.from(map, ([time, value]) => ({ time: time as number, value }))
+      .sort((a, b) => a.time - b.time);
+  }, [points]);
+
+  // Create chart once
+  useEffect(() => {
+    if (!containerRef.current || points.length < 2) return;
+    let mounted = true;
+
+    (async () => {
+      try {
+        const lc = await import("lightweight-charts");
+        const { createChart, ColorType, CrosshairMode, LineStyle } = lc;
+        if (!mounted || !containerRef.current) return;
+
+        const chart = createChart(containerRef.current, {
+          autoSize: true,
+          layout: {
+            background: { type: ColorType.Solid, color: "transparent" },
+            textColor: "#94a3b8",
+            fontSize: 11,
+          },
+          grid: {
+            vertLines: { color: "rgba(31,41,55,0.8)" },
+            horzLines: { color: "rgba(31,41,55,0.8)" },
+          },
+          rightPriceScale: {
+            borderColor: "#1f2937",
+            scaleMargins: { top: 0.08, bottom: 0.08 },
+          },
+          timeScale: {
+            borderColor: "#1f2937",
+            rightOffset: 2,
+            timeVisible: false,
+            secondsVisible: false,
+          },
+          crosshair: {
+            mode: CrosshairMode.Magnet,
+            vertLine: { color: "rgba(74,222,128,0.4)", width: 1, style: LineStyle.Dashed },
+            horzLine: { color: "rgba(74,222,128,0.3)", width: 1, style: LineStyle.Dashed },
+          },
+          localization: {
+            priceFormatter: (p: number) => `${p.toFixed(1)}%`,
+          },
+        });
+
+        // Fitted line — green area
+        const fittedSeries = chart.addSeries(lc.AreaSeries, {
+          lineColor: "#4ade80",
+          topColor: "rgba(74,222,128,0.18)",
+          bottomColor: "rgba(74,222,128,0.02)",
+          lineWidth: 2,
+          priceFormat: { type: "custom" as const, formatter: (p: number) => `${p.toFixed(1)}%` },
+          title: "Fitted",
+          crosshairMarkerVisible: true,
+          crosshairMarkerRadius: 4,
+        });
+
+        // Raw market prices — blue line with markers
+        const rawSeries = chart.addSeries(lc.LineSeries, {
+          color: "#4ea8de",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          priceFormat: { type: "custom" as const, formatter: (p: number) => `${p.toFixed(1)}%` },
+          title: "Raw",
+          crosshairMarkerVisible: true,
+          crosshairMarkerRadius: 4,
+          crosshairMarkerBackgroundColor: "#4ea8de",
+        });
+
+        chartRef.current = chart;
+        fittedRef.current = fittedSeries;
+        rawRef.current = rawSeries;
+
+        setIsLoading(false);
+      } catch (err) {
+        console.error("[LadderChart] init failed", err);
+        setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      chartRef.current?.remove();
+      chartRef.current = null;
+      fittedRef.current = null;
+      rawRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Feed data whenever points change
+  useEffect(() => {
+    if (!fittedRef.current || !rawRef.current || isLoading) return;
+    fittedRef.current.setData(fittedData);
+    rawRef.current.setData(rawData);
+    chartRef.current?.timeScale().fitContent();
+  }, [fittedData, rawData, isLoading]);
+
+  if (points.length < 2) {
+    return <div style={{ padding: "1rem", color: "var(--text-secondary)", fontSize: "0.8125rem" }}>Need at least 2 data points for curve</div>;
+  }
+
+  return (
+    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {isLoading && (
+        <div style={{
+          position: "absolute", inset: 0,
+          display: "grid", placeItems: "center",
+          background: "rgba(13,17,23,0.7)",
+          color: "#64748b", fontSize: "0.8125rem",
+        }}>
+          Loading chart…
+        </div>
+      )}
+      <div style={{
+        position: "absolute", bottom: 4, left: 6,
+        fontSize: "9px", color: "#4b5563",
+        pointerEvents: "none",
+      }}>
+        Powered by TradingView
+      </div>
+    </div>
+  );
+});
+
+// ── Interval Trade Modal ──────────────────────────────────────────────────
+function IntervalTradeModal({
+  interval,
+  direction,
+  slug,
+  onClose,
+}: {
+  interval: LadderInterval;
+  direction: "BUY" | "SELL";
+  slug: string;
+  onClose: () => void;
+}) {
+  const fetcher = useFetcher();
+  const [contracts, setContracts] = useState(1);
+
+  const legs = direction === "BUY" ? interval.buyLegs : interval.sellLegs;
+  const isSubmitting = fetcher.state !== "idle";
+  const result = fetcher.data as { success?: boolean; error?: string; result?: any } | undefined;
+
+  useEffect(() => {
+    if (result?.success) {
+      const t = setTimeout(onClose, 1500);
+      return () => clearTimeout(t);
+    }
+  }, [result, onClose]);
+
+  const handleSubmit = useCallback(() => {
+    const formData = new FormData();
+    formData.set("startMaturity", interval.startMaturity ?? "");
+    formData.set("endMaturity", interval.endMaturity);
+    formData.set("direction", direction);
+    formData.set("contracts", String(contracts));
+    formData.set("executionMode", "submit");
+    fetcher.submit(formData, { method: "POST" });
+  }, [fetcher, interval, direction, contracts]);
+
+  return (
+    <div
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <div style={{
+        background: "var(--bg-primary, #0d1117)", border: "1px solid var(--border-primary)",
+        borderRadius: 8, width: 400, maxWidth: "90vw", overflow: "hidden",
+      }}>
+        <div style={{
+          padding: "0.875rem 1rem", borderBottom: "1px solid var(--border-primary)",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <h3 style={{ margin: 0, fontSize: "0.9375rem" }}>
+            {direction === "BUY" ? "Buy" : "Sell"} Interval
+          </h3>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "var(--text-secondary)",
+            fontSize: "1.25rem", cursor: "pointer",
+          }}>×</button>
+        </div>
+        <div style={{ padding: "1rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.8125rem" }}>
+            <span style={{ color: "var(--text-secondary)" }}>Interval</span>
+            <span>{interval.label}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.8125rem" }}>
+            <span style={{ color: "var(--text-secondary)" }}>Implied probability</span>
+            <span>{pct(interval.price)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem", fontSize: "0.8125rem" }}>
+            <span style={{ color: "var(--text-secondary)" }}>Direction</span>
+            <span style={{ color: direction === "BUY" ? "#10b981" : "#ef4444", fontWeight: 600 }}>
+              {direction}
+            </span>
+          </div>
+
+          <div style={{ borderTop: "1px solid var(--border-primary)", margin: "0.75rem 0" }} />
+
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
+            <label style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>Contracts:</label>
+            <input
+              type="number" min={1} max={10000} value={contracts}
+              onChange={(e) => setContracts(Math.max(1, Math.min(10000, Number(e.target.value) || 1)))}
+              style={{
+                width: 80, padding: "0.375rem 0.5rem", borderRadius: 4,
+                border: "1px solid var(--border-primary)",
+                background: "var(--bg-secondary, #161b22)",
+                color: "var(--text-primary)", fontSize: "0.8125rem",
+              }}
+            />
+          </div>
+
+          <div style={{ borderTop: "1px solid var(--border-primary)", margin: "0.75rem 0" }} />
+
+          <div style={{ fontSize: "0.6875rem", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Synthetic Legs ({legs.length})
+          </div>
+
+          {legs.map((leg, i) => (
+            <div key={i} style={{
+              padding: "0.5rem 0.625rem", marginBottom: "0.375rem",
+              background: "rgba(255,255,255,0.03)", borderRadius: 4,
+              border: "1px solid var(--border-primary)",
+            }}>
+              <div style={{ fontSize: "0.6875rem", fontWeight: 600, color: "#8b9ab5", marginBottom: "0.25rem" }}>Leg {i + 1}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Market</span>
+                <span style={{ fontSize: "0.6875rem" }}>{leg.marketId.slice(0, 8)}…</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Side</span>
+                <span style={{ color: leg.side === "BUY_YES" ? "#10b981" : "#ef4444" }}>
+                  {leg.side.replace("_", " ")}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem" }}>
+                <span style={{ color: "var(--text-secondary)" }}>Qty</span>
+                <span>{contracts} × {leg.ratio}</span>
+              </div>
+            </div>
+          ))}
+
+          <div style={{
+            background: "rgba(210,153,34,0.1)", border: "1px solid rgba(210,153,34,0.25)",
+            borderRadius: 4, padding: "0.5rem 0.625rem", marginTop: "0.75rem",
+            fontSize: "0.75rem", color: "rgba(210,153,34,0.9)",
+          }}>
+            ⚠️ This trade is executed as {legs.length} linked orders and may experience partial fill risk.
+          </div>
+
+          {result?.success && (
+            <div style={{ background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 4, padding: "0.625rem", marginTop: "0.75rem", fontSize: "0.8125rem", color: "#10b981" }}>
+              ✓ Order submitted successfully
+            </div>
+          )}
+
+          {result && !result.success && (
+            <div style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 4, padding: "0.625rem", marginTop: "0.75rem", fontSize: "0.8125rem", color: "#ef4444" }}>
+              ✗ {result.error || "Order failed"}
+            </div>
+          )}
+        </div>
+        <div style={{
+          padding: "0.75rem 1rem", borderTop: "1px solid var(--border-primary)",
+          display: "flex", justifyContent: "flex-end", gap: "0.5rem",
+        }}>
+          <button onClick={onClose} style={{
+            padding: "0.375rem 0.875rem", borderRadius: 4, border: "1px solid var(--border-primary)",
+            background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.8125rem",
+          }}>Cancel</button>
+          <button
+            onClick={handleSubmit}
+            disabled={isSubmitting || result?.success}
+            style={{
+              padding: "0.375rem 1.25rem", borderRadius: 4,
+              border: "none", cursor: isSubmitting ? "wait" : "pointer",
+              fontSize: "0.8125rem", fontWeight: 600,
+              background: direction === "BUY" ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)",
+              color: direction === "BUY" ? "#10b981" : "#ef4444",
+            }}
+          >
+            {isSubmitting ? "Submitting…" : `${direction} ${contracts} contract${contracts > 1 ? "s" : ""}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 export default function InsuranceCategoryPage() {
-  const { slug, contracts, source } = useLoaderData<typeof loader>();
+  const { slug, contracts, source, ladder, initialCondition, allConditionSummary } = useLoaderData<typeof loader>();
   const cfg = CATEGORY_CONFIG[slug] ?? CATEGORY_CONFIG.life;
 
   const [selectedId,        setSelectedId]        = useState<string | null>(contracts[0]?.id ?? null);
   const [hoveredId,         setHoveredId]         = useState<string | null>(null);
   const [side,              setSide]              = useState<"YES" | "NO">("YES");
   const [stake,             setStake]             = useState("50");
-  const [selectedCondition, setSelectedCondition] = useState<string | null>(null);
+  const [selectedCondition, setSelectedCondition] = useState<string | null>(initialCondition ?? null);
+  const [ladderTab, setLadderTab] = useState<"by-date" | "intervals">("by-date");
+  const [tradeModal, setTradeModal] = useState<{ interval: LadderInterval; direction: "BUY" | "SELL" } | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
 
   // ── Memoised derived data (never recompute on hover) ──────────────────
@@ -618,7 +1021,7 @@ export default function InsuranceCategoryPage() {
       )}
 
       {/* ── Subcategory index tabs ───────────────────────────────────────── */}
-      {conditionGroups.length > 1 && (
+      {allConditionSummary.length > 1 && (
         <div style={{
           display: "flex",
           alignItems: "center",
@@ -633,48 +1036,73 @@ export default function InsuranceCategoryPage() {
           scrollbarWidth: "none",
           msOverflowStyle: "none",
         }}>
-          {/* "All" pill */}
-          <button
-            onClick={() => handleConditionChange(null)}
-            style={{
-              flexShrink: 0,
-              padding: "0.3rem 0.875rem",
-              borderRadius: 9999,
-              border: selectedCondition === null
-                ? "1px solid rgba(139,92,246,0.7)"
-                : "1px solid var(--border-primary)",
-              background: selectedCondition === null
-                ? "rgba(139,92,246,0.15)"
-                : "transparent",
-              color: selectedCondition === null ? "#c4b5fd" : "var(--text-secondary)",
-              fontSize: "0.8125rem",
-              fontWeight: selectedCondition === null ? 700 : 500,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "0.375rem",
-              transition: "all 0.12s",
-            }}
-          >
-            <span>All</span>
-            <span style={{
-              background: selectedCondition === null ? "rgba(139,92,246,0.35)" : "rgba(139,148,158,0.15)",
-              borderRadius: 8,
-              padding: "0.0625rem 0.4rem",
-              fontSize: "0.6875rem",
-              fontWeight: 600,
-            }}>{contracts.length}</span>
-          </button>
+          {/* "All" link — only shown when NOT on a subcategory route */}
+          {!initialCondition && (
+            <button
+              onClick={() => handleConditionChange(null)}
+              style={{
+                flexShrink: 0,
+                padding: "0.3rem 0.875rem",
+                borderRadius: 9999,
+                border: selectedCondition === null
+                  ? "1px solid rgba(139,92,246,0.7)"
+                  : "1px solid var(--border-primary)",
+                background: selectedCondition === null
+                  ? "rgba(139,92,246,0.15)"
+                  : "transparent",
+                color: selectedCondition === null ? "#c4b5fd" : "var(--text-secondary)",
+                fontSize: "0.8125rem",
+                fontWeight: selectedCondition === null ? 700 : 500,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.375rem",
+                transition: "all 0.12s",
+              }}
+            >
+              <span>All</span>
+              <span style={{
+                background: selectedCondition === null ? "rgba(139,92,246,0.35)" : "rgba(139,148,158,0.15)",
+                borderRadius: 8,
+                padding: "0.0625rem 0.4rem",
+                fontSize: "0.6875rem",
+                fontWeight: 600,
+              }}>{allConditionSummary.reduce((s, g) => s + g.count, 0)}</span>
+            </button>
+          )}
 
-          {/* Per-condition pills */}
-          {conditionGroups.map(g => {
+          {/* Back to all — only shown on subcategory route */}
+          {initialCondition && (
+            <Link
+              to={`/app/insurance/${slug}`}
+              style={{
+                flexShrink: 0,
+                padding: "0.3rem 0.875rem",
+                borderRadius: 9999,
+                border: "1px solid var(--border-primary)",
+                background: "transparent",
+                color: "var(--text-secondary)",
+                fontSize: "0.8125rem",
+                fontWeight: 500,
+                textDecoration: "none",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.375rem",
+                transition: "all 0.12s",
+              }}
+            >
+              <span>← All</span>
+            </Link>
+          )}
+
+          {/* Per-condition pills — navigate to subcategory URL */}
+          {allConditionSummary.map(g => {
             const isActive = selectedCondition === g.name;
-            const nearYes = g.rows[0]?.yesPts;
-            const farYes  = g.rows[g.rows.length - 1]?.yesPts;
+            const condSlug = g.name.toLowerCase().replace(/[^a-z0-9]/g, "");
             return (
-              <button
+              <Link
                 key={g.name}
-                onClick={() => handleConditionChange(g.name)}
+                to={`/app/insurance/${slug}/${condSlug}`}
                 style={{
                   flexShrink: 0,
                   padding: "0.3rem 0.875rem",
@@ -688,7 +1116,7 @@ export default function InsuranceCategoryPage() {
                   color: isActive ? "#c4b5fd" : "var(--text-secondary)",
                   fontSize: "0.8125rem",
                   fontWeight: isActive ? 700 : 500,
-                  cursor: "pointer",
+                  textDecoration: "none",
                   display: "flex",
                   alignItems: "center",
                   gap: "0.5rem",
@@ -703,15 +1131,15 @@ export default function InsuranceCategoryPage() {
                   fontSize: "0.6875rem",
                   fontWeight: 600,
                   color: isActive ? "#a78bfa" : "var(--text-secondary)",
-                }}>{g.rows.length}</span>
-                {nearYes != null && (
+                }}>{g.count}</span>
+                {g.nearYes != null && (
                   <span style={{ display: "flex", gap: "0.25rem", fontSize: "0.7rem" }}>
-                    <span style={{ color: "var(--accent-green)", fontWeight: 600 }}>{nearYes}¢</span>
+                    <span style={{ color: "var(--accent-green)", fontWeight: 600 }}>{g.nearYes}¢</span>
                     <span style={{ color: "var(--text-tertiary, rgba(139,148,158,0.5))" }}>→</span>
-                    <span style={{ color: "#f59e0b", fontWeight: 600 }}>{farYes}¢</span>
+                    <span style={{ color: "#f59e0b", fontWeight: 600 }}>{g.farYes}¢</span>
                   </span>
                 )}
-              </button>
+              </Link>
             );
           })}
 
@@ -721,7 +1149,7 @@ export default function InsuranceCategoryPage() {
             fontSize: "0.6875rem",
             color: "var(--text-secondary)",
           }}>
-            {conditionGroups.length} subcategories
+            {allConditionSummary.length} subcategories
           </span>
         </div>
       )}
@@ -732,145 +1160,218 @@ export default function InsuranceCategoryPage() {
         {/* ── LEFT ─────────────────────────────────────────────────────── */}
         <div className="ins-left">
 
-          {/* Survival curve */}
-          <div className="ins-curve-section">
-            <div className="ins-section-title">Probability Curve — P(event by maturity)</div>
-
-            <div className="ins-curve-wrap" style={{ height: 220 }}>
-              <SurvivalCurve
-                contracts={displayContracts}
-                selectedId={selectedId}
-                onSelectHover={handleHover}
-              />
-            </div>
-
-            <div className="ins-curve-legend">
-              <div className="ins-legend-item">
-                <div className="ins-legend-dot" style={{ background: "#58a6ff" }} />
-                <span>P(event by date) — YES price</span>
+          {/* ── PAVA Probability Curve ────────────────────────────────── */}
+          {ladder && (ladder as LadderData).points.length >= 2 && (
+            <div style={{
+              padding: "0.75rem",
+              marginBottom: "0.75rem",
+              background: "rgba(74,222,128,0.03)",
+              border: "1px solid var(--border-primary)",
+              borderRadius: 8,
+            }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: "0.75rem",
+                marginBottom: "0.5rem",
+              }}>
+                <span style={{ fontSize: "0.6875rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#4ade80" }}>
+                  📊 PAVA-Fitted Probability Curve
+                </span>
+                <span style={{ fontSize: "0.6875rem", color: "var(--text-secondary)" }}>
+                  <span style={{ color: "#4ea8de" }}>●</span> Raw &nbsp;
+                  <span style={{ color: "#4ade80" }}>━</span> Fitted
+                </span>
               </div>
-              <div className="ins-legend-item">
-                <div className="ins-legend-dot" style={{ background: "rgba(139,148,158,0.55)", borderRadius: 0, height: 2, width: 14 }} />
-                <span>Survival rate (no event)</span>
+              <div style={{ height: 200 }}>
+                <LadderChart points={(ladder as LadderData).points as LadderPoint[]} />
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Maturity ladder */}
-          {(() => {
-            const theadRow = (
-              <thead>
-                <tr>
-                  <th>Maturity date</th>
-                  <th>Time left</th>
-                  <th className="right">YES</th>
-                  <th className="right">NO</th>
-                  <th className="right">Spread</th>
-                  <th className="right">Volume</th>
-                  <th className="right">OI</th>
-                  <th />
-                </tr>
-              </thead>
-            );
+          {/* ── Ladder Tabs: By-Date / Intervals ─────────────────────────── */}
+          {ladder && ladder.points.length > 0 && (
+            <div style={{ marginBottom: "1rem" }}>
+              <div style={{
+                display: "flex", gap: "0.25rem",
+                padding: "0 0.5rem",
+                borderBottom: "1px solid var(--border-primary)",
+                marginBottom: "0.75rem",
+              }}>
+                <button
+                  onClick={() => setLadderTab("by-date")}
+                  style={{
+                    padding: "0.5rem 1rem",
+                    background: "none", border: "none", cursor: "pointer",
+                    borderBottom: ladderTab === "by-date" ? "2px solid #4ade80" : "2px solid transparent",
+                    color: ladderTab === "by-date" ? "#4ade80" : "var(--text-secondary)",
+                    fontWeight: ladderTab === "by-date" ? 600 : 400,
+                    fontSize: "0.8125rem",
+                  }}
+                >
+                  By Date
+                </button>
+                <button
+                  onClick={() => setLadderTab("intervals")}
+                  style={{
+                    padding: "0.5rem 1rem",
+                    background: "none", border: "none", cursor: "pointer",
+                    borderBottom: ladderTab === "intervals" ? "2px solid #4ade80" : "2px solid transparent",
+                    color: ladderTab === "intervals" ? "#4ade80" : "var(--text-secondary)",
+                    fontWeight: ladderTab === "intervals" ? 600 : 400,
+                    fontSize: "0.8125rem",
+                  }}
+                >
+                  Intervals ({(ladder as LadderData).intervals.length})
+                </button>
+              </div>
 
-            const tbodyRows = (rows: typeof contracts) => rows.map(c => (
-              <ContractRow
-                key={c.id}
-                c={c}
-                isSelected={c.id === selectedId}
-                source={source}
-                onRowClick={handleRowClick}
-              />
-            ));
-
-            // When a specific subcategory is selected (or no groups exist), render flat table.
-            // When "All" is selected and groups exist, render each group with its own header + table.
-            const showGrouped = !selectedCondition && conditionGroups.length > 1;
-
-            return (
-              <div className="ins-ladder-section">
-                <div className="ins-section-title">
-                  {selectedCondition
-                    ? <><span style={{ color: "#c4b5fd" }}>{selectedCondition}</span> — {displayContracts.length} contracts</>  
-                    : <>Maturity Ladder — {contracts.length} contracts</>}
-                  &nbsp;·&nbsp;
-                  <span style={{ color: "var(--text-secondary)", textTransform: "none", fontWeight: 400 }}>
-                    Click a row to open trade ticket
-                  </span>
+              {ladderTab === "by-date" && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="ins-table">
+                    <thead>
+                      <tr>
+                        <th>Maturity</th>
+                        <th className="right">Raw YES</th>
+                        <th className="right">Fitted YES</th>
+                        <th className="right">Interval %</th>
+                        <th className="right">Bid</th>
+                        <th className="right">Ask</th>
+                        <th className="right">OI</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(ladder as LadderData).points.map((p: LadderPoint) => (
+                        <tr key={p.marketId} className={p.marketId === selectedId ? "selected" : ""} onClick={() => handleRowClick(p.marketId)}>
+                          <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{fmtDate(p.maturity)}</td>
+                          <td className="right" style={{ color: p.violated ? "#f87171" : "var(--text-primary)" }}>
+                            {pct(p.rawYes)}
+                          </td>
+                          <td className="right" style={{ color: "#4ade80" }}>{pct(p.fittedYes)}</td>
+                          <td className="right" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.75rem" }}>
+                            {pct(p.intervalProb)}
+                          </td>
+                          <td className="right" style={{ color: p.bestBidYes != null ? "#10b981" : "var(--text-secondary)" }}>
+                            {pct(p.bestBidYes)}
+                          </td>
+                          <td className="right" style={{ color: p.bestAskYes != null ? "#ef4444" : "var(--text-secondary)" }}>
+                            {pct(p.bestAskYes)}
+                          </td>
+                          <td className="right" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                            {fmtPence(p.openInterestPence)}
+                          </td>
+                          <td className="right">
+                            <Link to={`/app/markets/${p.marketId}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="ins-trade-btn"
+                              style={{ textDecoration: "none", display: "inline-block" }}>
+                              Trade →
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
+              )}
 
-                {showGrouped ? conditionGroups.map(g => (
-                  <div key={g.name} style={{ marginBottom: "1.75rem" }}>
-                    {/* Subcategory group header */}
-                    <div style={{
-                      padding: "0.4rem 0.875rem",
-                      marginBottom: "0.5rem",
-                      background: "rgba(139,92,246,0.08)",
-                      border: "1px solid rgba(139,92,246,0.22)",
-                      borderRadius: 8,
-                      display: "flex",
+              {ladderTab === "intervals" && (
+                <div>
+                  <div style={{
+                    display: "grid", gridTemplateColumns: "1fr auto auto auto",
+                    gap: "0.5rem", padding: "0.5rem 0.75rem",
+                    borderBottom: "1px solid var(--border-primary)",
+                    background: "rgba(0,0,0,0.2)",
+                  }}>
+                    <span style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-secondary)" }}>Interval</span>
+                    <span style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-secondary)" }}>Implied %</span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                  {(ladder as LadderData).intervals.map((iv: LadderInterval, i: number) => (
+                    <div key={i} style={{
+                      display: "grid", gridTemplateColumns: "1fr auto auto auto",
+                      gap: "0.5rem", padding: "0.5rem 0.75rem",
+                      borderBottom: "1px solid var(--border-primary)",
                       alignItems: "center",
-                      gap: "0.625rem",
                     }}>
-                      <span style={{
-                        fontSize: "0.6875rem", fontWeight: 700, letterSpacing: "0.07em",
-                        textTransform: "uppercase", color: "rgba(167,139,250,0.65)",
-                      }}>Subcategory</span>
-                      <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#c4b5fd" }}>
-                        {g.name}
+                      <span style={{ fontSize: "0.8125rem", fontWeight: 500 }}>{iv.label}</span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.8125rem", color: "#4ade80" }}>
+                        {pct(iv.price)}
                       </span>
-                      {g.repQuestion && (
-                        <span style={{
-                          fontSize: "0.75rem", color: "var(--text-secondary)",
-                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                          flex: 1, minWidth: 0,
-                        }}>{g.repQuestion}</span>
-                      )}
-                      <span style={{
-                        flexShrink: 0,
-                        background: "rgba(139,92,246,0.2)",
-                        borderRadius: 10,
-                        padding: "0.125rem 0.5rem",
-                        fontSize: "0.6875rem", fontWeight: 600, color: "#a78bfa",
-                      }}>{g.rows.length} contracts</span>
                       <button
-                        onClick={() => handleConditionChange(g.name)}
+                        onClick={() => setTradeModal({ interval: iv, direction: "BUY" })}
                         style={{
-                          flexShrink: 0,
-                          padding: "0.2rem 0.6rem",
-                          borderRadius: 6,
-                          border: "1px solid rgba(139,92,246,0.4)",
-                          background: "rgba(139,92,246,0.1)",
-                          color: "#a78bfa",
-                          fontSize: "0.7rem",
-                          fontWeight: 600,
-                          cursor: "pointer",
+                          padding: "0.25rem 0.75rem", borderRadius: 4,
+                          border: "1px solid rgba(16,185,129,0.35)", background: "rgba(16,185,129,0.12)",
+                          color: "#10b981", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer",
                         }}
-                      >View all →</button>
+                      >Buy</button>
+                      <button
+                        onClick={() => setTradeModal({ interval: iv, direction: "SELL" })}
+                        style={{
+                          padding: "0.25rem 0.75rem", borderRadius: 4,
+                          border: "1px solid rgba(239,68,68,0.35)", background: "rgba(239,68,68,0.12)",
+                          color: "#ef4444", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer",
+                        }}
+                      >Sell</button>
                     </div>
-                    <div className="ins-table-wrap" ref={tableRef}>
-                      <table className="ins-table">
-                        {theadRow}
-                        <tbody>{tbodyRows(g.rows)}</tbody>
-                      </table>
-                    </div>
-                  </div>
-                )) : (
-                  <div className="ins-table-wrap" ref={tableRef}>
-                    <table className="ins-table">
-                      {theadRow}
-                      <tbody>{tbodyRows(displayContracts)}</tbody>
-                    </table>
-                  </div>
-                )}
-              </div>    
-            );
-          })()}
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+
 
         </div>
 
         {/* ── RIGHT ────────────────────────────────────────────────────── */}
         <div className="ins-right">
+
+          {/* Contract details — collapsible */}
+          <div className="ins-detail">
+            <button
+              onClick={() => setDetailOpen(o => !o)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                width: "100%", background: "none", border: "none", padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <span style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-secondary)" }}>
+                Contract details
+              </span>
+              <span style={{
+                fontSize: 14, color: "var(--text-secondary)",
+                transform: detailOpen ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 0.2s",
+                lineHeight: 1,
+              }}>
+                ▾
+              </span>
+            </button>
+
+            {detailOpen && (
+              <>
+                <div className="ins-detail-def">{cfg.description}</div>
+
+                {[
+                  ["Settlement source", cfg.settlement],
+                  ["Oracle", cfg.oracle],
+                  ["Contract type", "Binary — YES / NO"],
+                  ["Payout", "£1.00 per contract if resolved YES"],
+                  ["Category", cfg.title],
+                  ["Maturity", selected?.label ?? "—"],
+                  ["P(event)", `${selected?.yesProb.toFixed(1) ?? "—"}%`],
+                ].map(([k, v]) => (
+                  <div key={k} className="ins-detail-row">
+                    <span>{k}</span>
+                    <span>{v}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
 
           {/* Trade ticket */}
           <div className="ins-ticket">
@@ -939,37 +1440,27 @@ export default function InsuranceCategoryPage() {
               </div>
             </div>
 
-            <button className={side === "YES" ? "ins-buy-yes-btn" : "ins-buy-no-btn"}>
+            <Link
+              to={selected ? `/app/markets/${selected.id}` : "#"}
+              className={side === "YES" ? "ins-buy-yes-btn" : "ins-buy-no-btn"}
+              style={{ display: "block", textAlign: "center", textDecoration: "none" }}
+            >
               Buy {side} — {pricePts}¢
-            </button>
-          </div>
-
-          {/* Contract details */}
-          <div className="ins-detail">
-            <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-secondary)" }}>
-              Contract details
-            </div>
-
-            <div className="ins-detail-def">{cfg.description}</div>
-
-            {[
-              ["Settlement source", cfg.settlement],
-              ["Oracle", cfg.oracle],
-              ["Contract type", "Binary — YES / NO"],
-              ["Payout", "£1.00 per contract if resolved YES"],
-              ["Category", cfg.title],
-              ["Maturity", selected?.label ?? "—"],
-              ["P(event)", `${selected?.yesProb.toFixed(1) ?? "—"}%`],
-            ].map(([k, v]) => (
-              <div key={k} className="ins-detail-row">
-                <span>{k}</span>
-                <span>{v}</span>
-              </div>
-            ))}
+            </Link>
           </div>
 
         </div>
       </div>
+
+      {/* ── Interval Trade Modal ──────────────────────────────────────── */}
+      {tradeModal && (
+        <IntervalTradeModal
+          interval={tradeModal.interval}
+          direction={tradeModal.direction}
+          slug={slug}
+          onClose={() => setTradeModal(null)}
+        />
+      )}
     </div>
   );
 }

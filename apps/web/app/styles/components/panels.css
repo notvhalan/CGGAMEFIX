@@ -1,42 +1,63 @@
-/* Panel Primitive */
+/* ═══════════════════════════════════════════════════════════════════
+   PANELS — Layered dark acrylic surfaces
+   Specular top edges · ambient inner glow · smoked glass
+   ═══════════════════════════════════════════════════════════════════ */
+
 .terminal-panel {
-  background: var(--terminal-panel);
+  position: relative;
+  background: linear-gradient(180deg, #111720 0%, #0e1219 100%);
   border: 1px solid var(--terminal-border);
-  border-radius: 12px;
+  border-radius: var(--r-lg, 14px);
   overflow: hidden;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-  transition: border-color 0.2s;
+  box-shadow: var(--shadow-md);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
   display: flex;
   flex-direction: column;
 }
 
+/* Specular top-edge highlight */
+.terminal-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 40%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+}
+
 .terminal-panel:hover {
-  border-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: var(--shadow-lg), var(--shadow-glow-blue);
 }
 
 .terminal-panel-header {
-  padding: 1rem 1.25rem;
+  padding: 0.625rem 1rem;
   border-bottom: 1px solid var(--terminal-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 56px;
+  min-height: 44px;
+  background: rgba(255, 255, 255, 0.01);
 }
 
 .terminal-panel-title {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--terminal-text);
   margin: 0;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  letter-spacing: -0.01em;
 }
 
 .terminal-panel-body {
-  padding: 1.25rem;
+  padding: 1rem;
   flex: 1;
 }
 

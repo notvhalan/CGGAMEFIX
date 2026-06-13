@@ -51,6 +51,8 @@ coverage/
 # Temp
 tmp/
 temp/
+apps/web/.cache/
+
 # Terraform
 *.tfstate
 *.tfstate.*

@@ -57,6 +57,7 @@ export default function About() {
           <Link to="/" className="nav-link">Home</Link>
           <Link to="/about" className="nav-link active">About</Link>
           <Link to="/story" className="nav-link">Story</Link>
+          <Link to="/docs" className="nav-link">Docs</Link>
           <Link to="/auth/login" className="nav-login-btn">Login</Link>
         </div>
       </nav>

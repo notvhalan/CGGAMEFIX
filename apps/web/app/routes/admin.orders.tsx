@@ -3,6 +3,9 @@ import { Form, useRouteLoaderData, useNavigation } from "@remix-run/react";
 import { Card, Badge, StatusBadge, Tabs, DataTable, Button } from "~/components/admin/ui";
 import { orders, trades, markets as mockMarkets, type Order, type Trade } from "~/components/admin/data/mockData";
 
+// Re-export action from parent layout so Form POST submissions work (avoids 405)
+export { action } from "./admin";
+
 export default function AdminOrders() {
   const parentData = useRouteLoaderData<any>("routes/admin");
   const navigation = useNavigation();

@@ -61,27 +61,6 @@ export default function AppLayout() {
           </Link>
           
           <DashboardNav />
-          
-          {isTerminal && (
-            <Link
-              to="/markets"
-              style={{
-                padding: '0.5rem 0.875rem',
-                background: '#238636',
-                color: 'white',
-                borderRadius: '6px',
-                textDecoration: 'none',
-                fontSize: '0.8125rem',
-                fontWeight: 600,
-                transition: 'background 0.2s',
-                whiteSpace: 'nowrap'
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.background = '#2ea043'}
-              onMouseLeave={(e) => e.currentTarget.style.background = '#238636'}
-            >
-              Trade
-            </Link>
-          )}
         </div>
 
         <SearchBar compact={isTerminal} />
@@ -95,28 +74,28 @@ export default function AppLayout() {
           compact={isTerminal}
         />
 
-        <div className="ws-status">
-          <span className="ws-status-dot" />
+        <div className="ws-status" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.25rem 0.625rem', background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.2)', borderRadius: '9999px', fontSize: '0.6875rem', color: '#3fb950', fontWeight: 500 }}>
+          <span className="ws-status-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: '#3fb950', boxShadow: '0 0 6px rgba(63,185,80,0.5)' }} />
           <span>Live</span>
         </div>
 
         <Link
           to="/app/wallet"
           style={{
-            padding: isTerminal ? '0.5rem 0.875rem' : '0.625rem 1rem',
+            padding: '0.375rem 0.875rem',
             background: '#1f6feb',
             color: 'white',
             borderRadius: '6px',
             textDecoration: 'none',
-            fontSize: isTerminal ? '0.8125rem' : '0.875rem',
+            fontSize: '0.8125rem',
             fontWeight: 600,
-            transition: 'background 0.2s',
+            transition: 'background 0.15s',
             whiteSpace: 'nowrap'
           }}
           onMouseEnter={(e) => e.currentTarget.style.background = '#388bfd'}
           onMouseLeave={(e) => e.currentTarget.style.background = '#1f6feb'}
         >
-          💰 Deposit
+          Deposit
         </Link>
 
         <UserMenu user={user} compact={isTerminal} />

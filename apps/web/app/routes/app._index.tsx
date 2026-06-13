@@ -1,11 +1,22 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
 import { useLoaderData, Link, Form, useNavigation } from "@remix-run/react";
 import { useState, useCallback, useMemo } from "react";
+import { motion } from "framer-motion";
 import { getWallet, getMarkets, getMyOrders, getBalanceHistory, getMyPositions, cancelOrder } from "~/lib/api.server";
 import { formatPence } from "~/lib/format";
 import { BalanceChart, type TooltipData } from "~/components/dashboard/BalanceChart";
 import { TopRisks } from "~/components/dashboard/TopRisks";
 import { X, TrendingUp, TrendingDown, Wallet, Lock, BarChart3, ClipboardList } from "lucide-react";
+
+/* ── Motion presets ─────────────────────────────────────────────── */
+const fadeUp = {
+  hidden: { opacity: 0, y: 10 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] } },
+};
+const stagger = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.06 } },
+};
 import "~/styles/pages/dashboard.css";
 import "~/styles/components/panels.css";
 import "~/styles/components/metrics.css";
@@ -200,117 +211,104 @@ export default function Dashboard() {
     <div className="terminal-dashboard">
 
       {/* ═══════ KPI STRIP ═══════ */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(5, 1fr)',
-        gap: '0.5rem',
-        flexShrink: 0,
-      }}>
+      <motion.div className="dash-kpi-strip" variants={stagger} initial="hidden" animate="show">
         {/* Equity */}
-        <Link to="/app/portfolio" style={{ textDecoration: 'none' }}>
-          <div style={kpiCard}>
-            <div style={kpiRow}>
-              <div style={{ ...kpiIcon, background: 'rgba(102, 126, 234, 0.12)' }}>
-                <TrendingUp size={12} color="#667eea" />
+        <motion.div variants={fadeUp}>
+          <Link to="/app/portfolio" className="dash-kpi-card">
+            <div className="dash-kpi-row">
+              <div className="dash-kpi-icon" style={{ background: 'rgba(88,166,255,0.1)' }}>
+                <TrendingUp size={12} color="var(--terminal-accent)" />
               </div>
-              <span style={kpiLabel}>Equity</span>
+              <span className="dash-kpi-label">Equity</span>
             </div>
-            <div style={{ ...kpiValue, color: '#e4e8eb' }}>
+            <div className="dash-kpi-value" style={{ color: 'var(--terminal-text)' }}>
               £{(totalBalance / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
             </div>
-          </div>
-        </Link>
+          </Link>
+        </motion.div>
 
         {/* Unrealized P&L */}
-        <div style={kpiCard}>
-          <div style={kpiRow}>
-            <div style={{ ...kpiIcon, background: totalUnrealizedPnl >= 0 ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.12)' }}>
-              {totalUnrealizedPnl >= 0 ? <TrendingUp size={12} color="#3fb950" /> : <TrendingDown size={12} color="#f85149" />}
+        <motion.div variants={fadeUp}>
+          <div className="dash-kpi-card">
+            <div className="dash-kpi-row">
+              <div className="dash-kpi-icon" style={{ background: totalUnrealizedPnl >= 0 ? 'rgba(63,185,80,0.1)' : 'rgba(240,97,93,0.1)' }}>
+                {totalUnrealizedPnl >= 0 ? <TrendingUp size={12} color="var(--terminal-green)" /> : <TrendingDown size={12} color="var(--terminal-red)" />}
+              </div>
+              <span className="dash-kpi-label">Unrealized P&L</span>
             </div>
-            <span style={kpiLabel}>Unrealized P&L</span>
+            <div className="dash-kpi-value" style={{ color: totalUnrealizedPnl >= 0 ? 'var(--terminal-green)' : 'var(--terminal-red)' }}>
+              {totalUnrealizedPnl >= 0 ? '+' : ''}£{Math.abs(totalUnrealizedPnl).toFixed(2)}
+            </div>
           </div>
-          <div style={{ ...kpiValue, color: totalUnrealizedPnl >= 0 ? '#3fb950' : '#f85149' }}>
-            {totalUnrealizedPnl >= 0 ? '+' : ''}£{Math.abs(totalUnrealizedPnl).toFixed(2)}
-          </div>
-        </div>
+        </motion.div>
 
         {/* Available */}
-        <div style={kpiCard}>
-          <div style={kpiRow}>
-            <div style={{ ...kpiIcon, background: 'rgba(63,185,80,0.12)' }}>
-              <Wallet size={12} color="#3fb950" />
+        <motion.div variants={fadeUp}>
+          <div className="dash-kpi-card">
+            <div className="dash-kpi-row">
+              <div className="dash-kpi-icon" style={{ background: 'rgba(63,185,80,0.1)' }}>
+                <Wallet size={12} color="var(--terminal-green)" />
+              </div>
+              <span className="dash-kpi-label">Available</span>
             </div>
-            <span style={kpiLabel}>Available</span>
+            <div className="dash-kpi-value" style={{ color: 'var(--terminal-text)' }}>
+              £{(availablePence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+            </div>
           </div>
-          <div style={{ ...kpiValue, color: '#c9d1d9' }}>
-            £{(availablePence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
-          </div>
-        </div>
+        </motion.div>
 
         {/* Reserved */}
-        <div style={kpiCard}>
-          <div style={kpiRow}>
-            <div style={{ ...kpiIcon, background: 'rgba(210,153,34,0.12)' }}>
-              <Lock size={12} color="#d29922" />
+        <motion.div variants={fadeUp}>
+          <div className="dash-kpi-card">
+            <div className="dash-kpi-row">
+              <div className="dash-kpi-icon" style={{ background: 'rgba(227,160,8,0.1)' }}>
+                <Lock size={12} color="var(--terminal-amber)" />
+              </div>
+              <span className="dash-kpi-label">Reserved</span>
             </div>
-            <span style={kpiLabel}>Reserved</span>
+            <div className="dash-kpi-value" style={{ color: 'var(--terminal-text)' }}>
+              £{(reservedPence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+            </div>
           </div>
-          <div style={{ ...kpiValue, color: '#c9d1d9' }}>
-            £{(reservedPence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
-          </div>
-        </div>
+        </motion.div>
 
         {/* Open Exposure */}
-        <Link to="/app/positions" style={{ textDecoration: 'none' }}>
-          <div style={kpiCard}>
-            <div style={kpiRow}>
-              <div style={{ ...kpiIcon, background: 'rgba(245,158,11,0.12)' }}>
+        <motion.div variants={fadeUp}>
+          <Link to="/app/positions" className="dash-kpi-card">
+            <div className="dash-kpi-row">
+              <div className="dash-kpi-icon" style={{ background: 'rgba(245,158,11,0.1)' }}>
                 <BarChart3 size={12} color="#f59e0b" />
               </div>
-              <span style={kpiLabel}>Exposure</span>
+              <span className="dash-kpi-label">Exposure</span>
             </div>
-            <div style={{ ...kpiValue, color: '#c9d1d9' }}>
+            <div className="dash-kpi-value" style={{ color: 'var(--terminal-text)' }}>
               £{openExposure.toFixed(2)}
             </div>
-            <div style={{ fontSize: '0.625rem', color: '#6b7280' }}>
+            <div className="dash-kpi-sub">
               {totalPositions} pos
             </div>
-          </div>
-        </Link>
-      </div>
+          </Link>
+        </motion.div>
+      </motion.div>
 
       {/* ═══════ MAIN GRID ═══════ */}
       <div className="terminal-grid">
 
         {/* ─── Portfolio Performance (hero chart) ─── span 8 ─── */}
-        <div className="terminal-span-8 terminal-panel" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <motion.div className="terminal-span-8 terminal-panel" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}
+          initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.15 }}>
           {/* Header */}
-          <div className="terminal-panel-header" style={{ borderBottom: '1px solid #1e2530', padding: '0.375rem 0.75rem', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <h2 className="terminal-panel-title" style={{ margin: 0, fontSize: '0.875rem' }}>Portfolio Performance</h2>
-              {/* P&L delta badge */}
-              <span style={{
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                fontFamily: 'JetBrains Mono, monospace',
-                color: pnlDelta.value >= 0 ? '#3fb950' : '#f85149',
-                background: pnlDelta.value >= 0 ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)',
-                padding: '0.125rem 0.5rem',
-                borderRadius: '4px',
-              }}>
+          <div className="dash-chart-header">
+            <div className="dash-chart-header-left">
+              <h2 className="dash-chart-title">Portfolio Performance</h2>
+              <span className={`dash-pnl-badge ${pnlDelta.value >= 0 ? 'dash-pnl-badge--pos' : 'dash-pnl-badge--neg'}`}>
                 {pnlDelta.value >= 0 ? '+' : ''}£{Math.abs(pnlDelta.value).toFixed(2)} {rangeLabel}
               </span>
-              <span style={{
-                fontSize: '0.6875rem',
-                fontFamily: 'JetBrains Mono, monospace',
-                color: pnlDelta.pct >= 0 ? '#3fb950' : '#f85149',
-                opacity: 0.7,
-              }}>
+              <span className="dash-pnl-pct" style={{ color: pnlDelta.pct >= 0 ? 'var(--terminal-green)' : 'var(--terminal-red)' }}>
                 ({pnlDelta.pct >= 0 ? '+' : ''}{pnlDelta.pct.toFixed(2)}%)
               </span>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {/* Time range */}
               <div className="toggle-group">
                 <Link to="?range=1D" className={`toggle-item ${timeRange === '1D' ? 'active' : ''}`}>1D</Link>
                 <Link to="?range=1W" className={`toggle-item ${timeRange === '1W' ? 'active' : ''}`}>1W</Link>
@@ -320,22 +318,15 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Legend toggles – centred */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '1rem',
-            padding: '0.25rem 0.75rem 0.125rem',
-            flexShrink: 0,
-          }}>
-            <LegendToggle color="#667eea" label="Equity" active solid disabled />
-            <LegendToggle color="#3fb950" label="Available" active={showAvailable} onToggle={() => setShowAvailable(!showAvailable)} solid />
+          {/* Legend toggles */}
+          <div className="dash-chart-legend">
+            <LegendToggle color="var(--terminal-accent)" label="Equity" active solid disabled />
+            <LegendToggle color="var(--terminal-green)" label="Available" active={showAvailable} onToggle={() => setShowAvailable(!showAvailable)} solid />
             <LegendToggle color="#f59e0b" label="Exposure" active={showExposure} onToggle={() => setShowExposure(!showExposure)} dashed />
           </div>
 
           {/* Chart */}
-          <div style={{ position: 'relative', flex: 1, minHeight: 0, padding: '0 0.5rem 0.25rem' }}>
+          <div className="dash-chart-area">
             <BalanceChart
               equity={equityData}
               available={availableData}
@@ -348,75 +339,68 @@ export default function Dashboard() {
 
             {/* Floating tooltip */}
             {tooltip && (
-              <div style={{
-                position: 'absolute',
-                top: '0.75rem',
-                left: '1rem',
-                background: 'rgba(22, 27, 34, 0.95)',
-                border: '1px solid #30363d',
-                borderRadius: '6px',
-                padding: '0.625rem 0.75rem',
-                fontSize: '0.6875rem',
-                fontFamily: 'JetBrains Mono, monospace',
-                color: '#c9d1d9',
-                lineHeight: 1.7,
-                pointerEvents: 'none',
-                zIndex: 20,
-                backdropFilter: 'blur(8px)',
-                minWidth: '160px',
-              }}>
-                <div style={{ color: '#8b949e', marginBottom: '0.25rem', fontFamily: 'Inter, system-ui, sans-serif', fontWeight: 500 }}>
+              <div className="dash-tooltip">
+                <div className="dash-tooltip-time">
                   {tooltip.time ? new Date(tooltip.time * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
                 </div>
                 {tooltip.equity !== null && (
-                  <div><span style={{ color: '#667eea' }}>●</span> Equity: <span style={{ color: '#e4e8eb' }}>£{tooltip.equity.toFixed(2)}</span></div>
+                  <div><span style={{ color: 'var(--terminal-accent)' }}>●</span> Equity: <span style={{ color: 'var(--terminal-text)' }}>£{tooltip.equity.toFixed(2)}</span></div>
                 )}
                 {tooltip.available !== null && (
-                  <div><span style={{ color: '#3fb950' }}>●</span> Available: <span style={{ color: '#e4e8eb' }}>£{tooltip.available.toFixed(2)}</span></div>
+                  <div><span style={{ color: 'var(--terminal-green)' }}>●</span> Available: <span style={{ color: 'var(--terminal-text)' }}>£{tooltip.available.toFixed(2)}</span></div>
                 )}
                 {tooltip.exposure !== null && (
-                  <div><span style={{ color: '#f59e0b' }}>●</span> Exposure: <span style={{ color: '#e4e8eb' }}>£{tooltip.exposure.toFixed(2)}</span></div>
+                  <div><span style={{ color: '#f59e0b' }}>●</span> Exposure: <span style={{ color: 'var(--terminal-text)' }}>£{tooltip.exposure.toFixed(2)}</span></div>
                 )}
               </div>
             )}
           </div>
-        </div>
+        </motion.div>
 
         {/* ─── Top Risks (horizontal bar chart) ─── span 4 ─── */}
-        <div className="terminal-span-4 terminal-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div className="terminal-panel-header" style={{ borderBottom: '1px solid #1e2530', padding: '0.5rem 0.75rem', flexShrink: 0 }}>
+        <motion.div className="terminal-span-4 terminal-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}
+          initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.22 }}>
+          <div className="terminal-panel-header">
             <h2 className="terminal-panel-title" style={{ margin: 0, fontSize: '0.8125rem' }}>Top Risks</h2>
-            <Link to="/app/positions" style={{ fontSize: '0.6875rem', color: '#667eea', textDecoration: 'none' }}>View All</Link>
+            <Link to="/app/positions" className="dash-view-link">View All</Link>
           </div>
           <div className="terminal-panel-body no-padding" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
             <TopRisks positions={positions} maxItems={4} />
           </div>
-        </div>
+        </motion.div>
 
         {/* ─── Active Positions Table ─── span 8 ─── */}
-        <div className="terminal-span-8 terminal-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div className="terminal-panel-header" style={{ borderBottom: '1px solid #1e2530', padding: '0.5rem 0.75rem', flexShrink: 0 }}>
+        <motion.div className="terminal-span-8 terminal-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}
+          initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.28 }}>
+          <div className="terminal-panel-header" style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
             <h2 className="terminal-panel-title" style={{ margin: 0, fontSize: '0.8125rem' }}>Active Positions</h2>
-            <Link to="/app/positions" style={{ fontSize: '0.6875rem', color: '#667eea', textDecoration: 'none' }}>View All →</Link>
+            {/* Featured: Paralysis Cure — inline pill */}
+            <a href="/app/insurance/life/paralysis-cure" className="dash-featured-pill">
+              <span style={{ fontSize: '0.6875rem', lineHeight: 1 }}>🫀</span>
+              <span style={{ fontSize: '0.6875rem', fontWeight: 600, color: 'var(--terminal-accent)' }}>Paralysis Cure</span>
+              <span style={{ fontSize: '0.5625rem', color: 'var(--terminal-muted)' }}>→</span>
+            </a>
+            <span style={{ flex: 1 }} />
+            <Link to="/app/positions" className="dash-view-link">View All →</Link>
           </div>
           <div className="terminal-panel-body no-padding">
             <table className="terminal-table" style={{ fontSize: '0.8125rem' }}>
               <thead>
                 <tr>
-                  <th style={{ padding: '0.5rem 0.75rem' }}>Market</th>
-                  <th style={{ padding: '0.5rem 0.5rem' }}>Side</th>
-                  <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Size</th>
-                  <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Entry</th>
-                  <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>Mark</th>
-                  <th className="align-right" style={{ padding: '0.5rem 0.5rem' }}>P&L</th>
-                  <th className="align-right" style={{ padding: '0.5rem 0.75rem' }}></th>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th className="align-right">Size</th>
+                  <th className="align-right">Entry</th>
+                  <th className="align-right">Mark</th>
+                  <th className="align-right">P&L</th>
+                  <th className="align-right"></th>
                 </tr>
               </thead>
               <tbody>
                 {positions.length === 0 ? (
                   <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: '#6b7280' }}>
-                      No active positions — <Link to="/app/markets" style={{ color: '#667eea', textDecoration: 'none' }}>Browse markets</Link>
+                    <td colSpan={7} className="dash-empty">
+                      No active positions — <Link to="/app/markets" className="dash-empty-link">Browse markets</Link>
                     </td>
                   </tr>
                 ) : (positions.slice(0, 3).map((p: any, i: number) => {
@@ -431,49 +415,28 @@ export default function Dashboard() {
                   const cost = contracts * (isLong ? avgPrice / 100 : (1 - avgPrice / 100));
 
                   return (
-                    <tr key={i} style={{ borderBottom: '1px solid #1e2530' }}>
-                      <td style={{ padding: '0.5rem 0.75rem', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <Link to={`/app/markets/${p.marketId}`} style={{ color: '#c9d1d9', textDecoration: 'none', fontSize: '0.75rem' }}>
+                    <tr key={i} className="dash-position-row">
+                      <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <Link to={`/app/markets/${p.marketId}`} style={{ color: 'var(--terminal-text)', textDecoration: 'none', fontSize: '0.75rem' }}>
                           {p.marketQuestion}
                         </Link>
                       </td>
-                      <td style={{ padding: '0.5rem 0.5rem' }}>
-                        <span style={{
-                          fontSize: '0.625rem',
-                          fontWeight: 700,
-                          padding: '0.125rem 0.375rem',
-                          borderRadius: '3px',
-                          background: isLong ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                          color: isLong ? '#10b981' : '#ef4444',
-                        }}>{side}</span>
+                      <td>
+                        <span className={`dash-side-badge ${isLong ? 'dash-side-badge--long' : 'dash-side-badge--short'}`}>{side}</span>
                       </td>
-                      <td className="align-right" style={{ padding: '0.5rem 0.5rem', fontFamily: 'JetBrains Mono', fontSize: '0.75rem', color: '#c9d1d9' }}>£{cost.toFixed(2)}</td>
-                      <td className="align-right" style={{ padding: '0.5rem 0.5rem', fontFamily: 'JetBrains Mono', fontSize: '0.75rem', color: '#8b949e' }}>{avgPrice.toFixed(1)}%</td>
-                      <td className="align-right" style={{ padding: '0.5rem 0.5rem', fontFamily: 'JetBrains Mono', fontSize: '0.75rem', color: '#8b949e' }}>{mark.toFixed(1)}%</td>
+                      <td className="align-right" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--terminal-text)' }}>£{cost.toFixed(2)}</td>
+                      <td className="align-right" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--terminal-muted)' }}>{avgPrice.toFixed(1)}%</td>
+                      <td className="align-right" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--terminal-muted)' }}>{mark.toFixed(1)}%</td>
                       <td className="align-right" style={{
-                        padding: '0.5rem 0.5rem',
-                        fontFamily: 'JetBrains Mono',
+                        fontFamily: 'var(--font-mono)',
                         fontSize: '0.75rem',
                         fontWeight: 600,
-                        color: pnlValue >= 0 ? '#3fb950' : '#f85149',
+                        color: pnlValue >= 0 ? 'var(--terminal-green)' : 'var(--terminal-red)',
                       }}>
                         {pnlValue >= 0 ? '+' : ''}£{Math.abs(pnlValue).toFixed(2)}
                       </td>
-                      <td className="align-right" style={{ padding: '0.5rem 0.75rem' }}>
-                        <Link
-                          to={`/app/markets/${p.marketId}`}
-                          style={{
-                            fontSize: '0.6875rem',
-                            padding: '0.25rem 0.625rem',
-                            borderRadius: '4px',
-                            background: 'rgba(102, 126, 234, 0.12)',
-                            color: '#667eea',
-                            textDecoration: 'none',
-                            fontWeight: 600,
-                          }}
-                        >
-                          Trade
-                        </Link>
+                      <td className="align-right">
+                        <Link to={`/app/markets/${p.marketId}`} className="dash-trade-btn">Trade</Link>
                       </td>
                     </tr>
                   );
@@ -481,68 +444,47 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-        </div>
+        </motion.div>
 
         {/* ─── Right column: Open Orders + Recent Markets ─── span 4 ─── */}
-        <div className="terminal-span-4" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', minHeight: 0 }}>
+        <div className="terminal-span-4" style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', minHeight: 0 }}>
 
           {/* Open Orders */}
-          <div className="terminal-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div className="terminal-panel-header" style={{ borderBottom: '1px solid #1e2530', padding: '0.5rem 0.75rem', flexShrink: 0 }}>
+          <motion.div className="terminal-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.32 }}>
+            <div className="terminal-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <ClipboardList size={14} color="#8b949e" />
+                <ClipboardList size={14} style={{ color: 'var(--terminal-muted)' }} />
                 <h2 className="terminal-panel-title" style={{ margin: 0, fontSize: '0.875rem' }}>Open Orders</h2>
                 {openOrderCount > 0 && (
-                  <span style={{
-                    fontSize: '0.625rem',
-                    fontWeight: 700,
-                    background: 'rgba(102,126,234,0.15)',
-                    color: '#667eea',
-                    padding: '0.0625rem 0.375rem',
-                    borderRadius: '8px',
-                  }}>{openOrderCount}</span>
+                  <span className="dash-count-badge">{openOrderCount}</span>
                 )}
               </div>
-              <Link to="/app/orders" style={{ fontSize: '0.6875rem', color: '#667eea', textDecoration: 'none' }}>Manage</Link>
+              <Link to="/app/orders" className="dash-view-link">Manage</Link>
             </div>
             <div className="terminal-panel-body no-padding" style={{ overflow: 'auto' }}>
               {orders.length === 0 ? (
-                <div style={{ padding: '1.5rem 1rem', textAlign: 'center', color: '#6b7280', fontSize: '0.8125rem' }}>
+                <div className="dash-empty">
                   No open orders
                   <div style={{ marginTop: '0.5rem' }}>
-                    <Link to="/app/markets" style={{ color: '#667eea', textDecoration: 'none', fontSize: '0.75rem' }}>Place an order →</Link>
+                    <Link to="/app/markets" className="dash-empty-link">Place an order →</Link>
                   </div>
                 </div>
               ) : (
                 <div>
                   {orders.slice(0, 3).map((o: any, i: number) => (
-                    <div
-                      key={o.id || i}
-                      style={{
-                        padding: '0.5rem 1rem 0.5rem 0.75rem',
-                        borderBottom: '1px solid #1e2530',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        fontSize: '0.75rem',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
-                        <span style={{
-                          fontSize: '0.5625rem',
-                          fontWeight: 700,
-                          padding: '0.0625rem 0.25rem',
-                          borderRadius: '3px',
-                          background: o.side === 'BUY_YES' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                          color: o.side === 'BUY_YES' ? '#10b981' : '#ef4444',
-                          flexShrink: 0,
+                    <div key={o.id || i} className="dash-order-row">
+                      <div className="dash-order-left">
+                        <span className="dash-order-side" style={{
+                          background: o.side === 'BUY_YES' ? 'rgba(63,185,80,0.1)' : 'rgba(240,97,93,0.1)',
+                          color: o.side === 'BUY_YES' ? 'var(--terminal-green)' : 'var(--terminal-red)',
                         }}>
                           {o.side === 'BUY_YES' ? 'BUY' : 'SELL'}
                         </span>
-                        <span style={{ color: '#c9d1d9', fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                        <span className="dash-order-price">
                           {(o.pPts / 100_000).toFixed(1)}%
                         </span>
-                        <span style={{ color: '#6b7280', fontSize: '0.625rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span className="dash-order-size">
                           £{((o.remainingPence || o.liabilityPence || 0) / 100).toFixed(2)}
                         </span>
                       </div>
@@ -552,20 +494,8 @@ export default function Dashboard() {
                         <button
                           type="submit"
                           disabled={isSubmitting}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: '20px',
-                            height: '20px',
-                            background: 'rgba(248,81,73,0.08)',
-                            border: '1px solid rgba(248,81,73,0.25)',
-                            borderRadius: '4px',
-                            color: '#f85149',
-                            cursor: 'pointer',
-                            opacity: isSubmitting ? 0.5 : 1,
-                            padding: 0,
-                          }}
+                          className="dash-cancel-btn"
+                          style={{ opacity: isSubmitting ? 0.4 : 1 }}
                           title="Cancel order"
                         >
                           <X size={10} />
@@ -574,76 +504,34 @@ export default function Dashboard() {
                     </div>
                   ))}
                   {orders.length > 3 && (
-                    <div style={{ padding: '0.375rem 0.75rem', textAlign: 'center' }}>
-                      <Link to="/app/orders" style={{ color: '#667eea', textDecoration: 'none', fontSize: '0.6875rem' }}>+{orders.length - 3} more →</Link>
+                    <div className="dash-more-link">
+                      <Link to="/app/orders" className="dash-view-link">+{orders.length - 3} more →</Link>
                     </div>
                   )}
                 </div>
               )}
             </div>
-          </div>
+          </motion.div>
 
           {/* Recent Markets */}
-          <div className="terminal-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            <div className="terminal-panel-header" style={{ borderBottom: '1px solid #1e2530', padding: '0.5rem 0.75rem', flexShrink: 0 }}>
+          <motion.div className="terminal-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.38 }}>
+            <div className="terminal-panel-header">
               <h2 className="terminal-panel-title" style={{ margin: 0, fontSize: '0.8125rem' }}>Recent Markets</h2>
-              <Link to="/app/markets" style={{ fontSize: '0.6875rem', color: '#667eea', textDecoration: 'none' }}>Browse</Link>
+              <Link to="/app/markets" className="dash-view-link">Browse</Link>
             </div>
             <div className="terminal-panel-body no-padding" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
               {markets.slice(0, 6).map((m: any) => (
-                <Link
-                  key={m.id}
-                  to={`/app/markets/${m.id}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '0.5rem',
-                    padding: '0.375rem 0.75rem',
-                    borderBottom: '1px solid rgba(30,37,48,0.6)',
-                    textDecoration: 'none',
-                    transition: 'background 0.12s',
-                    cursor: 'pointer',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(102,126,234,0.06)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                >
-                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                    <span style={{
-                      width: '5px',
-                      height: '5px',
-                      borderRadius: '50%',
-                      background: m.status === 'ACTIVE' ? '#3fb950' : '#6b7280',
-                      flexShrink: 0,
-                    }} />
-                    <span style={{
-                      fontSize: '0.6875rem',
-                      color: '#c9d1d9',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      lineHeight: 1.3,
-                    }}>
-                      {m.name}
-                    </span>
+                <Link key={m.id} to={`/app/markets/${m.id}`} className="dash-market-row">
+                  <div className="dash-market-left">
+                    <span className={`dash-market-dot ${m.status === 'ACTIVE' ? 'dash-market-dot--active' : 'dash-market-dot--inactive'}`} />
+                    <span className="dash-market-name">{m.name}</span>
                   </div>
-                  <span style={{
-                    fontSize: '0.5625rem',
-                    fontWeight: 600,
-                    padding: '0.125rem 0.375rem',
-                    borderRadius: '3px',
-                    background: 'rgba(102, 126, 234, 0.1)',
-                    color: '#667eea',
-                    border: '1px solid rgba(102,126,234,0.2)',
-                    flexShrink: 0,
-                    letterSpacing: '0.02em',
-                  }}>
-                    Trade
-                  </span>
+                  <span className="dash-market-trade-badge">Trade</span>
                 </Link>
               ))}
             </div>
-          </div>
+          </motion.div>
 
         </div>
 
@@ -677,71 +565,18 @@ function LegendToggle({
     <button
       onClick={onToggle}
       disabled={disabled}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '0.375rem',
-        background: 'none',
-        border: 'none',
-        cursor: disabled ? 'default' : 'pointer',
-        padding: '0.125rem 0',
-        opacity: active ? 1 : 0.4,
-        transition: 'opacity 0.15s',
-        fontSize: '0.6875rem',
-        color: '#8b949e',
-      }}
+      className={`dash-legend-btn ${!active ? 'dash-legend-btn--inactive' : ''}`}
     >
-      <span style={{
-        display: 'inline-block',
-        width: '16px',
-        height: '2px',
-        background: color,
-        borderRadius: '1px',
-        ...(dashed ? { backgroundImage: `repeating-linear-gradient(90deg, ${color} 0, ${color} 3px, transparent 3px, transparent 6px)`, background: 'none' } : {}),
-      }} />
+      <span
+        className="dash-legend-line"
+        style={{
+          background: dashed ? 'none' : color,
+          ...(dashed ? { backgroundImage: `repeating-linear-gradient(90deg, ${color} 0, ${color} 3px, transparent 3px, transparent 6px)` } : {}),
+        }}
+      />
       {label}
     </button>
   );
 }
 
-/* ── KPI card styles ── */
-const kpiCard: React.CSSProperties = {
-  background: '#161b22',
-  border: '1px solid #21262d',
-  borderRadius: '6px',
-  padding: '0.5rem 0.75rem',
-  cursor: 'pointer',
-  transition: 'border-color 0.15s, background 0.15s',
-};
-
-const kpiRow: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '0.25rem',
-  marginBottom: '0.125rem',
-};
-
-const kpiIcon: React.CSSProperties = {
-  width: '20px',
-  height: '20px',
-  borderRadius: '4px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  flexShrink: 0,
-};
-
-const kpiLabel: React.CSSProperties = {
-  fontSize: '0.6875rem',
-  color: '#6b7280',
-  textTransform: 'uppercase',
-  letterSpacing: '0.04em',
-  fontWeight: 500,
-};
-
-const kpiValue: React.CSSProperties = {
-  fontSize: '1rem',
-  fontWeight: 700,
-  fontFamily: 'JetBrains Mono, monospace',
-  lineHeight: 1.2,
-};
+/* ── end ── */

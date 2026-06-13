@@ -9,9 +9,9 @@ export function DashboardNav() {
     <nav className="header-nav">
       <Link
         to="/app/markets"
-        className={`header-nav-link ${location.pathname.startsWith('/app/markets') ? 'active' : 'inactive'}`}
+        className={`header-nav-link ${location.pathname.startsWith('/app/markets') || location.pathname.startsWith('/app/insurance') ? 'active' : 'inactive'}`}
       >
-        <Icons.markets {...(location.pathname.startsWith('/app/markets') ? activeIconProps : iconProps)} />
+        <Icons.markets {...(location.pathname.startsWith('/app/markets') || location.pathname.startsWith('/app/insurance') ? activeIconProps : iconProps)} />
         Markets
       </Link>
       <Link

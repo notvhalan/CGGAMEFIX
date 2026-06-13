@@ -85,6 +85,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const data = await getMarkets();
     
     let botUsers: any[] = [];
+    let botStatus: any = null;
+    let insuranceMarkets: Record<string, any[]> = {};
     if (isAdmin) {
       try {
         const botUsersResponse = await fetch(`${API_BASE_URL}/v1/admin/bot-users`, {
@@ -103,6 +105,38 @@ export async function loader({ request }: LoaderFunctionArgs) {
       } catch (error) {
         console.error('Failed to load bot users:', error);
       }
+
+      // Fetch bot status
+      try {
+        const statusResponse = await fetch(`${API_BASE_URL}/v1/admin/liquidity-bots/status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cookie': request.headers.get('Cookie') || '' },
+          body: JSON.stringify({}),
+        });
+        if (statusResponse.ok) {
+          botStatus = await statusResponse.json();
+        }
+      } catch (error) {
+        console.error('Failed to load bot status:', error);
+      }
+
+      // Fetch insurance markets grouped by category
+      try {
+        const categories = ['life', 'health', 'climate', 'agriculture', 'liability', 'travel'];
+        for (const cat of categories) {
+          try {
+            const catResponse = await fetch(`${API_BASE_URL}/v1/insurance/categories/${cat}`);
+            if (catResponse.ok) {
+              const catData = await catResponse.json();
+              if (catData.contracts?.length > 0) {
+                insuranceMarkets[cat] = catData.contracts;
+              }
+            }
+          } catch { /* skip */ }
+        }
+      } catch (error) {
+        console.error('Failed to load insurance markets:', error);
+      }
     }
     
     return json({ 
@@ -110,6 +144,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       user,
       isAdmin,
       botUsers,
+      botStatus,
+      insuranceMarkets,
     });
   } catch (error) {
     console.error('Failed to load markets:', error);
@@ -118,6 +154,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       user,
       isAdmin,
       botUsers: [],
+      botStatus: null,
+      insuranceMarkets: {},
     });
   }
 }
@@ -193,6 +231,73 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({ success: true, message: result.message });
     } catch (error) {
       return json({ success: false, error: error instanceof Error ? error.message : 'Failed to stop bots' }, { status: 500 });
+    }
+  }
+
+  if (actionType === 'bot-status') {
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/liquidity-bots/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieHeader || '' },
+        credentials: 'include',
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        return json({ success: false, error: 'Failed to fetch bot status' }, { status: response.status });
+      }
+      const result = await response.json();
+      return json({ success: true, botStatus: result });
+    } catch (error) {
+      return json({ success: false, error: error instanceof Error ? error.message : 'Failed to fetch status' }, { status: 500 });
+    }
+  }
+
+  if (actionType === 'start-bots-category') {
+    const category = formData.get('category') as string;
+    const userCount = Number(formData.get('userCount') || 10);
+    const spread = Number(formData.get('spread') || 2.5);
+    const levels = Number(formData.get('levels') || 8);
+    const sizeContracts = Number(formData.get('sizeContracts') || 10);
+    const takerChance = Number(formData.get('takerChance') || 10);
+    const sizeVariance = Number(formData.get('sizeVariance') || 0);
+    const priceVariance = Number(formData.get('priceVariance') || 0);
+    const orderDelayMs = Number(formData.get('orderDelayMs') || 0);
+    const orderDelayVarianceMs = Number(formData.get('orderDelayVarianceMs') || 0);
+    const refreshIntervalMs = Number(formData.get('refreshIntervalMs') || 0);
+    const priceDriftPts = Number(formData.get('priceDriftPts') || 0);
+    const volatility = Number(formData.get('volatility') || 0);
+
+    const halfSpreadPts = Math.round((spread / 100) * 10_000_000);
+    const takerChanceDecimal = takerChance / 100;
+
+    // Parse subcategory curve JSON (conditionName => midPercent[] per maturity)
+    let subcategoryCurve: Record<string, number[]> = {};
+    try {
+      subcategoryCurve = JSON.parse(formData.get('subcategoryCurve') as string || '{}');
+    } catch { /* fallback empty */ }
+
+    if (!category) return json({ success: false, error: 'Category is required' }, { status: 400 });
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/admin/liquidity-bots/start-category`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieHeader || '' },
+        credentials: 'include',
+        body: JSON.stringify({
+          category, userCount, halfSpreadPts, levels, sizeContracts,
+          takerChance: takerChanceDecimal, sizeVariance, priceVariance,
+          orderDelayMs, orderDelayVarianceMs, refreshIntervalMs, priceDriftPts, volatility,
+          subcategoryCurve,
+        }),
+      });
+      if (!response.ok) {
+        const error = await response.text();
+        return json({ success: false, error }, { status: response.status });
+      }
+      const result = await response.json();
+      return json({ success: true, message: result.message });
+    } catch (error) {
+      return json({ success: false, error: error instanceof Error ? error.message : 'Failed to start category bots' }, { status: 500 });
     }
   }
 

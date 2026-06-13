@@ -3,6 +3,9 @@ import { Form, useNavigation, useRouteLoaderData } from "@remix-run/react";
 import { Card, Badge, StatusBadge, Tabs, DataTable, Button } from "~/components/admin/ui";
 import { settlements, type Settlement } from "~/components/admin/data/mockData";
 
+// Re-export action from parent layout so Form POST submissions work (avoids 405)
+export { action } from "./admin";
+
 const TABS = [
   { id: 'all',       label: 'All',       count: settlements.length },
   { id: 'awaiting',  label: 'Awaiting',  count: settlements.filter(s => s.status === 'awaiting').length },

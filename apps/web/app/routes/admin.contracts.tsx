@@ -3,6 +3,9 @@ import { Form, useNavigation } from "@remix-run/react";
 import { Card, Badge, Button } from "~/components/admin/ui";
 import { SUBCATEGORIES, INS_SERIES } from "./admin";
 
+// Re-export action from parent layout so Form POST submissions work (avoids 405)
+export { action } from "./admin";
+
 export default function AdminContracts() {
   const navigation = useNavigation();
 

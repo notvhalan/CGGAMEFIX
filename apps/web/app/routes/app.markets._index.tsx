@@ -3,8 +3,25 @@ import { useLoaderData, Link } from "@remix-run/react";
 import { getMarkets, getInsuranceCategories } from "~/lib/api.server";
 import { getAuthenticatedUser } from "~/lib/auth.server";
 import { useState, useEffect, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import "~/styles/pages/markets-index.css";
 import "~/styles/pages/insurance.css";
+
+/* ── motion presets ───────────────────────────────────────── */
+const fadeUp = {
+  hidden: { opacity: 0, y: 14 },
+  visible: (i: number) => ({
+    opacity: 1,
+    y: 0,
+    transition: { delay: i * 0.06, duration: 0.45, ease: [0.16, 1, 0.3, 1] },
+  }),
+};
+
+const revealChildren = {
+  hidden: { opacity: 0, height: 0 },
+  visible: { opacity: 1, height: "auto", transition: { duration: 0.35, ease: [0.16, 1, 0.3, 1] } },
+  exit:    { opacity: 0, height: 0, transition: { duration: 0.25, ease: [0.16, 1, 0.3, 1] } },
+};
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await getAuthenticatedUser(request);
@@ -180,7 +197,12 @@ export default function MarketsIndex() {
   return (
     <div className="mkt-page">
       {/* ── Header ───────────────────────────────────────── */}
-      <div className="mkt-header">
+      <motion.div
+        className="mkt-header"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+      >
         <div className="mkt-header-top">
           <div>
             <h1 className="mkt-title">Markets</h1>
@@ -220,17 +242,24 @@ export default function MarketsIndex() {
             <button className="mkt-search-clear" onClick={() => setSearchQuery("")}>✕</button>
           )}
         </div>
-      </div>
+      </motion.div>
 
       {/* ── Prediction Categories ─────────────────────────── */}
-      {predictionCategories.map(([catName, { icon, subcategories }]) => {
+      {predictionCategories.map(([catName, { icon, subcategories }], idx) => {
         const key = `pred:${catName}`;
         const isExpanded = expandedCats.has(key);
         const marketCount = [...subcategories.values()].reduce((s, arr) => s + arr.length, 0);
         const subCount = subcategories.size;
 
         return (
-          <div key={key} className="mkt-category">
+          <motion.div
+            key={key}
+            className="mkt-category"
+            custom={idx}
+            initial="hidden"
+            animate="visible"
+            variants={fadeUp}
+          >
             <button className="mkt-cat-header" onClick={() => toggleCategory(key)}>
               <span className="mkt-cat-icon">{icon}</span>
               <span className="mkt-cat-title">{catName}</span>
@@ -239,38 +268,52 @@ export default function MarketsIndex() {
               <span className={`mkt-cat-chevron ${isExpanded ? "mkt-cat-chevron--open" : ""}`}>▸</span>
             </button>
 
-            {isExpanded && (
-              <div className="mkt-subcats">
-                {[...subcategories.entries()]
-                  .sort(([, a], [, b]) => b.length - a.length)
-                  .map(([subName, subMarkets]) => (
-                    <div key={subName} className="mkt-subcat">
-                      <div className="mkt-subcat-header">
-                        <span className="mkt-subcat-dot" />
-                        <span className="mkt-subcat-title">{subName}</span>
-                        <span className="mkt-subcat-count">{subMarkets.length} market{subMarkets.length !== 1 ? "s" : ""}</span>
+            <AnimatePresence initial={false}>
+              {isExpanded && (
+                <motion.div
+                  className="mkt-subcats"
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                  variants={revealChildren}
+                >
+                  {[...subcategories.entries()]
+                    .sort(([, a], [, b]) => b.length - a.length)
+                    .map(([subName, subMarkets]) => (
+                      <div key={subName} className="mkt-subcat">
+                        <div className="mkt-subcat-header">
+                          <span className="mkt-subcat-dot" />
+                          <span className="mkt-subcat-title">{subName}</span>
+                          <span className="mkt-subcat-count">{subMarkets.length} market{subMarkets.length !== 1 ? "s" : ""}</span>
+                        </div>
+                        <div className="mkt-subcat-markets">
+                          {subMarkets.map((m: any) => (
+                            <Link key={m.id} to={`/app/markets/${m.id}`} className="mkt-market-row">
+                              <span className="mkt-market-name">{m.name}</span>
+                              <span className="mkt-market-type">{m.type || "BINARY"}</span>
+                              <span className="mkt-market-status">{m.status}</span>
+                              <span className="mkt-market-arrow">→</span>
+                            </Link>
+                          ))}
+                        </div>
                       </div>
-                      <div className="mkt-subcat-markets">
-                        {subMarkets.map((m: any) => (
-                          <Link key={m.id} to={`/app/markets/${m.id}`} className="mkt-market-row">
-                            <span className="mkt-market-name">{m.name}</span>
-                            <span className="mkt-market-type">{m.type || "BINARY"}</span>
-                            <span className="mkt-market-status">{m.status}</span>
-                            <span className="mkt-market-arrow">→</span>
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
+                    ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
         );
       })}
 
       {/* ── Insurance Category ────────────────────────────── */}
       {insuranceCats.length > 0 && (
-        <div className="mkt-category mkt-category--insurance">
+        <motion.div
+          className="mkt-category mkt-category--insurance"
+          custom={predictionCategories.length}
+          initial="hidden"
+          animate="visible"
+          variants={fadeUp}
+        >
           <button className="mkt-cat-header" onClick={() => toggleCategory("insurance")}>
             <span className="mkt-cat-icon">🔒</span>
             <span className="mkt-cat-title">Insurance-Linked Markets</span>
@@ -279,46 +322,65 @@ export default function MarketsIndex() {
             <span className={`mkt-cat-chevron ${expandedCats.has("insurance") ? "mkt-cat-chevron--open" : ""}`}>▸</span>
           </button>
 
-          {expandedCats.has("insurance") && (
-            <div className="mkt-subcats">
-              {insuranceCats.map((cat: any) => (
-                <Link
-                  key={cat.slug}
-                  to={`/app/insurance/${cat.slug}`}
-                  className="mkt-ins-card"
-                >
-                  <div className="mkt-ins-card-left">
-                    <span className="mkt-ins-icon">{cat.icon}</span>
-                    <div>
-                      <div className="mkt-ins-title">{cat.title}</div>
-                      <div className="mkt-ins-desc">{cat.description}</div>
+          <AnimatePresence initial={false}>
+            {expandedCats.has("insurance") && (
+              <motion.div
+                className="mkt-subcats"
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+                variants={revealChildren}
+              >
+                {insuranceCats.map((cat: any) => {
+                  const isFeatured = cat.slug === "life";
+                  return (
+                  <Link
+                    key={cat.slug}
+                    to={`/app/insurance/${cat.slug}`}
+                    className={`mkt-ins-card${isFeatured ? " mkt-ins-card--featured" : ""}`}
+                  >
+                    <div className="mkt-ins-card-left">
+                      <span className="mkt-ins-icon">{cat.icon}</span>
+                      <div>
+                        <div className="mkt-ins-title">
+                          {cat.title}
+                          {isFeatured && <span className="mkt-ins-featured-nudge">Popular</span>}
+                        </div>
+                        <div className="mkt-ins-desc">{cat.description}</div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="mkt-ins-card-right">
-                    <div className="mkt-ins-tags">
-                      {(cat.tags || []).slice(0, 3).map((t: string) => (
-                        <span key={t} className="mkt-ins-tag">{t}</span>
-                      ))}
+                    <div className="mkt-ins-card-right">
+                      <div className="mkt-ins-tags">
+                        {(cat.tags || []).slice(0, 3).map((t: string) => (
+                          <span key={t} className="mkt-ins-tag">{t}</span>
+                        ))}
+                      </div>
+                      <span className="mkt-ins-count">{cat.contractCount} contracts</span>
+                      <span className="mkt-ins-arrow">Explore →</span>
                     </div>
-                    <span className="mkt-ins-count">{cat.contractCount} contracts</span>
-                    <span className="mkt-ins-arrow">Explore →</span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
+                  </Link>
+                  );
+                })}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
       )}
 
       {/* ── Empty state ───────────────────────────────────── */}
       {predictionCategories.length === 0 && insuranceCats.length === 0 && (
-        <div className="mkt-empty">
+        <motion.div
+          className="mkt-empty"
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+        >
           <div className="mkt-empty-icon">📭</div>
           <div className="mkt-empty-title">{searchQuery ? "No markets found" : "No markets available"}</div>
           <div className="mkt-empty-desc">
             {searchQuery ? "Try a different search term" : "Check back later for new markets"}
           </div>
-        </div>
+        </motion.div>
       )}
     </div>
   );

@@ -1,31 +1,34 @@
-/* Table Styles */
+/* ═══════════════════════════════════════════════════════════════════
+   TABLES — Premium data typography, exchange-grade alignment
+   ═══════════════════════════════════════════════════════════════════ */
+
 .terminal-table {
   width: 100%;
   border-collapse: collapse;
 }
 
 .terminal-table th {
-  padding: 0.75rem 1rem;
+  padding: 0.5rem 0.75rem;
   text-align: left;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 600;
   color: var(--terminal-muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   border-bottom: 1px solid var(--terminal-border);
-  background: var(--bg-tertiary);
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .terminal-table td {
-  padding: 0.875rem 1rem;
+  padding: 0.625rem 0.75rem;
   color: var(--terminal-text);
-  font-size: 0.875rem;
-  border-bottom: 1px solid var(--terminal-border);
-  transition: background 0.15s;
+  font-size: 0.8125rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.2s ease;
 }
 
 .terminal-table tbody tr:hover td {
-  background: var(--bg-tertiary);
+  background: rgba(88, 166, 255, 0.03);
   cursor: pointer;
 }
 
@@ -34,5 +37,10 @@
 }
 
 .td-mono {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: -0.02em;
+}
+
+.align-right {
+  text-align: right;
 }

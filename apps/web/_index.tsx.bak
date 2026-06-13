@@ -1,0 +1,530 @@
+import { Link } from "@remix-run/react";
+import type { MetaFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { redirect } from "@remix-run/node";
+import { useEffect, useState, useRef, useCallback } from "react";
+import { BlockMath, InlineMath } from "~/components/Math";
+import { getAuthenticatedUser } from "~/lib/auth.server";
+import "~/styles/pages/landing.css";
+import "~/styles/pages/survival-model.css";
+import "katex/dist/katex.min.css";
+
+export const meta: MetaFunction = () => {
+  return [
+    { title: "GAMEFIX — Continuously Priced Event Contracts" },
+    { name: "description", content: "Trade the probability of real-world events. Binary contracts priced in real time for hedging, forecasting, and risk transfer." },
+  ];
+};
+
+export async function loader({ request }: LoaderFunctionArgs) {
+  const user = await getAuthenticatedUser(request);
+  if (user) return redirect("/app");
+  return null;
+}
+
+/* ── Live-ticking probability ─────────────────────────────────── */
+function useTicker(base: number, variance = 0.4, intervalMs = 2200) {
+  const [value, setValue] = useState(base);
+  const ref = useRef(base);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const drift = (Math.random() - 0.5) * variance;
+      ref.current = Math.max(0.5, Math.min(99.5, ref.current + drift));
+      setValue(parseFloat(ref.current.toFixed(1)));
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, [variance, intervalMs]);
+  return value;
+}
+
+/* ── Mini probability curve (SVG) — animates with live price ──── */
+function ProbabilityCurve({ currentProb = 27 }: { currentProb?: number }) {
+  // Build a gentle ascending curve that ends at the current YES probability.
+  // 16 points for smoother rendering.
+  const n = 16;
+  const startP = Math.max(2, currentProb * 0.35);
+  const endP = currentProb;
+  const pts = Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1);
+    // ease-out curve shape
+    const ease = 1 - Math.pow(1 - t, 2.2);
+    return startP + (endP - startP) * ease;
+  });
+
+  const w = 300, h = 130, padX = 4, padY = 8;
+  const xStep = (w - padX * 2) / (n - 1);
+  const yMin = 0, yMax = 100;
+  const yScale = (v: number) => padY + ((yMax - v) / (yMax - yMin)) * (h - padY * 2);
+
+  const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${padX + i * xStep},${yScale(p)}`).join(' ');
+  // area fill path
+  const areaD = d + ` L${padX + (n - 1) * xStep},${h - padY} L${padX},${h - padY} Z`;
+
+  const endX = padX + (n - 1) * xStep;
+  const endY = yScale(pts[n - 1]);
+  const label = currentProb.toFixed(1) + '%';
+
+  // horizontal grid lines at 25%, 50%, 75%
+  const gridLines = [25, 50, 75];
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="prob-curve-svg" aria-label="YES probability over time">
+      <defs>
+        <linearGradient id="curveStroke" x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0%" stopColor="#8FAED5" />
+          <stop offset="50%" stopColor="#A0C2D0" />
+          <stop offset="100%" stopColor="#B0D6E2" />
+        </linearGradient>
+        <linearGradient id="curveFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(143,174,213,0.18)" />
+          <stop offset="100%" stopColor="rgba(143,174,213,0)" />
+        </linearGradient>
+      </defs>
+      {/* subtle grid */}
+      {gridLines.map(v => (
+        <line key={v} x1={padX} y1={yScale(v)} x2={w - padX} y2={yScale(v)}
+          stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
+      ))}
+      {/* area fill */}
+      <path d={areaD} fill="url(#curveFill)" style={{ transition: 'd 0.8s ease' }} />
+      {/* main line */}
+      <path d={d} fill="none" stroke="url(#curveStroke)" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round"
+        style={{ transition: 'd 0.8s ease' }} />
+      {/* endpoint glow + dot */}
+      <circle cx={endX} cy={endY} r="5" fill="rgba(176,214,226,0.2)"
+        style={{ transition: 'cy 0.8s ease' }} />
+      <circle cx={endX} cy={endY} r="2.5" fill="#B0D6E2"
+        style={{ transition: 'cy 0.8s ease' }} />
+      {/* floating probability label */}
+      <rect x={endX - 38} y={endY - 18} width="42" height="15" rx="4"
+        fill="rgba(13,17,23,0.92)" stroke="rgba(176,214,226,0.25)" strokeWidth="0.5"
+        style={{ transition: 'y 0.8s ease' }} />
+      <text x={endX - 17} y={endY - 8} fill="#B0D6E2" fontSize="8.5" fontFamily="monospace"
+        textAnchor="middle" style={{ transition: 'y 0.8s ease' }}>{label}</text>
+      {/* axis */}
+      <text x={padX} y={h - 1} fill="#484f58" fontSize="7" fontFamily="monospace">Now</text>
+      <text x={w - padX - 12} y={h - 1} fill="#484f58" fontSize="7" fontFamily="monospace">1yr</text>
+      {/* y-axis tick labels */}
+      <text x={padX} y={yScale(50) + 3} fill="#484f58" fontSize="6" fontFamily="monospace">50%</text>
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════ */
+
+export default function Index() {
+  const [scrolled, setScrolled] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 12);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Ping-pong loop: play forward → step backward → repeat
+  // Seamless loop: fade out near end, reset to start, fade back in
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    let fading = false;
+    const FADE_MS = 800;
+
+    const restart = () => {
+      if (fading) return;
+      fading = true;
+      v.classList.add('fading');
+      setTimeout(() => {
+        v.currentTime = 0;
+        v.play();
+        // small delay so the first frame renders before fade-in
+        setTimeout(() => {
+          v.classList.remove('fading');
+          fading = false;
+        }, 80);
+      }, FADE_MS);
+    };
+
+    const onTime = () => {
+      if (!fading && v.duration > 0 && v.currentTime >= v.duration - 1) {
+        restart();
+      }
+    };
+
+    const onEnded = () => restart();
+    v.addEventListener('timeupdate', onTime);
+    v.addEventListener('ended', onEnded);
+
+    return () => {
+      v.removeEventListener('timeupdate', onTime);
+      v.removeEventListener('ended', onEnded);
+    };
+  }, []);
+
+  // live-ticking probabilities for the hero market card
+  const yesProb = useTicker(27, 0.3, 2400);
+  const noProb = parseFloat((100 - yesProb).toFixed(1));
+  // yesProb and noProb are used directly in pence format
+
+  return (
+    <div className="landing-container">
+      {/* ── Navbar ─────────────────────────────────────────────── */}
+      <nav className={`landing-nav ${scrolled ? "scrolled" : ""}`}>
+        <Link to="/" className="landing-logo">GAMEFIX</Link>
+        <div className="landing-nav-links">
+          <Link to="/" className="nav-link active">Home</Link>
+          <Link to="/about" className="nav-link">About</Link>
+          <Link to="/story" className="nav-link">Story</Link>
+          <Link to="/app/markets" className="nav-login-btn">Explore Markets</Link>
+        </div>
+      </nav>
+
+      {/* ── Hero ───────────────────────────────────────────────── */}
+      <section className="hero-section">
+        <video ref={videoRef} className="hero-bg" src="/media/video/bgvideo.mp4" autoPlay muted playsInline />
+        <div className="hero-overlay" />
+
+        <div className="hero-content">
+          {/* Left */}
+          <div className="hero-left">
+            <div className="hero-kicker">
+              <span className="kicker-dot" />
+              <span>Continuously priced event contracts</span>
+            </div>
+
+            <h1 className="hero-title">
+              Trade the probability of{" "}
+              <span className="grad">real-world events.</span>
+            </h1>
+
+            <p className="hero-subtitle">
+              Binary contracts priced in real time. Used for hedging, forecasting, and risk transfer.
+            </p>
+
+            {/* 3-step mental model */}
+            <div className="hero-steps">
+              <div className="hero-step">
+                <span className="step-num">1</span>
+                <span className="step-text">Buy <strong>YES</strong> or <strong>NO</strong> on an event</span>
+              </div>
+              <div className="hero-step">
+                <span className="step-num">2</span>
+                <span className="step-text">Price = probability <span className="step-eg">(27p = 27%)</span></span>
+              </div>
+              <div className="hero-step">
+                <span className="step-num">3</span>
+                <span className="step-text">If correct → pays <strong>£1.00</strong></span>
+              </div>
+            </div>
+
+            <div className="hero-cta">
+              <Link to="/app/markets" className="btn btn-primary">
+                Explore Markets →
+              </Link>
+              <button type="button" className="btn btn-secondary" onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}>
+                Learn how it works
+              </button>
+            </div>
+          </div>
+
+          {/* Right — live market card */}
+          <div className="hero-right">
+            <div className="hero-market-card">
+              {/* Top row: category + live + resolves */}
+              <div className="hmc-header">
+                <div className="hmc-header-left">
+                  <span className="hmc-badge">Life Insurance</span>
+                  <span className="hmc-resolve">Resolves to £1</span>
+                </div>
+                <span className="hmc-live"><span className="live-dot" /> LIVE</span>
+              </div>
+
+              {/* Question */}
+              <h3 className="hmc-question">
+                Will a clinically approved cure for paralysis be publicly available by Mar 2027?
+              </h3>
+
+              {/* YES / NO trade cards */}
+              <div className="hmc-prices">
+                <button className="hmc-price hmc-yes" onClick={() => window.location.href = '/app/insurance/life/paralysis-cure'}>
+                  <span className="hmc-price-bar" />
+                  <div className="hmc-price-body">
+                    <span className="hmc-side">Buy YES</span>
+                    <span className="hmc-amount">{Math.round(yesProb)}<span className="hmc-unit">p</span></span>
+                  </div>
+                </button>
+                <button className="hmc-price hmc-no" onClick={() => window.location.href = '/app/insurance/life/paralysis-cure'}>
+                  <span className="hmc-price-bar" />
+                  <div className="hmc-price-body">
+                    <span className="hmc-side">Buy NO</span>
+                    <span className="hmc-amount">{Math.round(noProb)}<span className="hmc-unit">p</span></span>
+                  </div>
+                </button>
+              </div>
+
+              {/* Stats row — probability is hero */}
+              <div className="hmc-meta">
+                <div className="hmc-meta-item hmc-meta-hero">
+                  <span className="hmc-meta-label">Implied probability</span>
+                  <span className="hmc-meta-value hmc-prob-val">{yesProb}%</span>
+                </div>
+                <div className="hmc-meta-item">
+                  <span className="hmc-meta-label">Maturity</span>
+                  <span className="hmc-meta-value">365 days</span>
+                </div>
+                <div className="hmc-meta-item">
+                  <span className="hmc-meta-label">Volume</span>
+                  <span className="hmc-meta-value">£124.8k</span>
+                </div>
+              </div>
+
+              {/* Probability curve */}
+              <div className="hmc-curve-wrap">
+                <span className="hmc-curve-label">YES probability over time</span>
+                <ProbabilityCurve currentProb={yesProb} />
+              </div>
+
+              {/* Footer: trading context */}
+              <div className="hmc-footer">
+                <div className="hmc-foot-item">
+                  <span className="hmc-foot-label">Last</span>
+                  <span className="hmc-foot-value">{Math.round(yesProb)}p</span>
+                </div>
+                <div className="hmc-foot-sep" />
+                <div className="hmc-foot-item">
+                  <span className="hmc-foot-label">24h</span>
+                  <span className="hmc-foot-value hmc-foot-change">+0.8p</span>
+                </div>
+                <div className="hmc-foot-sep" />
+                <div className="hmc-foot-item">
+                  <span className="hmc-foot-label">Open interest</span>
+                  <span className="hmc-foot-value">£42.1k</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <a href="#how-it-works" className="hero-scroll-indicator" aria-label="Scroll down">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </a>
+      </section>
+
+      {/* ── How It Works (comprehensive) ─────────────────────── */}
+      <section id="how-it-works" className="hiw-section">
+        <div className="hiw-container">
+          <div className="smm-badge">HOW IT WORKS</div>
+          <h2 className="hiw-title">Price reality. Trade outcomes.</h2>
+          <p className="hiw-subtitle">
+            Every market is a binary contract priced in real time. The market price <em>is</em> the probability.
+          </p>
+
+          {/* Step 1-2-3 cards */}
+          <div className="hiw-grid">
+            <div className="hiw-card">
+              <div className="hiw-step-num">1</div>
+              <h3>Choose an event</h3>
+              <p>Pick from insurance, climate, health, agriculture, liability, or travel markets — each with contracts across multiple maturities.</p>
+            </div>
+            <div className="hiw-card">
+              <div className="hiw-step-num">2</div>
+              <h3>Buy YES or NO</h3>
+              <p>The contract price reflects the market-implied probability. Buy at 27p if you believe there's more than a 27% chance the event occurs.</p>
+            </div>
+            <div className="hiw-card">
+              <div className="hiw-step-num">3</div>
+              <h3>Settle or trade out</h3>
+              <p>If correct, each contract pays £1.00 at maturity. Or trade your position any time as the probability shifts — no lock-in.</p>
+            </div>
+          </div>
+
+          {/* ── Contract definition with image ──────────────── */}
+          <div className="hiw-visual-row">
+            <div className="hiw-visual-text">
+              <span className="hiw-row-badge">Contract Structure</span>
+              <h3>Binary payoffs</h3>
+              <p>
+                Let <InlineMath math="\tau" /> denote the random time at which a defined event occurs.
+                For any maturity <InlineMath math="T" />, the contract defines two complementary binary payoffs:
+              </p>
+              <div className="smm-math-block">
+                <BlockMath math="Y(T) = \mathbf{1}_{\{\tau > T\}}" />
+                <BlockMath math="N(T) = \mathbf{1}_{\{\tau \leq T\}}" />
+              </div>
+              <p>
+                <strong>YES</strong> pays £1 if the event has <em>not</em> occurred by time <InlineMath math="T" />.{" "}
+                <strong>NO</strong> pays £1 if it <em>has</em>.
+                Together: <InlineMath math="Y(T) + N(T) = 1" />.
+              </p>
+            </div>
+            <div className="hiw-visual-media">
+              <img src="/media/img/PastedGraphic-2s.png" alt="Contract payoff diagram" />
+            </div>
+          </div>
+
+          {/* ── What you can trade ────────────────────────── */}
+          <div className="hiw-categories-block">
+            <span className="hiw-row-badge" style={{ background: 'rgba(0, 242, 234, 0.12)', color: '#00f2ea', borderColor: 'rgba(0, 242, 234, 0.25)' }}>MARKET CATEGORIES</span>
+            <h3 className="hiw-cat-title">Not a prediction app. A risk pricing system.</h3>
+            <p className="hiw-cat-sub">
+              GameFix isn't a sportsbook with a new skin. It's a continuous limit-order-book exchange for event-linked contracts — built on actuarial mathematics.
+            </p>
+            <div className="hiw-cat-grid">
+              <div className="hiw-cat-card">
+                <div className="hiw-cat-icon">🛡️</div>
+                <h4>Insurance</h4>
+                <p>Survival-linked contracts with hazard-rate pricing across the maturity curve.</p>
+              </div>
+              <div className="hiw-cat-card">
+                <div className="hiw-cat-icon">🌪️</div>
+                <h4>Catastrophe risk</h4>
+                <p>Trade probability of hurricanes, floods, agricultural losses — priced by the market.</p>
+              </div>
+              <div className="hiw-cat-card">
+                <div className="hiw-cat-icon">🧬</div>
+                <h4>Scientific breakthroughs</h4>
+                <p>Markets on FDA approvals, clinical trials, and research milestones with real deadlines.</p>
+              </div>
+              <div className="hiw-cat-card">
+                <div className="hiw-cat-icon">📈</div>
+                <h4>Hedging &amp; risk transfer</h4>
+                <p>Decompose uncertain risks into tradable binary claims indexed by time. Real financial infrastructure.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Survival term structure with table + image ── */}
+          <div className="hiw-visual-row hiw-visual-row--flip">
+            <div className="hiw-visual-text">
+              <span className="hiw-row-badge" style={{ background: 'rgba(143,174,213,0.12)', color: '#8FAED5', borderColor: 'rgba(143,174,213,0.25)' }}>WORKED EXAMPLE</span>
+              <h3>Life insurance term structure</h3>
+              <p>
+                Let <InlineMath math="\tau" /> denote time of death.{" "}
+                <InlineMath math="Y(T) = \mathbf{1}_{\{\tau > T\}}" /> pays £1 if the individual is alive at time <InlineMath math="T" />.
+              </p>
+              <div className="smm-survival-table hiw-table">
+                <div className="smm-survival-header">
+                  <span>Contract</span>
+                  <span className="smm-yes-col">YES</span>
+                  <span className="smm-no-col">NO</span>
+                </div>
+                {[
+                  { label: "Alive at Feb 2026", yes: "0.95", no: "0.05" },
+                  { label: "Alive at Dec 2026", yes: "0.90", no: "0.10" },
+                  { label: "Alive at Feb 2066", yes: "0.25", no: "0.75" },
+                ].map((row) => (
+                  <div key={row.label} className="smm-survival-row">
+                    <span className="smm-survival-label">{row.label}</span>
+                    <span className="smm-yes-col">{row.yes}</span>
+                    <span className="smm-no-col">{row.no}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="hiw-note">
+                These values form a <strong>survival term structure</strong>: market-implied survival probabilities declining with maturity.
+              </p>
+            </div>
+            <div className="hiw-visual-media">
+              <img src="/media/img/PastedGraphic-3s.png" alt="Survival term structure" />
+            </div>
+          </div>
+
+          {/* ── Hazard-rate representation ──────────────── */}
+          <div className="hiw-visual-row">
+            <div className="hiw-visual-text">
+              <span className="hiw-row-badge" style={{ background: 'rgba(63,185,80,0.12)', color: '#3fb950', borderColor: 'rgba(63,185,80,0.25)' }}>MATHEMATICAL FRAMEWORK</span>
+              <h3>Hazard-rate pricing</h3>
+              <p>
+                The market-implied survival probability under hazard rate <InlineMath math="\lambda(u)" />:
+              </p>
+              <div className="smm-math-block smm-math-block--green">
+                <BlockMath math="P(t,T) = \exp\!\left(-\int_t^T \lambda(u)\,du\right)" />
+              </div>
+              <p>
+                Under non-negative hazard, YES declines monotonically with maturity — forming the term-structure curve visible in every market.
+              </p>
+              <div className="hiw-interp-pills">
+                <span className="hiw-pill">Insurance contingencies</span>
+                <span className="hiw-pill">Binary risk hedging</span>
+                <span className="hiw-pill">Extends to any event type</span>
+              </div>
+            </div>
+            <div className="hiw-visual-media">
+              <img src="/media/img/PastedGraphic-4s.png" alt="Hazard rate diagram" />
+            </div>
+          </div>
+
+          {/* ── Exchange mechanics with video ───────────── */}
+          <div className="hiw-visual-row hiw-visual-row--flip">
+            <div className="hiw-visual-text">
+              <span className="hiw-row-badge" style={{ background: 'rgba(35,134,54,0.12)', color: '#3fb950', borderColor: 'rgba(35,134,54,0.25)' }}>EXCHANGE MECHANICS</span>
+              <h3>Zero-fee limit order book</h3>
+              <p>
+                For every £100 wagered with a traditional bookmaker, £7–10 goes to the house. On GameFix that number is £0. Users set prices. Liquidity matches across sides. Positions can be managed live.
+              </p>
+              <div className="hiw-exchange-callout">
+                Continuous double-auction matching. No market-maker spread. No transaction fees. The exchange is the product.
+              </div>
+              <Link to="/how-it-works" className="hiw-doc-link">
+                Technical Documentation →
+              </Link>
+            </div>
+            <div className="hiw-visual-media hiw-visual-media--video">
+              <video autoPlay loop muted playsInline>
+                <source src="/media/video/homemediacard1.mp4" type="video/mp4" />
+              </video>
+            </div>
+          </div>
+
+          {/* ── Stats strip (inline) ───────────────────── */}
+          <div className="hiw-stats">
+            <div className="hiw-stat">
+              <span className="hiw-stat-val">6</span>
+              <span className="hiw-stat-label">Risk categories</span>
+            </div>
+            <div className="hiw-stat-sep" />
+            <div className="hiw-stat">
+              <span className="hiw-stat-val">186</span>
+              <span className="hiw-stat-label">Active contracts</span>
+            </div>
+            <div className="hiw-stat-sep" />
+            <div className="hiw-stat">
+              <span className="hiw-stat-val hiw-stat-green">0%</span>
+              <span className="hiw-stat-label">Transaction fee</span>
+            </div>
+            <div className="hiw-stat-sep" />
+            <div className="hiw-stat">
+              <span className="hiw-stat-val">24/7</span>
+              <span className="hiw-stat-label">Continuous trading</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Footer ─────────────────────────────────────────────── */}
+      <footer className="landing-footer">
+        <div className="footer-content">
+          <div className="footer-logo">gamefix.com</div>
+          <div className="footer-links">
+            <Link to="/legal" className="footer-link">Privacy Policy</Link>
+            <Link to="/legal" className="footer-link">Terms of Use</Link>
+            <Link to="/legal" className="footer-link">Contact Us</Link>
+          </div>
+        </div>
+        <div style={{ textAlign: 'center', paddingTop: '1rem', paddingBottom: '0.5rem' }}>
+          <a
+            href="https://carvum.shop"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="footer-carvum"
+          >
+            Made by <strong style={{ fontWeight: 700, marginLeft: '0.2rem' }}>Carvum</strong>
+          </a>
+        </div>
+      </footer>
+    </div>
+  );
+}

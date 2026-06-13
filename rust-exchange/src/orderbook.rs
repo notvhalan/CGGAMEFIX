@@ -17,9 +17,9 @@ const MIN_CONTRACT_MICROS: i64 = 1000;
 pub struct OrderBook {
     pub market_id: Uuid,
     /// Bids sorted by price descending (best bid first)
-    bids: BTreeMap<i64, VecDeque<BookOrder>>,
+    pub bids: BTreeMap<i64, VecDeque<BookOrder>>,
     /// Asks sorted by price ascending (best ask first)  
-    asks: BTreeMap<i64, VecDeque<BookOrder>>,
+    pub asks: BTreeMap<i64, VecDeque<BookOrder>>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl OrderBook {
     }
 
     /// Match a taker order against the book
-    /// Returns fills and remaining quantity
+    /// Returns (fills, remaining_quantity, self_trade_skipped_order_ids)
     pub fn match_order(
         &mut self,
         taker_order_id: Uuid,
@@ -66,8 +66,9 @@ impl OrderBook {
         limit_yes_pts: i64,
         mut qty_remaining_micros: i64,
         mut budget_remaining_pence: Option<i64>,
-    ) -> (Vec<Fill>, i64) {
+    ) -> (Vec<Fill>, i64, Vec<Uuid>) {
         let mut fills = Vec::new();
+        let mut self_trade_skipped: Vec<Uuid> = Vec::new();
 
         match taker_side {
             Side::BuyYes => {
@@ -89,7 +90,10 @@ impl OrderBook {
                         };
 
                         // Skip self-trade: don't match with own orders
+                        // Leave the maker on the book (don't pop) — just skip past it
                         if maker.user_id == taker_user_id {
+                            let skipped_id = maker.order_id;
+                            self_trade_skipped.push(skipped_id);
                             makers.pop_front();
                             continue;
                         }
@@ -155,7 +159,10 @@ impl OrderBook {
                         };
 
                         // Skip self-trade: don't match with own orders
+                        // Leave the maker on the book (don't pop) — just skip past it
                         if maker.user_id == taker_user_id {
+                            let skipped_id = maker.order_id;
+                            self_trade_skipped.push(skipped_id);
                             makers.pop_front();
                             continue;
                         }
@@ -203,7 +210,28 @@ impl OrderBook {
             }
         }
 
-        (fills, qty_remaining_micros)
+        (fills, qty_remaining_micros, self_trade_skipped)
+    }
+
+    /// Check if the book is crossed (best_bid >= best_ask)
+    /// Returns Some((best_bid, best_ask)) if crossed, None if healthy
+    pub fn check_crossed(&self) -> Option<(i64, i64)> {
+        let best_bid = self.bids.keys().rev().next().copied();
+        let best_ask = self.asks.keys().next().copied();
+        match (best_bid, best_ask) {
+            (Some(bid), Some(ask)) if bid >= ask => Some((bid, ask)),
+            _ => None,
+        }
+    }
+
+    /// Get best bid price (highest BuyYes)
+    pub fn best_bid(&self) -> Option<i64> {
+        self.bids.keys().rev().next().copied()
+    }
+
+    /// Get best ask price (lowest SellYes)
+    pub fn best_ask(&self) -> Option<i64> {
+        self.asks.keys().next().copied()
     }
 
     /// Remove order from book
@@ -266,7 +294,7 @@ mod tests {
         );
 
         // Match taker
-        let (fills, remaining) = book.match_order(
+        let (fills, remaining, skipped) = book.match_order(
             Uuid::new_v4(),
             Uuid::new_v4(),
             Side::BuyYes,
@@ -281,5 +309,122 @@ mod tests {
         assert_eq!(fills[1].maker_order_id, maker2);
         assert_eq!(fills[1].qty_micros, 2_000_000);
         assert_eq!(remaining, 0);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn test_self_trade_prevention_returns_skipped() {
+        let mut book = OrderBook::new(Uuid::new_v4());
+        let same_user = Uuid::new_v4();
+        let other_user = Uuid::new_v4();
+        
+        let own_ask = Uuid::new_v4();
+        let other_ask = Uuid::new_v4();
+        
+        // Own order on the ask side
+        book.add_order(
+            BookOrder {
+                order_id: own_ask,
+                user_id: same_user,
+                qty_remaining_micros: 5_000_000,
+                created_at: 1000,
+            },
+            Side::SellYes,
+            5_000_000,
+        );
+        
+        // Another user's ask at same price
+        book.add_order(
+            BookOrder {
+                order_id: other_ask,
+                user_id: other_user,
+                qty_remaining_micros: 3_000_000,
+                created_at: 2000,
+            },
+            Side::SellYes,
+            5_000_000,
+        );
+
+        // Same user tries to buy — should skip own order, match with other
+        let (fills, remaining, skipped) = book.match_order(
+            Uuid::new_v4(),
+            same_user,
+            Side::BuyYes,
+            5_000_000,
+            3_000_000,
+            None,
+        );
+
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].maker_order_id, other_ask);
+        assert_eq!(fills[0].qty_micros, 3_000_000);
+        assert_eq!(remaining, 0);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0], own_ask);
+    }
+
+    #[test]
+    fn test_crossed_book_detection() {
+        let mut book = OrderBook::new(Uuid::new_v4());
+        
+        // Add a bid at 69% (6_900_000 pts)
+        book.add_order(
+            BookOrder {
+                order_id: Uuid::new_v4(),
+                user_id: Uuid::new_v4(),
+                qty_remaining_micros: 10_000_000,
+                created_at: 1000,
+            },
+            Side::BuyYes,
+            6_900_000,
+        );
+        
+        // Add an ask at 63% (6_300_000 pts) — LOWER than bid = CROSSED
+        book.add_order(
+            BookOrder {
+                order_id: Uuid::new_v4(),
+                user_id: Uuid::new_v4(),
+                qty_remaining_micros: 10_000_000,
+                created_at: 2000,
+            },
+            Side::SellYes,
+            6_300_000,
+        );
+        
+        let crossed = book.check_crossed();
+        assert!(crossed.is_some());
+        let (bid, ask) = crossed.unwrap();
+        assert_eq!(bid, 6_900_000);
+        assert_eq!(ask, 6_300_000);
+    }
+
+    #[test]
+    fn test_healthy_book_not_crossed() {
+        let mut book = OrderBook::new(Uuid::new_v4());
+        
+        // Bid at 50%, ask at 55% — healthy spread
+        book.add_order(
+            BookOrder {
+                order_id: Uuid::new_v4(),
+                user_id: Uuid::new_v4(),
+                qty_remaining_micros: 10_000_000,
+                created_at: 1000,
+            },
+            Side::BuyYes,
+            5_000_000,
+        );
+        
+        book.add_order(
+            BookOrder {
+                order_id: Uuid::new_v4(),
+                user_id: Uuid::new_v4(),
+                qty_remaining_micros: 10_000_000,
+                created_at: 2000,
+            },
+            Side::SellYes,
+            5_500_000,
+        );
+        
+        assert!(book.check_crossed().is_none());
     }
 }

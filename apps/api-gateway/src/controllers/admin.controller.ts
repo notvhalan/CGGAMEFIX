@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Req, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { Logger } from '@betting-exchange/shared-config';
 import { FastifyRequest } from 'fastify';
 import { LiquidityBotsService } from '../services/liquidity-bots.service';
@@ -114,27 +114,66 @@ export class AdminController {
 
   @Post('liquidity-bots/stop')
   async stopLiquidityBots(
-    @Body() body: any, // Accept but ignore body to satisfy Fastify
+    @Body() body: any,
     @Req() req: FastifyRequest & { session: any },
   ) {
     const userId = req.session?.userId;
-    if (!userId) {
-      throw new UnauthorizedException('Not authenticated');
-    }
-
-    // Check admin access
+    if (!userId) throw new UnauthorizedException('Not authenticated');
     await this.checkAdminAccess(userId);
-
     this.logger.info(`Admin ${userId} stopping liquidity bots`);
-
     try {
       this.liquidityBotsService.stopBots();
-      return {
-        success: true,
-        message: 'Stopped all liquidity bots',
-      };
+      return { success: true, message: 'Stopped all liquidity bots' };
     } catch (error) {
       this.logger.error('Failed to stop liquidity bots', error);
+      throw error;
+    }
+  }
+
+  @Post('liquidity-bots/status')
+  async getLiquidityBotsStatus(
+    @Body() body: any,
+    @Req() req: FastifyRequest & { session: any },
+  ) {
+    const userId = req.session?.userId;
+    if (!userId) throw new UnauthorizedException('Not authenticated');
+    await this.checkAdminAccess(userId);
+    return this.liquidityBotsService.getStatus();
+  }
+
+  @Post('liquidity-bots/start-category')
+  async startCategoryBots(
+    @Body() body: {
+      category: string;
+      userCount: number;
+      halfSpreadPts: number;
+      levels: number;
+      sizeContracts: number;
+      takerChance: number;
+      sizeVariance?: number;
+      priceVariance?: number;
+      orderDelayMs?: number;
+      orderDelayVarianceMs?: number;
+      refreshIntervalMs?: number;
+      priceDriftPts?: number;
+      volatility?: number;
+      subcategoryCurve: Record<string, number[]>;
+    },
+    @Req() req: FastifyRequest & { session: any },
+  ) {
+    const userId = req.session?.userId;
+    if (!userId) throw new UnauthorizedException('Not authenticated');
+    await this.checkAdminAccess(userId);
+    this.logger.info(`Admin ${userId} starting category bots for '${body.category}'`, body);
+    try {
+      const result = await this.liquidityBotsService.startCategoryBots(body);
+      return {
+        success: true,
+        message: `Started bots on ${result.marketCount}/${result.totalMarkets} markets in '${body.category}'`,
+        ...result,
+      };
+    } catch (error) {
+      this.logger.error('Failed to start category bots', error);
       throw error;
     }
   }

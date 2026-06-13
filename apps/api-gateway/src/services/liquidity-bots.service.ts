@@ -14,20 +14,36 @@ interface BotConfig {
   levels: number;
   sizeContracts: number;
   takerChance: number;
-  sizeVariance: number; // Contract size variance (0-1, e.g., 0.2 = ±20%)
-  priceVariance: number; // Price variance in pts (±pts)
-  orderDelayMs: number; // Delay between individual order placements (ms)
-  orderDelayVarianceMs: number; // Variance for order delay (±ms)
-  refreshIntervalMs: number; // How often to cancel and replace orders (0 = never)
-  priceDriftPts: number; // Max price drift per refresh (±pts)
-  volatility: number; // Price volatility factor (0-1, higher = more volatile)
+  sizeVariance: number;
+  priceVariance: number;
+  orderDelayMs: number;
+  orderDelayVarianceMs: number;
+  refreshIntervalMs: number;
+  priceDriftPts: number;
+  volatility: number;
 }
 
 interface BotState {
   userId: string;
   liveOrders: Array<{ id: string; side: Side; yesPts: bigint }>;
-  timeoutId?: NodeJS.Timeout; // Track timeout for cleanup
-  currentMidPts: bigint; // Current mid price for this bot (drifts over time)
+  timeoutId?: NodeJS.Timeout;
+  currentMidPts: bigint;
+}
+
+/** Tracks one running market session for status reporting */
+export interface MarketSession {
+  marketId: string;
+  marketName: string;
+  conditionName: string | null;
+  category: string | null;
+  midPrice: number;       // 0-100
+  spread: number;         // 0-100
+  levels: number;
+  botsCount: number;
+  ordersPlaced: number;
+  startedAt: string;      // ISO date
+  status: 'running' | 'error';
+  errorMessage?: string;
 }
 
 @Injectable()
@@ -37,6 +53,27 @@ export class LiquidityBotsService {
   private config: BotConfig | null = null;
   private stopping = false;
   private readonly RUST_EXCHANGE_URL = process.env.RUST_EXCHANGE_URL || 'http://localhost:3001';
+
+  /** Track all running sessions for status endpoint */
+  private sessions: Map<string, MarketSession> = new Map();
+  /** Track per-market bot arrays for multi-market mode */
+  private marketBots: Map<string, { bots: BotState[]; config: BotConfig }> = new Map();
+
+  /** Return status of all running bot sessions */
+  getStatus(): { sessions: MarketSession[]; totalBots: number; totalOrders: number } {
+    const sessions = Array.from(this.sessions.values());
+    // Update order counts from live bot state
+    for (const sess of sessions) {
+      const mb = this.marketBots.get(sess.marketId);
+      if (mb) {
+        sess.ordersPlaced = mb.bots.reduce((sum, b) => sum + b.liveOrders.length, 0);
+        sess.botsCount = mb.bots.length;
+      }
+    }
+    const totalBots = sessions.reduce((s, x) => s + x.botsCount, 0);
+    const totalOrders = sessions.reduce((s, x) => s + x.ordersPlaced, 0);
+    return { sessions, totalBots, totalOrders };
+  }
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -57,6 +94,9 @@ export class LiquidityBotsService {
     refreshIntervalMs?: number;
     priceDriftPts?: number;
     volatility?: number;
+    marketName?: string;
+    conditionName?: string;
+    category?: string;
   }) {
     // Stop any existing bots first
     this.stopBots();
@@ -82,7 +122,6 @@ export class LiquidityBotsService {
 
     this.logger.info(`Fetching ${params.userCount} existing bot users...`);
 
-    // Fetch existing bot users from database
     try {
       const botUsersResult = await this.databaseService.query(
         `SELECT id, email FROM users WHERE email LIKE '%@bot.local' ORDER BY RANDOM() LIMIT $1`,
@@ -99,46 +138,39 @@ export class LiquidityBotsService {
 
       const usedBotIds = new Set<string>();
 
-      // Use existing bot users (ensuring uniqueness)
       for (const row of botUsersResult.rows) {
         const userId = row.id;
-
-        // Skip if already used (should not happen with RANDOM, but safety check)
-        if (usedBotIds.has(userId)) {
-          this.logger.warn(`Skipping duplicate bot user ${userId}`);
-          continue;
-        }
+        if (usedBotIds.has(userId)) continue;
         usedBotIds.add(userId);
 
-        // Ensure wallet exists and is funded
         await this.databaseService.ensureWallet(userId, 'GBP');
-        
-        // Fund the wallet generously
         const fundResult = await this.databaseService.query(
-          `UPDATE wallets 
-           SET balance = 10000.00, 
-               locked_balance = 0, 
-               updated_at = NOW() 
-           WHERE user_id = $1 AND currency = 'GBP'
-           RETURNING balance`,
+          `UPDATE wallets SET balance = 1000000.00, locked_balance = 0, updated_at = NOW() WHERE user_id = $1 AND currency = 'GBP' RETURNING balance`,
           [userId]
         );
-        
-        if (fundResult.rows.length === 0) {
-          this.logger.error(`Failed to fund wallet for bot user ${userId}`);
-          continue;
-        }
+        if (fundResult.rows.length === 0) { this.logger.error(`Failed to fund wallet for bot user ${userId}`); continue; }
 
-        this.bots.push({
-          userId,
-          liveOrders: [],
-          currentMidPts: BigInt(params.midYesPts),
-        });
-
+        this.bots.push({ userId, liveOrders: [], currentMidPts: BigInt(params.midYesPts) });
         this.logger.info(`Using bot user: ${row.email} (${userId}) with balance £${fundResult.rows[0].balance}`);
       }
 
       this.logger.info(`✓ Selected ${this.bots.length} unique bot users from pool of ${botUsersResult.rows.length}`);
+
+      // Register session tracking
+      this.sessions.set(params.marketId, {
+        marketId: params.marketId,
+        marketName: params.marketName || params.marketId,
+        conditionName: params.conditionName || null,
+        category: params.category || null,
+        midPrice: params.midYesPts / 100_000,
+        spread: params.halfSpreadPts / 100_000,
+        levels: params.levels,
+        botsCount: this.bots.length,
+        ordersPlaced: 0,
+        startedAt: new Date().toISOString(),
+        status: 'running',
+      });
+      this.marketBots.set(params.marketId, { bots: [...this.bots], config: this.config });
     } catch (error) {
       this.logger.error('Failed to fetch bot users:', error);
       throw error;
@@ -176,11 +208,214 @@ export class LiquidityBotsService {
         bot.timeoutId = undefined;
       }
     }
+    // Also clear multi-market bots
+    for (const [, mb] of this.marketBots) {
+      for (const bot of mb.bots) {
+        if (bot.timeoutId) { clearTimeout(bot.timeoutId); bot.timeoutId = undefined; }
+      }
+    }
     
     this.bots = [];
     this.config = null;
+    this.sessions.clear();
+    this.marketBots.clear();
     
     this.logger.info('All bots stopped and timeouts cleared');
+  }
+
+  /**
+   * Start bots across ALL markets in a category.
+   * Each subcategory has its own ladder curve: an array of mid-percents
+   * that map 1:1 to markets sorted by maturity_date ASC.
+   */
+  async startCategoryBots(params: {
+    category: string;
+    userCount: number;
+    halfSpreadPts: number;
+    levels: number;
+    sizeContracts: number;
+    takerChance: number;
+    sizeVariance?: number;
+    priceVariance?: number;
+    orderDelayMs?: number;
+    orderDelayVarianceMs?: number;
+    refreshIntervalMs?: number;
+    priceDriftPts?: number;
+    volatility?: number;
+    /** Per-subcategory ladder curves: conditionName => midPercent[] (one per market, sorted by maturity) */
+    subcategoryCurve: Record<string, number[]>;
+  }) {
+    // Stop everything first
+    this.stopBots();
+    this.stopping = false;
+
+    const { category, userCount, subcategoryCurve, halfSpreadPts, levels, sizeContracts, takerChance } = params;
+
+    // 1. Fetch all markets in this insurance category
+    const marketsResult = await this.databaseService.query(
+      `SELECT id, name, condition_name, maturity_date, status
+       FROM markets
+       WHERE market_category = 'INSURANCE'
+         AND insurance_category = $1
+         AND status IN ('ACTIVE', 'OPEN')
+       ORDER BY condition_name ASC, maturity_date ASC`,
+      [category],
+    );
+
+    if (marketsResult.rows.length === 0) {
+      throw new Error(`No active markets found for category '${category}'`);
+    }
+
+    this.logger.info(`Found ${marketsResult.rows.length} markets in category '${category}'`);
+
+    // 2. Fetch ALL bot users once
+    this.logger.info(`Fetching up to ${userCount} bot users...`);
+    const botUsersResult = await this.databaseService.query(
+      `SELECT id, email FROM users WHERE email LIKE '%@bot.local' ORDER BY RANDOM() LIMIT $1`,
+      [userCount]
+    );
+    if (botUsersResult.rows.length === 0) {
+      throw new Error('No bot users found in database.');
+    }
+    this.logger.info(`Found ${botUsersResult.rows.length} bot users, funding wallets...`);
+
+    // Fund all bot users
+    for (const row of botUsersResult.rows) {
+      await this.databaseService.ensureWallet(row.id, 'GBP');
+      await this.databaseService.query(
+        `UPDATE wallets SET balance = 1000000.00, locked_balance = 0, updated_at = NOW() WHERE user_id = $1 AND currency = 'GBP'`,
+        [row.id]
+      );
+    }
+    this.logger.info(`All ${botUsersResult.rows.length} bot users funded to £1,000,000`);
+
+    let marketCount = 0;
+    let totalBotsStarted = 0;
+
+    // 3. Group markets by condition_name and sort by maturity
+    const grouped: Record<string, typeof marketsResult.rows> = {};
+    for (const market of marketsResult.rows) {
+      const condName = market.condition_name || 'default';
+      if (!grouped[condName]) grouped[condName] = [];
+      grouped[condName].push(market);
+    }
+    // Sort each group by maturity_date ASC
+    for (const condName of Object.keys(grouped)) {
+      grouped[condName].sort((a, b) => {
+        const da = a.maturity_date ? new Date(a.maturity_date).getTime() : 0;
+        const db = b.maturity_date ? new Date(b.maturity_date).getTime() : 0;
+        return da - db;
+      });
+    }
+
+    // 4. For each market, pick its mid price from the ladder curve by index
+    const orderedMarkets: { market: any; midPercent: number }[] = [];
+    for (const [condName, markets] of Object.entries(grouped)) {
+      const curveArr = subcategoryCurve[condName] || [];
+      markets.forEach((market, idx) => {
+        // Use the curve value at this index, or fallback to last value, or 50
+        const midPercent = curveArr[idx] ?? curveArr[curveArr.length - 1] ?? 50;
+        orderedMarkets.push({ market, midPercent });
+      });
+    }
+
+    // Process markets in parallel batches of 6 for speed
+    const BATCH_SIZE = 6;
+    for (let batchStart = 0; batchStart < orderedMarkets.length; batchStart += BATCH_SIZE) {
+      const batch = orderedMarkets.slice(batchStart, batchStart + BATCH_SIZE);
+      this.logger.info(`Processing market batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(orderedMarkets.length / BATCH_SIZE)} (markets ${batchStart + 1}-${batchStart + batch.length} of ${orderedMarkets.length})`);
+
+      const batchPromises = batch.map(async ({ market, midPercent }) => {
+        const condName = market.condition_name || 'default';
+        const midYesPts = BigInt(Math.round((midPercent / 100) * 10_000_000));
+
+        const config: BotConfig = {
+          marketId: market.id,
+          midYesPts,
+          halfSpreadPts: BigInt(halfSpreadPts),
+          levels,
+          sizeContracts,
+          takerChance,
+          sizeVariance: params.sizeVariance || 0,
+          priceVariance: params.priceVariance || 0,
+          orderDelayMs: params.orderDelayMs || 0,
+          orderDelayVarianceMs: params.orderDelayVarianceMs || 0,
+          refreshIntervalMs: params.refreshIntervalMs || 0,
+          priceDriftPts: params.priceDriftPts || 0,
+          volatility: params.volatility || 0,
+        };
+
+        // Create bot states for this market (all bots work all markets)
+        const marketBotStates: BotState[] = botUsersResult.rows.map(row => ({
+          userId: row.id,
+          liveOrders: [],
+          currentMidPts: midYesPts,
+        }));
+
+        // Track session
+        this.sessions.set(market.id, {
+          marketId: market.id,
+          marketName: market.name,
+          conditionName: condName,
+          category,
+          midPrice: midPercent,
+          spread: halfSpreadPts / 100_000,
+          levels,
+          botsCount: marketBotStates.length,
+          ordersPlaced: 0,
+          startedAt: new Date().toISOString(),
+          status: 'running',
+        });
+        this.marketBots.set(market.id, { bots: marketBotStates, config });
+
+        this.logger.info(`[${condName}] Starting ${marketBotStates.length} bots on "${market.name}" @ ${midPercent}%`);
+
+        let botsOk = 0;
+        // Initial placement: skip orderDelay for speed
+        for (const bot of marketBotStates) {
+          try {
+            await this.quoteOnce(bot, config, true); // skipDelay = true for initial placement
+            if (config.refreshIntervalMs > 0) {
+              this.scheduleRefreshForMarket(bot, market.id);
+            }
+            botsOk++;
+          } catch (err) {
+            this.logger.error(`Bot ${bot.userId} failed on market ${market.id}:`, err);
+            const sess = this.sessions.get(market.id);
+            if (sess) { sess.status = 'error'; sess.errorMessage = String(err); }
+          }
+          totalBotsStarted++;
+          await this.sleep(20); // Small stagger
+        }
+        marketCount++;
+        this.logger.info(`[${condName}] ✓ "${market.name}" — ${botsOk}/${marketBotStates.length} bots active`);
+      });
+
+      await Promise.all(batchPromises);
+      await this.sleep(100); // Brief pause between batches
+    }
+
+    this.logger.info(`✓ Category bot launch complete: ${marketCount} markets, ${totalBotsStarted} bot sessions`);
+    return { marketCount, totalBotsStarted, totalMarkets: marketsResult.rows.length };
+  }
+
+  private scheduleRefreshForMarket(bot: BotState, marketId: string) {
+    const mb = this.marketBots.get(marketId);
+    if (!mb || this.stopping) return;
+    const config = mb.config;
+
+    bot.timeoutId = setTimeout(async () => {
+      if (this.stopping) return;
+      try {
+        await this.cancelBotOrders(bot);
+        this.driftPrice(bot, config);
+        await this.quoteOnce(bot, config);
+        this.scheduleRefreshForMarket(bot, marketId);
+      } catch (error) {
+        this.logger.error(`Bot ${bot.userId} refresh failed on market ${marketId}:`, error);
+        this.scheduleRefreshForMarket(bot, marketId);
+      }
+    }, config.refreshIntervalMs);
   }
 
   private async startBot(bot: BotState) {
@@ -271,7 +506,7 @@ export class LiquidityBotsService {
     this.logger.debug(`Bot ${bot.userId} mid price drifted to ${(Number(bot.currentMidPts) / 10_000_000 * 100).toFixed(2)}%`);
   }
 
-  private async quoteOnce(bot: BotState, config: BotConfig) {
+  private async quoteOnce(bot: BotState, config: BotConfig, skipDelay = false) {
     // Check if we're stopping
     if (this.stopping) return;
     
@@ -302,8 +537,8 @@ export class LiquidityBotsService {
       // Place BUY_YES (bid)
       await this.placeOrder(bot, config.marketId, 'BUY_YES', bidYes, contractsMicros);
       
-      // Delay before placing next order
-      if (config.orderDelayMs > 0) {
+      // Delay before placing next order (skip during initial placement for speed)
+      if (!skipDelay && config.orderDelayMs > 0) {
         const orderVariance = config.orderDelayVarianceMs > 0
           ? Math.random() * config.orderDelayVarianceMs * 2 - config.orderDelayVarianceMs
           : 0;
@@ -314,8 +549,8 @@ export class LiquidityBotsService {
       // Place SELL_YES (ask)
       await this.placeOrder(bot, config.marketId, 'SELL_YES', askYes, contractsMicros);
       
-      // Delay before next level
-      if (i < config.levels - 1 && config.orderDelayMs > 0) {
+      // Delay before next level (skip during initial placement for speed)
+      if (!skipDelay && i < config.levels - 1 && config.orderDelayMs > 0) {
         const orderVariance = config.orderDelayVarianceMs > 0
           ? Math.random() * config.orderDelayVarianceMs * 2 - config.orderDelayVarianceMs
           : 0;

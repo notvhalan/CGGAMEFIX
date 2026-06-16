@@ -1,5 +1,5 @@
-import { useState, useRef } from "react";
-import { Form, useNavigation } from "@remix-run/react";
+import { useEffect, useRef, useState } from "react";
+import { Form, useNavigation, useRouteLoaderData } from "@remix-run/react";
 import { Card, Badge, Button } from "~/components/admin/ui";
 import { SUBCATEGORIES, INS_SERIES } from "./admin";
 
@@ -8,6 +8,8 @@ export { action } from "./admin";
 
 export default function AdminContracts() {
   const navigation = useNavigation();
+  const parentData = useRouteLoaderData<any>("routes/admin");
+  const insuranceMarkets: Record<string, any[]> = parentData?.insuranceMarkets || {};
 
   const [insCategory, setInsCategory] = useState('life');
   const [insSubcategory, setInsSubcategory] = useState('');
@@ -19,14 +21,16 @@ export default function AdminContracts() {
   // Delete state
   const [delCategory, setDelCategory] = useState('life');
   const [delCondition, setDelCondition] = useState('');
-  const [delConfirmed, setDelConfirmed] = useState(false);
+  const [delConfirmation, setDelConfirmation] = useState('');
 
   const isCreating = navigation.state === 'submitting' && navigation.formData?.get('action') === 'bulk-create-insurance';
   const isDeleting = navigation.state === 'submitting' && navigation.formData?.get('action') === 'delete-insurance-group';
 
   const prevDeleting = useRef(false);
-  if (isDeleting) prevDeleting.current = true;
-  else if (prevDeleting.current) { prevDeleting.current = false; setDelConfirmed(false); }
+  useEffect(() => {
+    if (prevDeleting.current && !isDeleting) setDelConfirmation('');
+    prevDeleting.current = isDeleting;
+  }, [isDeleting]);
 
   const handleCategory = (cat: string) => {
     setInsCategory(cat);
@@ -42,6 +46,15 @@ export default function AdminContracts() {
   };
 
   const insSeries = INS_SERIES[insCategory]?.series ?? insCategory;
+  const normalizedCondition = delCondition.trim();
+  const deletableContracts = (insuranceMarkets[delCategory] || []).filter((contract) => {
+    const status = String(contract.status || '').toUpperCase();
+    const canDeleteStatus = status === 'ACTIVE' || status === 'PENDING';
+    const matchesCondition = !normalizedCondition || contract.conditionName === normalizedCondition;
+    return canDeleteStatus && matchesCondition;
+  });
+  const deleteConfirmationPhrase = `DELETE ${delCategory}`;
+  const canDelete = deletableContracts.length > 0 && delConfirmation === deleteConfirmationPhrase;
 
   const previewContracts = Array.from({ length: Math.min(insCount, 12) }, (_, i) => {
     const d = new Date();
@@ -54,7 +67,7 @@ export default function AdminContracts() {
       const resolved = insCustomName.trim().replace(/\{date\}/gi, shortDate);
       displayName = `${resolved} [#${idx}]`;
     } else {
-      displayName = `${insSeries} · ${shortDate} [#${idx}]`;
+      displayName = `${insSeries} - ${shortDate} [#${idx}]`;
     }
     return { name: displayName, maturity: longDate };
   });
@@ -106,7 +119,7 @@ export default function AdminContracts() {
                 onChange={e => handleSubcategory(e.target.value)}
                 className="w-full bg-admin-surface-2 border border-admin-border rounded-lg px-3 py-2 text-sm text-admin-text"
               >
-                <option value="">— General {INS_SERIES[insCategory]?.label} —</option>
+                <option value="">General {INS_SERIES[insCategory]?.label}</option>
                 {(SUBCATEGORIES[insCategory] || []).map(sub => (
                   <option key={sub.slug} value={sub.slug}>{sub.label}</option>
                 ))}
@@ -120,7 +133,7 @@ export default function AdminContracts() {
                 type="text"
                 value={insCustomName}
                 onChange={e => setInsCustomName(e.target.value)}
-                placeholder={`${insSeries} · {date} [#01]`}
+                placeholder={`${insSeries} - {date} [#01]`}
                 className="w-full bg-admin-surface-2 border border-admin-border rounded-lg px-3 py-2 text-sm text-admin-text placeholder:text-admin-text-dim"
               />
               <p className="text-[10px] text-admin-text-dim mt-1">Use {'{date}'} for auto maturity date</p>
@@ -155,13 +168,13 @@ export default function AdminContracts() {
             </div>
 
             <Button type="submit" variant="primary" className="w-full" disabled={isCreating}>
-              {isCreating ? '⏳ Creating...' : `🏭 Create ${insCount} Contracts`}
+              {isCreating ? 'Creating...' : `Create ${insCount} Contracts`}
             </Button>
           </Form>
 
           {/* Delete Section */}
           <div className="mt-6 pt-4 border-t border-admin-border">
-            <h4 className="text-sm font-medium text-red-400 mb-3">🗑️ Delete Contract Group</h4>
+            <h4 className="text-sm font-medium text-red-400 mb-3">Delete Contract Group</h4>
             <Form method="post" className="space-y-3">
               <input type="hidden" name="action" value="delete-insurance-group" />
 
@@ -170,7 +183,7 @@ export default function AdminContracts() {
                 <select
                   name="delCategory"
                   value={delCategory}
-                  onChange={e => { setDelCategory(e.target.value); setDelConfirmed(false); }}
+                  onChange={e => { setDelCategory(e.target.value); setDelConfirmation(''); }}
                   className="w-full bg-admin-surface-2 border border-admin-border rounded-lg px-3 py-2 text-sm text-admin-text"
                 >
                   {Object.entries(INS_SERIES).map(([key, info]) => (
@@ -183,25 +196,38 @@ export default function AdminContracts() {
                 <label className="block text-xs font-medium text-admin-text-dim mb-1">Condition (optional)</label>
                 <input
                   type="text" name="delCondition" value={delCondition}
-                  onChange={e => { setDelCondition(e.target.value); setDelConfirmed(false); }}
+                  onChange={e => { setDelCondition(e.target.value); setDelConfirmation(''); }}
                   placeholder="Leave empty to delete all"
                   className="w-full bg-admin-surface-2 border border-admin-border rounded-lg px-3 py-2 text-sm text-admin-text placeholder:text-admin-text-dim"
                 />
               </div>
 
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox" id="delConfirm" checked={delConfirmed}
-                  onChange={e => setDelConfirmed(e.target.checked)}
-                  className="w-4 h-4 accent-red-500"
-                />
-                <label htmlFor="delConfirm" className="text-xs text-red-400">
-                  I confirm deletion of {delCondition ? `"${delCondition}" in ` : 'all '}{INS_SERIES[delCategory]?.label}
-                </label>
+              <div className={`rounded-lg border p-3 ${deletableContracts.length > 0 ? 'border-red-500/30 bg-red-500/5' : 'border-admin-border bg-admin-surface-2'}`}>
+                <div className="text-sm font-medium text-admin-text">
+                  {deletableContracts.length} contract{deletableContracts.length === 1 ? '' : 's'} will be deleted
+                </div>
+                <div className="text-xs text-admin-text-dim mt-1">
+                  Only active and pending contracts are eligible. Settled contracts are preserved.
+                </div>
               </div>
 
-              <Button type="submit" variant="danger" className="w-full" disabled={!delConfirmed || isDeleting}>
-                {isDeleting ? '⏳ Deleting...' : '🗑️ Delete Group'}
+              <div>
+                <label htmlFor="deleteConfirmation" className="block text-xs font-medium text-red-400 mb-1">
+                  Type {deleteConfirmationPhrase} to confirm
+                </label>
+                <input
+                  id="deleteConfirmation"
+                  name="deleteConfirmation"
+                  type="text"
+                  value={delConfirmation}
+                  onChange={e => setDelConfirmation(e.target.value)}
+                  autoComplete="off"
+                  className="w-full bg-admin-surface-2 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-admin-text font-mono placeholder:text-admin-text-dim"
+                />
+              </div>
+
+              <Button type="submit" variant="danger" className="w-full" disabled={!canDelete || isDeleting}>
+                {isDeleting ? 'Deleting...' : `Delete ${deletableContracts.length} Contract${deletableContracts.length === 1 ? '' : 's'}`}
               </Button>
             </Form>
           </div>

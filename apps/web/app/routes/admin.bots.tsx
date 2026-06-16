@@ -86,6 +86,11 @@ export default function AdminBots() {
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(5000);
   const [priceDriftPts, setPriceDriftPts] = useState(200000);
   const [volatility, setVolatility] = useState(0.3);
+  const [pricePathMode, setPricePathMode] = useState<'random_walk' | 'linear' | 'sine' | 'trend_sine'>('random_walk');
+  const [trendPerTickPts, setTrendPerTickPts] = useState(0);
+  const [sineAmplitudePts, setSineAmplitudePts] = useState(500000);
+  const [sinePeriodTicks, setSinePeriodTicks] = useState(20);
+  const [meanReversion, setMeanReversion] = useState(0.25);
 
   // ─── Per-subcategory ladder curves ──────────────────────────────────────────
   // Each subcategory has multiple markets (by maturity date). The curve is an
@@ -248,6 +253,7 @@ export default function AdminBots() {
   // ─── Input class helpers ───────────────────────────────────────────────────
   const inputCls = "w-full bg-admin-surface-2 border border-admin-border rounded-lg px-3 py-1.5 text-sm text-admin-text font-mono focus:outline-none focus:border-blue-500/50";
   const labelCls = "block text-xs font-medium text-admin-text-dim mb-1";
+  const disabledInputCls = `${inputCls} disabled:cursor-not-allowed disabled:opacity-40`;
 
   return (
     <div className="space-y-4">
@@ -264,12 +270,12 @@ export default function AdminBots() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-admin-text">Liquidity Bots</h1>
-          <p className="text-sm text-admin-text-dim mt-1">Manage market-making bot sessions</p>
+          <p className="text-sm text-admin-text-dim mt-1">Configure bounded market-making sessions and price equations</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge variant="green" dot pulseDot>{runningSessions.length} running</Badge>
           {errorSessions.length > 0 && <Badge variant="red" dot>{errorSessions.length} errors</Badge>}
           <Form method="post">
@@ -281,8 +287,27 @@ export default function AdminBots() {
         </div>
       </div>
 
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <div className="rounded-lg border border-admin-border bg-admin-surface px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-admin-text-dim">Bot workers</div>
+          <div className="mt-1 text-lg font-semibold text-admin-text">{botStatus?.totalBots || 0}</div>
+        </div>
+        <div className="rounded-lg border border-admin-border bg-admin-surface px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-admin-text-dim">Tracked orders</div>
+          <div className="mt-1 text-lg font-semibold text-admin-text">{botStatus?.totalOrders || 0}</div>
+        </div>
+        <div className="rounded-lg border border-admin-border bg-admin-surface px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-admin-text-dim">Available users</div>
+          <div className="mt-1 text-lg font-semibold text-admin-text">{botUsers.length}</div>
+        </div>
+        <div className="rounded-lg border border-admin-border bg-admin-surface px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-admin-text-dim">Selected equation</div>
+          <div className="mt-1 truncate text-sm font-semibold text-blue-400">{pricePathMode.replace('_', ' + ')}</div>
+        </div>
+      </div>
+
       {/* Mode Tabs */}
-      <div className="flex gap-1 bg-admin-surface-2 p-1 rounded-lg w-fit">
+      <div className="grid grid-cols-2 gap-1 bg-admin-surface-2 p-1 rounded-lg sm:w-fit" role="tablist" aria-label="Bot launch mode">
         <button
           onClick={() => setMode('single')}
           className={`px-4 py-2 text-sm rounded-md transition-colors ${
@@ -301,7 +326,7 @@ export default function AdminBots() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,0.8fr)_minmax(340px,1.2fr)_minmax(300px,1fr)]">
         {/* ─── Column 1: Target ───────────────────────────────────────────── */}
         <div className="xl:col-span-1 space-y-4">
           {mode === 'single' ? (
@@ -320,6 +345,11 @@ export default function AdminBots() {
                 <input type="hidden" name="refreshIntervalMs" value={refreshIntervalMs} />
                 <input type="hidden" name="priceDriftPts" value={priceDriftPts} />
                 <input type="hidden" name="volatility" value={volatility} />
+                <input type="hidden" name="pricePathMode" value={pricePathMode} />
+                <input type="hidden" name="trendPerTickPts" value={trendPerTickPts} />
+                <input type="hidden" name="sineAmplitudePts" value={sineAmplitudePts} />
+                <input type="hidden" name="sinePeriodTicks" value={sinePeriodTicks} />
+                <input type="hidden" name="meanReversion" value={meanReversion} />
 
                 <div>
                   <label className={labelCls}>Market</label>
@@ -339,7 +369,7 @@ export default function AdminBots() {
                     onChange={e => setUserCount(Number(e.target.value))} className="w-full accent-blue-500" />
                 </div>
 
-                <Button type="submit" variant="primary" className="w-full" disabled={isStarting}>
+                <Button type="submit" variant="primary" className="w-full" disabled={isStarting || !selectedMarket || botUsers.length === 0}>
                   {isStarting ? '⏳ Starting...' : '🚀 Start Bots'}
                 </Button>
               </Form>
@@ -359,6 +389,11 @@ export default function AdminBots() {
                 <input type="hidden" name="refreshIntervalMs" value={refreshIntervalMs} />
                 <input type="hidden" name="priceDriftPts" value={priceDriftPts} />
                 <input type="hidden" name="volatility" value={volatility} />
+                <input type="hidden" name="pricePathMode" value={pricePathMode} />
+                <input type="hidden" name="trendPerTickPts" value={trendPerTickPts} />
+                <input type="hidden" name="sineAmplitudePts" value={sineAmplitudePts} />
+                <input type="hidden" name="sinePeriodTicks" value={sinePeriodTicks} />
+                <input type="hidden" name="meanReversion" value={meanReversion} />
                 <input type="hidden" name="subcategoryCurve" value={subcategoryCurveJson} />
 
                 <div>
@@ -396,7 +431,7 @@ export default function AdminBots() {
                   </div>
                 </div>
 
-                <Button type="submit" variant="primary" className="w-full" disabled={isStarting}>
+                <Button type="submit" variant="primary" className="w-full" disabled={isStarting || (catMarketCounts[selectedCategory] || 0) === 0 || botUsers.length === 0}>
                   {isStarting ? '⏳ Starting...' : `🚀 Start Bots on All ${catMarketCounts[selectedCategory] || 0} Markets`}
                 </Button>
               </Form>
@@ -404,15 +439,18 @@ export default function AdminBots() {
           )}
 
           {/* Emergency Stop */}
-          <Card title="Emergency Stop">
+          <Card title="Stop All Sessions">
             <Form method="post">
               <input type="hidden" name="action" value="stop-bots" />
-              <Button type="submit" variant="danger" className="w-full" disabled={isStopping}>
+              <Button type="submit" variant="danger" className="w-full" disabled={isStopping || sessions.length === 0}>
                 {isStopping ? '⏳ Stopping...' : '🛑 Stop All Bots'}
               </Button>
               <p className="text-xs text-admin-text-dim mt-2">
-                Stops all running bot sessions across all markets immediately.
+                Cancels tracked bot orders, then stops all running sessions.
               </p>
+              {sessions.length === 0 && (
+                <p className="mt-2 text-[10px] text-admin-text-dim">No active sessions are currently tracked.</p>
+              )}
             </Form>
           </Card>
 
@@ -597,7 +635,7 @@ export default function AdminBots() {
           </Card>
 
           {/* Advanced Settings */}
-          <Card title="Advanced Settings">
+          <Card title="Execution and Price Path">
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -623,9 +661,31 @@ export default function AdminBots() {
                     onChange={e => setPriceVariance(Number(e.target.value))} className={inputCls} />
                 </div>
               </div>
-              <div className="border-t border-admin-border pt-3">
-                <h4 className="text-xs font-medium text-admin-text-dim mb-2">🎲 Dynamic Price Movement</h4>
+              <div className="border-t border-admin-border pt-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-semibold text-admin-text">Dynamic Price Equation</h4>
+                    <p className="mt-0.5 text-[10px] text-admin-text-dim">Controls how each market midpoint changes after a refresh.</p>
+                  </div>
+                  <Badge variant="blue">{pricePathMode.replace('_', ' + ')}</Badge>
+                </div>
                 <div className="space-y-3">
+                  <div>
+                    <label className={labelCls}>Path Mode</label>
+                    <select value={pricePathMode}
+                      onChange={e => setPricePathMode(e.target.value as typeof pricePathMode)}
+                      className={inputCls}>
+                      <option value="random_walk">Random walk with mean reversion</option>
+                      <option value="linear">Linear trend</option>
+                      <option value="sine">Sine wave</option>
+                      <option value="trend_sine">Linear trend plus sine wave</option>
+                    </select>
+                  </div>
+                  <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-blue-200 font-mono overflow-x-auto">
+                    {pricePathMode === 'random_walk'
+                      ? 'next = current + noise + reversion(base - current)'
+                      : `target(t) = base${pricePathMode !== 'sine' ? ' + trend * t' : ''}${pricePathMode !== 'linear' ? ' + amplitude * sin(2πt / period)' : ''}`}
+                  </div>
                   <div>
                     <label className={labelCls}>Refresh Interval (ms)</label>
                     <input type="number" min="0" max="60000" step="1000" value={refreshIntervalMs}
@@ -643,6 +703,36 @@ export default function AdminBots() {
                         onChange={e => setVolatility(Number(e.target.value))} className={inputCls} />
                     </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>Trend per Tick (pts)</label>
+                      <input type="number" min="-1000000" max="1000000" step="10000" value={trendPerTickPts}
+                        disabled={pricePathMode === 'random_walk' || pricePathMode === 'sine'}
+                        onChange={e => setTrendPerTickPts(Number(e.target.value))} className={disabledInputCls} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Mean Reversion (0-1)</label>
+                      <input type="number" min="0" max="1" step="0.05" value={meanReversion}
+                        onChange={e => setMeanReversion(Number(e.target.value))} className={inputCls} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>Sine Amplitude (pts)</label>
+                      <input type="number" min="0" max="4000000" step="50000" value={sineAmplitudePts}
+                        disabled={pricePathMode === 'random_walk' || pricePathMode === 'linear'}
+                        onChange={e => setSineAmplitudePts(Number(e.target.value))} className={disabledInputCls} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Sine Period (ticks)</label>
+                      <input type="number" min="2" max="10000" step="1" value={sinePeriodTicks}
+                        disabled={pricePathMode === 'random_walk' || pricePathMode === 'linear'}
+                        onChange={e => setSinePeriodTicks(Number(e.target.value))} className={disabledInputCls} />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-admin-text-dim">
+                    One tick occurs after each refresh. Drift and volatility add optional noise around the selected equation.
+                  </p>
                 </div>
               </div>
             </div>
@@ -669,7 +759,7 @@ export default function AdminBots() {
                 <p className="text-xs mt-1">Start bots using the controls on the left</p>
               </div>
             ) : (
-              <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-[680px] overflow-y-auto pr-1 admin-scrollbar">
                 {sessions.map((sess: any) => (
                   <div key={sess.marketId}
                     className={`p-3 rounded-lg border transition-colors ${
@@ -703,6 +793,15 @@ export default function AdminBots() {
                         <span className="text-admin-text-dim">Orders</span>
                         <div className="text-admin-text font-mono">{sess.ordersPlaced}</div>
                       </div>
+                    </div>
+                    <div className="mt-2 rounded-md border border-admin-border bg-admin-bg/50 px-2 py-1.5 text-[10px] text-admin-text-dim">
+                      Equation: <span className="text-blue-400 font-mono">{(sess.pricePathMode || 'random_walk').replace('_', ' + ')}</span>
+                      {(sess.pricePathMode === 'linear' || sess.pricePathMode === 'trend_sine') && (
+                        <span className="ml-2">trend {sess.trendPerTickPts} pts/tick</span>
+                      )}
+                      {(sess.pricePathMode === 'sine' || sess.pricePathMode === 'trend_sine') && (
+                        <span className="ml-2">amplitude {sess.sineAmplitudePts} pts / {sess.sinePeriodTicks} ticks</span>
+                      )}
                     </div>
                     {sess.errorMessage && (
                       <div className="mt-1.5 text-[10px] text-red-400 truncate" title={sess.errorMessage}>

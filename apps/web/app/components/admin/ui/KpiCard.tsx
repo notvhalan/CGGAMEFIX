@@ -21,7 +21,7 @@ export function KpiCard({ label, value, icon, trend, variant = 'default', onClic
   return (
     <div
       onClick={onClick}
-      className={`kpi-card bg-admin-surface rounded-xl border p-4 ${variantBorder[variant]}`}
+      className={`kpi-card bg-admin-surface rounded-xl border p-4 ${variantBorder[variant]} ${onClick ? 'cursor-pointer' : ''}`}
     >
       <div className="flex items-start justify-between mb-2">
         <span className="text-xs font-medium text-admin-text-muted uppercase tracking-wider">{label}</span>

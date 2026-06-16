@@ -44,9 +44,6 @@ impl ClearingService {
         let mut affected_markets = std::collections::HashSet::new();
         let taker_order_id = fills.first().map(|f| f.taker_order_id);
         
-        // Dust threshold (1 full contract)
-        const MIN_CONTRACT_MICROS: i64 = 1_000_000;
-
         // Track taker's cumulative actual fill cost (for budget-aware IOC release)
         let mut taker_actual_cost_pence: i64 = 0;
         
@@ -54,17 +51,22 @@ impl ClearingService {
         for fill in fills {
             let mut tx = self.pool.begin().await?;
 
-            // 1. Update maker order quantity - treat dust as fully matched
+            // 1. Update maker order quantity using the engine's 0.001-contract dust rule.
             let maker_update = sqlx::query!(
                 r#"
                 UPDATE orders
-                SET qty_remaining_micros = qty_remaining_micros - $1,
+                SET qty_remaining_micros = CASE
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 0
+                        ELSE qty_remaining_micros - $1
+                    END,
                     status = CASE
-                        WHEN qty_remaining_micros - $1 < 1000000 THEN 'MATCHED'
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 'MATCHED'
                         ELSE 'PARTIALLY_MATCHED'
                     END,
                     updated_at = NOW()
                 WHERE id = $2
+                  AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+                  AND qty_remaining_micros >= $1
                 "#,
                 fill.qty_micros,
                 fill.maker_order_id
@@ -73,24 +75,29 @@ impl ClearingService {
             .await?;
             if maker_update.rows_affected() == 0 {
                 anyhow::bail!(
-                    "Maker order not found for fill: maker_order_id={}, taker_order_id={}, trade_id={}",
+                    "Maker fill rejected for missing, terminal, or insufficient order: maker_order_id={}, taker_order_id={}, trade_id={}",
                     fill.maker_order_id,
                     fill.taker_order_id,
                     fill.trade_id
                 );
             }
 
-            // 2. Update taker order quantity - treat dust as fully matched
+            // 2. Update taker order quantity using the same terminal dust rule.
             let taker_update = sqlx::query!(
                 r#"
                 UPDATE orders
-                SET qty_remaining_micros = qty_remaining_micros - $1,
+                SET qty_remaining_micros = CASE
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 0
+                        ELSE qty_remaining_micros - $1
+                    END,
                     status = CASE
-                        WHEN qty_remaining_micros - $1 < 1000000 THEN 'MATCHED'
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 'MATCHED'
                         ELSE 'PARTIALLY_MATCHED'
                     END,
                     updated_at = NOW()
                 WHERE id = $2
+                  AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+                  AND qty_remaining_micros >= $1
                 "#,
                 fill.qty_micros,
                 fill.taker_order_id
@@ -99,7 +106,7 @@ impl ClearingService {
             .await?;
             if taker_update.rows_affected() == 0 {
                 anyhow::bail!(
-                    "Taker order not found for fill: taker_order_id={}, maker_order_id={}, trade_id={}",
+                    "Taker fill rejected for missing, terminal, or insufficient order: taker_order_id={}, maker_order_id={}, trade_id={}",
                     fill.taker_order_id,
                     fill.maker_order_id,
                     fill.trade_id

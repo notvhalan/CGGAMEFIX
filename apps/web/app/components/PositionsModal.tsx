@@ -24,18 +24,13 @@ const getApiUrl = () => {
   if (typeof window !== 'undefined') {
     // First try window.ENV
     if ((window as any).ENV?.API_URL) {
-      const normalized = normalizeApiUrl((window as any).ENV.API_URL);
-      console.log('[getApiUrl] Using window.ENV.API_URL:', normalized);
-      return normalized;
+      return normalizeApiUrl((window as any).ENV.API_URL);
     }
     // Fall back to production API origin for gamefix domains.
     if (window.location.hostname.includes('gamefix.fun')) {
-      const apiUrl = 'https://api.gamefix.fun';
-      console.log('[getApiUrl] Using gamefix.fun URL:', apiUrl);
-      return apiUrl;
+      return 'https://api.gamefix.fun';
     }
   }
-  console.log('[getApiUrl] Using localhost default');
   return 'http://localhost:3000';
 };
 
@@ -84,6 +79,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const [cashoutQuote, setCashoutQuote] = useState<CashoutQuote | null>(null);
   const [loadingQuote, setLoadingQuote] = useState(false);
   const [executingCashout, setExecutingCashout] = useState(false);
+  const [cashoutSubmitted, setCashoutSubmitted] = useState(false);
   const [groupQuotes, setGroupQuotes] = useState<Map<string, CashoutQuote>>(new Map());
   const [loadingGroupQuotes, setLoadingGroupQuotes] = useState<Set<string>>(new Set());
   const [inlineNotice, setInlineNotice] = useState<InlineNotice | null>(null);
@@ -116,6 +112,10 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const netContractsMicros = typeof netContractsMicrosStr === 'string' 
     ? BigInt(netContractsMicrosStr) 
     : netContractsMicrosStr;
+
+  useEffect(() => {
+    setCashoutSubmitted(false);
+  }, [netContractsMicrosStr, marketId, isOpen]);
 
   // Position direction is based on contracts, not cashflow!
   const isLong = netContractsMicros > 0n;
@@ -206,31 +206,28 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
   // Fetch cashout quote
   const fetchCashoutQuote = useCallback(async () => {
-    console.log('[fetchCashoutQuote] hasOpenPositions:', hasOpenPositions, 'buyPositions:', buyPositions?.length, 'sellPositions:', sellPositions?.length);
-    
     if (!hasOpenPositions) {
-      console.log('[fetchCashoutQuote] No open positions, skipping quote fetch');
+      setCashoutQuote(null);
       return;
     }
 
-    if (!marketId) {
-      console.error('[fetchCashoutQuote] marketId is undefined');
+    if (!marketId || netContractsMicros === undefined || netContractsMicros === null) {
+      setCashoutQuote(null);
       return;
     }
 
-    if (netContractsMicros === undefined || netContractsMicros === null) {
-      console.error('[fetchCashoutQuote] netContractsMicros is undefined or null');
-      return;
-    }
-
-    console.log('[fetchCashoutQuote] Fetching quote for marketId:', marketId, 'netContractsMicros:', netContractsMicros.toString());
     setLoadingQuote(true);
     try {
+      const requestedContracts = applyPartial(netContractsMicros);
+      if (requestedContracts === 0n) {
+        setCashoutQuote(null);
+        return;
+      }
+
       const body = {
         marketId,
-        netContractsMicros: netContractsMicros.toString(),
+        netContractsMicros: requestedContracts.toString(),
       };
-      console.log('[fetchCashoutQuote] Request body:', JSON.stringify(body));
       
       const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/v1/cashout/quote`, {
@@ -240,33 +237,27 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         body: JSON.stringify(body),
       });
 
-      console.log('[fetchCashoutQuote] Response status:', response.status, response.statusText);
-
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[fetchCashoutQuote] Error response:', errorText);
         throw new Error(`Failed to fetch quote: ${response.statusText}`);
       }
 
       const quote = await response.json();
-      console.log('[fetchCashoutQuote] Quote received:', JSON.stringify(quote, null, 2));
       setCashoutQuote(quote);
-    } catch (error) {
-      console.error('[fetchCashoutQuote] Failed to fetch cashout quote:', error);
+    } catch {
       setCashoutQuote(null);
     } finally {
       setLoadingQuote(false);
     }
-  }, [marketId, hasOpenPositions, netContractsMicros, buyPositions, sellPositions]);
+  }, [marketId, hasOpenPositions, netContractsMicros, sizeMode, partialPercent]);
 
   // Fetch quote on mount and refresh every 5 seconds
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !executingCashout && !cashoutSubmitted) {
       fetchCashoutQuote();
       const interval = setInterval(fetchCashoutQuote, 5000);
       return () => clearInterval(interval);
     }
-  }, [isOpen, fetchCashoutQuote]);
+  }, [isOpen, executingCashout, cashoutSubmitted, fetchCashoutQuote]);
 
   // Auto-dismiss inline notices.
   useEffect(() => {
@@ -274,6 +265,12 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     const timer = setTimeout(() => setInlineNotice(null), 5000);
     return () => clearTimeout(timer);
   }, [inlineNotice]);
+
+  useEffect(() => {
+    setCashoutQuote(null);
+    setGroupQuotes(new Map());
+    setInlineNotice(null);
+  }, [marketId, sizeMode, partialPercent, viewMode]);
 
   // WebSocket subscription for live orderbook prices
   useEffect(() => {
@@ -308,15 +305,15 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   // Fetch cashout quote for a specific group
   // groupKey = `${side}-${yesPricePts}` — unique per side+price bucket
   const fetchGroupQuote = useCallback(async (groupKey: string, side: 'BUY_YES' | 'SELL_YES', totalContractsMicros: bigint) => {
-    console.log('[fetchGroupQuote] key:', groupKey, 'side:', side, 'contracts:', totalContractsMicros.toString());
     setLoadingGroupQuotes(prev => new Set(prev).add(groupKey));
     try {
       // For BUY_YES lots: closing them means placing SELL_YES → send positive contracts
       // For SELL_YES lots: closing them means placing BUY_YES → send negative contracts
-      const abs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
-      const signed = side === 'BUY_YES' ? abs : -abs;
-      
-      console.log('[fetchGroupQuote] Sending signed contracts:', signed.toString());
+      const signed = applyPartial(toSignedContracts(side, totalContractsMicros));
+      if (signed === 0n) {
+        setInlineNotice({ type: 'error', message: 'No contracts available to close in this group.' });
+        return;
+      }
       
       const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/v1/cashout/quote`, {
@@ -329,16 +326,12 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         }),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[fetchGroupQuote] Error response:', errorText);
-        throw new Error(`Failed to fetch quote: ${response.statusText}`);
-      }
+      if (!response.ok) throw new Error(`Failed to fetch quote: ${response.statusText}`);
 
       const quote = await response.json();
       setGroupQuotes(prev => new Map(prev).set(groupKey, quote));
-    } catch (error) {
-      console.error('[fetchGroupQuote] Failed to fetch group quote:', error);
+    } catch {
+      setInlineNotice({ type: 'error', message: 'Unable to fetch a quote for this position group.' });
     } finally {
       setLoadingGroupQuotes(prev => {
         const next = new Set(prev);
@@ -346,7 +339,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         return next;
       });
     }
-  }, [marketId]);
+  }, [marketId, sizeMode, partialPercent]);
 
   // Group positions by yesPricePts
   const groupPositions = (positions: any[]) => {
@@ -376,7 +369,6 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
   const groupedSellPositions = groupPositions(canonicalSellRows);
 
   const executeCashoutRequest = useCallback(async (requestBody: CashoutExecuteRequest) => {
-    console.log('[Cashout] Executing close with body:', requestBody);
     setExecutingCashout(true);
     try {
       const apiUrl = getApiUrl();
@@ -387,19 +379,15 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         body: JSON.stringify(requestBody),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[Cashout] Error response:', errorText);
-        throw new Error(`Failed to execute cashout: ${response.statusText}`);
-      }
+      if (!response.ok) throw new Error(`Failed to execute cashout: ${response.statusText}`);
 
       const result = await response.json();
       if (result.success) {
+        setCashoutSubmitted(true);
         setInlineNotice({
           type: 'success',
           message: `Close order submitted (${result.orderId?.slice(0, 8) || 'ok'}). Position is refreshing...`,
         });
-        fetchCashoutQuote();
         onCashoutSuccess?.();
       } else {
         setInlineNotice({
@@ -408,7 +396,6 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         });
       }
     } catch (error) {
-      console.error('[Cashout] Error:', error);
       setInlineNotice({
         type: 'error',
         message: `Close failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -416,7 +403,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     } finally {
       setExecutingCashout(false);
     }
-  }, [onCashoutSuccess, fetchCashoutQuote]);
+  }, [onCashoutSuccess]);
 
   // Apply partial percent to a bigint quantity, rounding to nearest tick (1000 micros = 0.001 ctr).
   const applyPartial = (qty: bigint): bigint => {
@@ -432,6 +419,15 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     return sign * scaled;
   };
 
+  const toSignedContracts = (side: 'BUY_YES' | 'SELL_YES', totalContractsMicros: bigint) => {
+    const abs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
+    return side === 'BUY_YES' ? abs : -abs;
+  };
+
+  const formatContracts = (contractsMicros: bigint) => {
+    return (Number(contractsMicros) / 1_000_000).toFixed(2);
+  };
+
   // Build common limit fields when in limit mode.
   const buildLimitFields = (): Pick<CashoutExecuteRequest, 'closeMode' | 'limitYesPts'> => {
     if (closeMode !== 'limit' || !limitPrice) return {};
@@ -442,8 +438,6 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
 
   // Submit full-position close immediately (no browser popup/confirm).
   const handleCashout = async () => {
-    console.log('[Cashout] Button clicked, cashoutQuote:', cashoutQuote);
-
     if (closeMode === 'limit') {
       const pricePct = parseFloat(limitPrice);
       if (Number.isNaN(pricePct) || pricePct <= 0 || pricePct >= 100) {
@@ -451,11 +445,14 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         return;
       }
     } else if (!cashoutQuote || !cashoutQuote.success) {
-      console.error('[Cashout] No valid quote available');
       setInlineNotice({ type: 'error', message: 'No valid quote available yet.' });
       return;
     }
     const qty = applyPartial(netContractsMicros);
+    if (qty === 0n) {
+      setInlineNotice({ type: 'error', message: 'No contracts available to close.' });
+      return;
+    }
     await executeCashoutRequest({
       marketId,
       netContractsMicros: qty.toString(),
@@ -487,8 +484,12 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
     const abs = totalContractsMicros < 0n ? -totalContractsMicros : totalContractsMicros;
     // BUY_YES lots are closed by selling → positive micros (SELL_YES order)
     // SELL_YES lots are closed by buying → negative micros (BUY_YES order)
-    const fullSigned = side === 'BUY_YES' ? abs : -abs;
+    const fullSigned = toSignedContracts(side, totalContractsMicros);
     const signed = applyPartial(fullSigned);
+    if (signed === 0n) {
+      setInlineNotice({ type: 'error', message: 'No contracts available to close in this group.' });
+      return;
+    }
     // Collect lot IDs so the server targets these specific lots instead of FIFO
     const lotIds = positions
       .map((p: any) => p.lotId)
@@ -597,6 +598,22 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
         ? aggregatedRows.find(g => g.key === selectedGroup)
         : allGroups.find(g => g.key === selectedGroup))
     : null;
+
+  const requestedNetContracts = applyPartial(netContractsMicros);
+  const activeGroupContracts = activeGroup
+    ? applyPartial(toSignedContracts(activeGroup.side, activeGroup.totalContractsMicros))
+    : null;
+  const activeQuote = activeGroup ? groupQuotes.get(activeGroup.key) ?? null : cashoutQuote;
+  const activeQuoteLoading = activeGroup ? loadingGroupQuotes.has(activeGroup.key) : loadingQuote;
+  const limitPriceValue = parseFloat(limitPrice);
+  const hasValidLimitPrice = !Number.isNaN(limitPriceValue) && limitPriceValue > 0 && limitPriceValue < 100;
+  const canSubmitMarketClose = activeGroup
+    ? !!activeQuote?.success && activeGroupContracts !== null && activeGroupContracts !== 0n
+    : !!cashoutQuote?.success && requestedNetContracts !== 0n;
+  const canSubmitLimitClose = activeGroup
+    ? hasValidLimitPrice && activeGroupContracts !== null && activeGroupContracts !== 0n
+    : hasValidLimitPrice && requestedNetContracts !== 0n;
+  const canSubmitClose = !executingCashout && (closeMode === 'limit' ? canSubmitLimitClose : canSubmitMarketClose);
 
   const toggleRowExpand = (key: string) => {
     const next = new Set(expandedRows);
@@ -1440,16 +1457,16 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                     fetchCashoutQuote();
                   }
                 }}
-                disabled={loadingQuote}
+                disabled={activeQuoteLoading || executingCashout}
                 style={{
                   padding: '0.5rem',
-                  background: loadingQuote ? '#30363d' : '#1f6feb',
+                  background: activeQuoteLoading || executingCashout ? '#30363d' : '#1f6feb',
                   border: 'none',
                   borderRadius: '3px',
                   color: '#c9d1d9',
                   fontWeight: 600,
                   fontSize: '0.75rem',
-                  cursor: loadingQuote ? 'not-allowed' : 'pointer',
+                  cursor: activeQuoteLoading || executingCashout ? 'not-allowed' : 'pointer',
                   fontFamily: 'monospace'
                 }}
               >
@@ -1457,7 +1474,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
               </button>
 
               {/* Preview Box */}
-              {((activeGroup && groupQuotes.get(activeGroup.key)) || (!activeGroup && cashoutQuote)) && (
+              {activeQuote && (
                 <div style={{
                   padding: '0.5rem',
                   background: '#161b22',
@@ -1469,17 +1486,18 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                     Quote Preview
                   </div>
                   {(() => {
-                    const quote = activeGroup 
-                      ? groupQuotes.get(activeGroup.key)
-                      : cashoutQuote;
+                    const quote = activeQuote;
                     
                     if (!quote || !quote.success) {
                       return <div style={{ color: '#f85149' }}>Failed to get quote</div>;
                     }
 
-                    const filledAbs = Math.abs(parseInt(quote.filledContractsMicros));
-                    const unfilledAbs = Math.abs(parseInt(quote.unfilledContractsMicros));
-                    const fillPercent = ((filledAbs / (filledAbs + unfilledAbs)) * 100).toFixed(1);
+                    const filledAbs = BigInt(quote.filledContractsMicros || '0');
+                    const unfilledAbs = BigInt(quote.unfilledContractsMicros || '0');
+                    const totalAbs = filledAbs + unfilledAbs;
+                    const fillPercent = totalAbs > 0n
+                      ? ((Number(filledAbs) / Number(totalAbs)) * 100).toFixed(1)
+                      : '0.0';
 
                     return (
                       <>
@@ -1492,7 +1510,7 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                           </div>
                         </div>
                         <div style={{ color: '#6e7681', fontSize: '0.5625rem', display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Filled: {(filledAbs / 1_000_000).toFixed(2)}</span>
+                          <span>Filled: {formatContracts(filledAbs)}</span>
                           <span>Fee: {formatPence(Number(quote.estimatedFeePence))}</span>
                         </div>
                       </>
@@ -1533,16 +1551,16 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
                     handleCashout();
                   }
                 }}
-                disabled={executingCashout}
+                disabled={!canSubmitClose}
                 style={{
                   padding: '0.5rem',
-                  background: executingCashout ? '#30363d' : '#238636',
+                  background: canSubmitClose ? '#238636' : '#30363d',
                   border: 'none',
                   borderRadius: '3px',
                   color: '#c9d1d9',
                   fontWeight: 700,
                   fontSize: '0.75rem',
-                  cursor: executingCashout ? 'not-allowed' : 'pointer',
+                  cursor: canSubmitClose ? 'pointer' : 'not-allowed',
                   fontFamily: 'monospace'
                 }}
               >
@@ -1591,18 +1609,18 @@ export function PositionsModal({ position, isOpen, onClose, onCashoutSuccess, ma
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button
               onClick={handleCashout}
-              disabled={closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)}
+              disabled={!canSubmitClose || !!activeGroup}
               style={{
                 padding: '0.5rem 1rem',
-                background: (closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)) ? '#30363d' : '#8957e5',
+                background: !canSubmitClose || !!activeGroup ? '#30363d' : '#8957e5',
                 border: 'none',
                 borderRadius: '4px',
                 color: '#c9d1d9',
                 fontWeight: 700,
                 fontSize: '0.75rem',
-                cursor: (closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)) ? 'not-allowed' : 'pointer',
+                cursor: !canSubmitClose || !!activeGroup ? 'not-allowed' : 'pointer',
                 fontFamily: 'monospace',
-                opacity: (closeMode === 'limit' ? (!limitPrice || executingCashout) : (!cashoutQuote || !cashoutQuote.success || executingCashout)) ? 0.5 : 1
+                opacity: !canSubmitClose || !!activeGroup ? 0.5 : 1
               }}
             >
               ✕ Close All Positions

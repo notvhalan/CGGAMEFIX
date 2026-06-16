@@ -8,7 +8,7 @@ import { PriceChart } from "~/components/PriceChart";
 import { PositionPanel } from "~/components/PositionPanel";
 import { PositionsModal } from "~/components/PositionsModal";
 import OpenOrders from "~/components/OpenOrders";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { wsClient } from "~/lib/ws.client";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import "~/styles/components/controls.css";
@@ -159,21 +159,43 @@ export default function MarketDetail() {
   const [isToastExiting, setIsToastExiting] = useState(false);
   const [activeTab, setActiveTab] = useState<'trades' | 'orders' | 'positions'>('trades');
   const [userOrders, setUserOrders] = useState(loaderData.userOrders);
+  const [awaitingCashoutSettlement, setAwaitingCashoutSettlement] = useState(false);
+  const cashoutRefreshAttempts = useRef(0);
 
   // Sync userOrders with loaderData when it changes (after revalidation)
   useEffect(() => {
     setUserOrders(loaderData.userOrders);
   }, [loaderData.userOrders]);
   
-  // Callback to refetch data after cashout.
-  // Settlement is triggered immediately server-side after order submission,
-  // so a short series of revalidations is enough to catch the cleared position.
+  // Refresh immediately after cash-out, then retry only while the position remains open.
   const handleCashoutSuccess = () => {
+    cashoutRefreshAttempts.current = 0;
+    setAwaitingCashoutSettlement(true);
     revalidator.revalidate();
-    setTimeout(() => revalidator.revalidate(), 500);
-    setTimeout(() => revalidator.revalidate(), 1500);
-    setTimeout(() => revalidator.revalidate(), 3000);
   };
+
+  useEffect(() => {
+    if (!awaitingCashoutSettlement || revalidator.state !== 'idle') return;
+
+    let positionStillOpen = false;
+    try {
+      positionStillOpen = BigInt(position?.netContractsMicros ?? '0') !== 0n;
+    } catch {
+      positionStillOpen = false;
+    }
+
+    if (!positionStillOpen || cashoutRefreshAttempts.current >= 3) {
+      setAwaitingCashoutSettlement(false);
+      return;
+    }
+
+    const retry = setTimeout(() => {
+      cashoutRefreshAttempts.current += 1;
+      revalidator.revalidate();
+    }, 1000);
+
+    return () => clearTimeout(retry);
+  }, [awaitingCashoutSettlement, position?.netContractsMicros, revalidator]);
 
   // Show feedback from action results
   useEffect(() => {
@@ -243,21 +265,17 @@ export default function MarketDetail() {
 
   useEffect(() => {
     // Connect to WebSocket
-    console.log('[Market] 🔌 Connecting to WebSocket for market:', marketId);
-    console.log('[Market] 🔌 WebSocket connected?', wsClient.isConnected());
     wsClient.connect();
 
     // Subscribe to market events
     const bookTopic = `book:${marketId}`;
     const tradeTopic = `trades:${marketId}`;
     
-    console.log('[Market] 📡 Subscribing to topics:', { bookTopic, tradeTopic });
     wsClient.subscribe(bookTopic);
     wsClient.subscribe(tradeTopic);
 
     // Handle order book updates
     const handleBookUpdate = (data: any) => {
-      console.log('[Market] 📊 Real-time book update received:', data);
       if (data.orderBook) {
         setOrderBook(data.orderBook);
       } else if (data) {
@@ -268,7 +286,6 @@ export default function MarketDetail() {
 
     // Handle trade events
     const handleTrade = (data: any) => {
-      console.log('[Market] 💰 Real-time trade received:', data);
       setLastTrade(data);
       
       setTrades(prev => {
@@ -279,7 +296,6 @@ export default function MarketDetail() {
       
       // Auto-refresh position after trade (if user is involved)
       if (wallet && (data.maker_id === wallet.userId || data.taker_id === wallet.userId)) {
-        console.log('[Market] 👤 User involved in trade, revalidating...');
         revalidator.revalidate();
       }
     };
@@ -287,11 +303,8 @@ export default function MarketDetail() {
     wsClient.on('book_update', handleBookUpdate);
     wsClient.on('trade', handleTrade);
 
-    console.log('[Market] ✅ WebSocket handlers registered');
-
     // Cleanup
     return () => {
-      console.log('[Market] 🧹 Cleaning up WebSocket subscriptions');
       wsClient.off('book_update', handleBookUpdate);
       wsClient.off('trade', handleTrade);
       wsClient.unsubscribe(bookTopic);

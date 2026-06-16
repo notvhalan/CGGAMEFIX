@@ -92,18 +92,6 @@ export class PositionsController {
     // Get the base position data (net contracts, mark, pnl) from Rust exchange
     const base = await this.rustExchange.getPositionForMarket({ userId, marketId });
 
-    // Clean up any dust lots (< 1000 micros) left by previous partial closes —
-    // zero them out immediately so they never appear in the UI.
-    await this.databaseService.query(
-      `UPDATE position_lots
-       SET qty_remaining_micros = 0, updated_at = NOW()
-       WHERE user_id = $1
-         AND market_id = $2
-         AND qty_remaining_micros > 0
-         AND qty_remaining_micros < 1000`,
-      [userId, marketId]
-    );
-
     // Query position_lots directly to get ALL open lots for both sides,
     // bypassing any net-direction filter in the Rust engine.
     const lotsResult = await this.databaseService.query<{

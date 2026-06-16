@@ -52,21 +52,21 @@ export const SUBCATEGORIES: Record<string, { slug: string; label: string; templa
 };
 
 export const BOT_PRESETS = [
-  { label: '⚡ Fastest',        mid: 50, spread: 0.5, taker: 40, levels: 3,  size: 5,  delay: 0,    delayVar: 0,    sizeVar: 0, priceVar: 0, refresh: 1000,  drift: 50000,  vol: 0.5 },
-  { label: '💧 Deep Liquidity', mid: 50, spread: 5,   taker: 5,  levels: 15, size: 20, delay: 5000, delayVar: 1000, sizeVar: 0, priceVar: 0, refresh: 15000, drift: 50000,  vol: 0.1 },
-  { label: '⚖️ Balanced',       mid: 50, spread: 2.5, taker: 10, levels: 8,  size: 10, delay: 2000, delayVar: 1000, sizeVar: 0, priceVar: 0, refresh: 5000,  drift: 200000, vol: 0.3 },
-  { label: '🎯 Tight Market',   mid: 50, spread: 1,   taker: 20, levels: 5,  size: 8,  delay: 1000, delayVar: 500,  sizeVar: 0, priceVar: 0, refresh: 3000,  drift: 150000, vol: 0.4 },
+  { label: 'Fastest',        mid: 50, spread: 0.5, taker: 40, levels: 3,  size: 5,  delay: 0,    delayVar: 0,    sizeVar: 0, priceVar: 0, refresh: 1000,  drift: 50000,  vol: 0.5 },
+  { label: 'Deep Liquidity', mid: 50, spread: 5,   taker: 5,  levels: 15, size: 20, delay: 5000, delayVar: 1000, sizeVar: 0, priceVar: 0, refresh: 15000, drift: 50000,  vol: 0.1 },
+  { label: 'Balanced',       mid: 50, spread: 2.5, taker: 10, levels: 8,  size: 10, delay: 2000, delayVar: 1000, sizeVar: 0, priceVar: 0, refresh: 5000,  drift: 200000, vol: 0.3 },
+  { label: 'Tight Market',   mid: 50, spread: 1,   taker: 20, levels: 5,  size: 8,  delay: 1000, delayVar: 500,  sizeVar: 0, priceVar: 0, refresh: 3000,  drift: 150000, vol: 0.4 },
 ] as const;
 
 export type BotPreset = typeof BOT_PRESETS[number];
 
 export const INS_SERIES: Record<string, { icon: string; label: string; series: string }> = {
-  life:        { icon: '🫀', label: 'Life / Mortality',         series: 'Mortality Risk Index' },
-  health:      { icon: '🏥', label: 'Health / Critical Illness', series: 'Critical Illness Tracker' },
-  climate:     { icon: '🌡️', label: 'Climate / Weather',         series: 'Climate Risk Benchmark' },
-  agriculture: { icon: '🌾', label: 'Agriculture / Crop',        series: 'Harvest Yield Contract' },
-  liability:   { icon: '⚖️', label: 'Liability / Legal',         series: 'Liability Exposure Index' },
-  travel:      { icon: '✈️', label: 'Travel / Cancellation',     series: 'Travel Disruption Cover' },
+  life:        { icon: 'LI', label: 'Life / Mortality',          series: 'Mortality Risk Index' },
+  health:      { icon: 'HE', label: 'Health / Critical Illness', series: 'Critical Illness Tracker' },
+  climate:     { icon: 'CL', label: 'Climate / Weather',         series: 'Climate Risk Benchmark' },
+  agriculture: { icon: 'AG', label: 'Agriculture / Crop',        series: 'Harvest Yield Contract' },
+  liability:   { icon: 'LA', label: 'Liability / Legal',         series: 'Liability Exposure Index' },
+  travel:      { icon: 'TR', label: 'Travel / Cancellation',     series: 'Travel Disruption Cover' },
 };
 
 // ─── Loader ─────────────────────────────────────────────────────────────────
@@ -187,6 +187,11 @@ export async function action({ request }: ActionFunctionArgs) {
     const refreshIntervalMs = Number(formData.get('refreshIntervalMs') || 0);
     const priceDriftPts = Number(formData.get('priceDriftPts') || 0);
     const volatility = Number(formData.get('volatility') || 0);
+    const pricePathMode = String(formData.get('pricePathMode') || 'random_walk');
+    const trendPerTickPts = Number(formData.get('trendPerTickPts') || 0);
+    const sineAmplitudePts = Number(formData.get('sineAmplitudePts') || 0);
+    const sinePeriodTicks = Number(formData.get('sinePeriodTicks') || 20);
+    const meanReversion = Number(formData.get('meanReversion') || 0.1);
 
     const midYesPts = Math.round((midPrice / 100) * 10_000_000);
     const halfSpreadPts = Math.round((spread / 100) * 10_000_000);
@@ -201,6 +206,7 @@ export async function action({ request }: ActionFunctionArgs) {
           marketId, userCount, midYesPts, halfSpreadPts, levels, sizeContracts,
           takerChance: takerChanceDecimal, sizeVariance, priceVariance,
           orderDelayMs, orderDelayVarianceMs, refreshIntervalMs, priceDriftPts, volatility,
+          pricePathMode, trendPerTickPts, sineAmplitudePts, sinePeriodTicks, meanReversion,
         }),
       });
 
@@ -266,6 +272,11 @@ export async function action({ request }: ActionFunctionArgs) {
     const refreshIntervalMs = Number(formData.get('refreshIntervalMs') || 0);
     const priceDriftPts = Number(formData.get('priceDriftPts') || 0);
     const volatility = Number(formData.get('volatility') || 0);
+    const pricePathMode = String(formData.get('pricePathMode') || 'random_walk');
+    const trendPerTickPts = Number(formData.get('trendPerTickPts') || 0);
+    const sineAmplitudePts = Number(formData.get('sineAmplitudePts') || 0);
+    const sinePeriodTicks = Number(formData.get('sinePeriodTicks') || 20);
+    const meanReversion = Number(formData.get('meanReversion') || 0.1);
 
     const halfSpreadPts = Math.round((spread / 100) * 10_000_000);
     const takerChanceDecimal = takerChance / 100;
@@ -287,6 +298,7 @@ export async function action({ request }: ActionFunctionArgs) {
           category, userCount, halfSpreadPts, levels, sizeContracts,
           takerChance: takerChanceDecimal, sizeVariance, priceVariance,
           orderDelayMs, orderDelayVarianceMs, refreshIntervalMs, priceDriftPts, volatility,
+          pricePathMode, trendPerTickPts, sineAmplitudePts, sinePeriodTicks, meanReversion,
           subcategoryCurve,
         }),
       });
@@ -413,7 +425,12 @@ export async function action({ request }: ActionFunctionArgs) {
   if (actionType === 'delete-insurance-group') {
     const slug = formData.get('delCategory') as string;
     const conditionName = formData.get('delCondition') as string | null;
+    const deleteConfirmation = formData.get('deleteConfirmation') as string | null;
+    const expectedConfirmation = `DELETE ${slug}`;
     if (!slug) return json({ success: false, error: 'Category is required' }, { status: 400 });
+    if (deleteConfirmation !== expectedConfirmation) {
+      return json({ success: false, error: `Type ${expectedConfirmation} to confirm deletion` }, { status: 400 });
+    }
     try {
       const response = await fetch(`${API_BASE_URL}/v1/admin/insurance/delete-group`, {
         method: 'POST',
@@ -499,7 +516,7 @@ export default function Admin() {
   }
 
   return (
-    <AdminLayout activePage={activePage} onNavigate={handleNavigate}>
+    <AdminLayout activePage={activePage} onNavigate={handleNavigate} userEmail={user.email}>
       {/* Permission Warning */}
       {!isAdmin && (
         <div className="mb-4 px-4 py-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-300 text-sm">

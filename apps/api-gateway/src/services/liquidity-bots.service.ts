@@ -6,6 +6,7 @@ import { PRICE_SCALE, CONTRACT_SCALE, stakeToContracts, liabilityToContracts } f
 import axios from 'axios';
 
 type Side = 'BUY_YES' | 'SELL_YES';
+export type PricePathMode = 'random_walk' | 'linear' | 'sine' | 'trend_sine';
 
 interface BotConfig {
   marketId: string;
@@ -21,6 +22,11 @@ interface BotConfig {
   refreshIntervalMs: number;
   priceDriftPts: number;
   volatility: number;
+  pricePathMode: PricePathMode;
+  trendPerTickPts: number;
+  sineAmplitudePts: number;
+  sinePeriodTicks: number;
+  meanReversion: number;
 }
 
 interface BotState {
@@ -28,6 +34,7 @@ interface BotState {
   liveOrders: Array<{ id: string; side: Side; yesPts: bigint }>;
   timeoutId?: NodeJS.Timeout;
   currentMidPts: bigint;
+  priceTick: number;
 }
 
 /** Tracks one running market session for status reporting */
@@ -41,6 +48,11 @@ export interface MarketSession {
   levels: number;
   botsCount: number;
   ordersPlaced: number;
+  pricePathMode: PricePathMode;
+  trendPerTickPts: number;
+  sineAmplitudePts: number;
+  sinePeriodTicks: number;
+  meanReversion: number;
   startedAt: string;      // ISO date
   status: 'running' | 'error';
   errorMessage?: string;
@@ -68,6 +80,9 @@ export class LiquidityBotsService {
       if (mb) {
         sess.ordersPlaced = mb.bots.reduce((sum, b) => sum + b.liveOrders.length, 0);
         sess.botsCount = mb.bots.length;
+        if (mb.bots.length > 0) {
+          sess.midPrice = mb.bots.reduce((sum, bot) => sum + Number(bot.currentMidPts), 0) / mb.bots.length / 100_000;
+        }
       }
     }
     const totalBots = sessions.reduce((s, x) => s + x.botsCount, 0);
@@ -78,6 +93,93 @@ export class LiquidityBotsService {
   constructor(
     private readonly databaseService: DatabaseService,
   ) {}
+
+  private validateBotConfig(params: {
+    userCount: number;
+    halfSpreadPts: number;
+    levels: number;
+    sizeContracts: number;
+    takerChance: number;
+    sizeVariance?: number;
+    priceVariance?: number;
+    orderDelayMs?: number;
+    orderDelayVarianceMs?: number;
+    refreshIntervalMs?: number;
+    priceDriftPts?: number;
+    volatility?: number;
+    pricePathMode?: PricePathMode;
+    trendPerTickPts?: number;
+    sineAmplitudePts?: number;
+    sinePeriodTicks?: number;
+    meanReversion?: number;
+  }) {
+    const requiredNumbers = [
+      params.userCount,
+      params.halfSpreadPts,
+      params.levels,
+      params.sizeContracts,
+      params.takerChance,
+    ];
+    const optionalNumbers = [
+      params.sizeVariance,
+      params.priceVariance,
+      params.orderDelayMs,
+      params.orderDelayVarianceMs,
+      params.refreshIntervalMs,
+      params.priceDriftPts,
+      params.volatility,
+      params.trendPerTickPts,
+      params.sineAmplitudePts,
+      params.sinePeriodTicks,
+      params.meanReversion,
+    ];
+    if (requiredNumbers.some(value => typeof value !== 'number' || !Number.isFinite(value)) ||
+        optionalNumbers.some(value => value !== undefined && (typeof value !== 'number' || !Number.isFinite(value)))) {
+      throw new Error('Bot parameters must be finite numbers');
+    }
+    if (!Number.isInteger(params.userCount) || params.userCount < 1 || params.userCount > 100) {
+      throw new Error('userCount must be an integer between 1 and 100');
+    }
+    if (!Number.isInteger(params.levels) || params.levels < 1 || params.levels > 20) {
+      throw new Error('levels must be an integer between 1 and 20');
+    }
+    if (params.halfSpreadPts < 10_000 || params.halfSpreadPts > 1_000_000) {
+      throw new Error('halfSpreadPts must be between 0.1% and 10%');
+    }
+    if (params.sizeContracts < 0.001 || params.sizeContracts > 10_000) {
+      throw new Error('sizeContracts must be between 0.001 and 10,000');
+    }
+    if (params.takerChance < 0 || params.takerChance > 1) {
+      throw new Error('takerChance must be between 0 and 1');
+    }
+    if ((params.sizeVariance ?? 0) < 0 || (params.sizeVariance ?? 0) > 1) {
+      throw new Error('sizeVariance must be between 0 and 1');
+    }
+    if ((params.volatility ?? 0) < 0 || (params.volatility ?? 0) > 1) {
+      throw new Error('volatility must be between 0 and 1');
+    }
+    const validPathModes: PricePathMode[] = ['random_walk', 'linear', 'sine', 'trend_sine'];
+    if (params.pricePathMode !== undefined && !validPathModes.includes(params.pricePathMode)) {
+      throw new Error('pricePathMode must be random_walk, linear, sine, or trend_sine');
+    }
+    if (Math.abs(params.trendPerTickPts ?? 0) > 1_000_000) {
+      throw new Error('trendPerTickPts must be between -1,000,000 and 1,000,000');
+    }
+    if ((params.sineAmplitudePts ?? 0) < 0 || (params.sineAmplitudePts ?? 0) > 4_000_000) {
+      throw new Error('sineAmplitudePts must be between 0 and 4,000,000');
+    }
+    if (!Number.isInteger(params.sinePeriodTicks ?? 20) || (params.sinePeriodTicks ?? 20) < 2 || (params.sinePeriodTicks ?? 20) > 10_000) {
+      throw new Error('sinePeriodTicks must be an integer between 2 and 10,000');
+    }
+    if ((params.meanReversion ?? 0.1) < 0 || (params.meanReversion ?? 0.1) > 1) {
+      throw new Error('meanReversion must be between 0 and 1');
+    }
+    if ((params.orderDelayMs ?? 0) < 0 || (params.orderDelayVarianceMs ?? 0) < 0 ||
+        (params.refreshIntervalMs ?? 0) < 0 || (params.priceVariance ?? 0) < 0 ||
+        (params.priceDriftPts ?? 0) < 0) {
+      throw new Error('Bot timing and variance parameters cannot be negative');
+    }
+  }
 
   async startBots(params: {
     marketId: string;
@@ -94,12 +196,24 @@ export class LiquidityBotsService {
     refreshIntervalMs?: number;
     priceDriftPts?: number;
     volatility?: number;
+    pricePathMode?: PricePathMode;
+    trendPerTickPts?: number;
+    sineAmplitudePts?: number;
+    sinePeriodTicks?: number;
+    meanReversion?: number;
     marketName?: string;
     conditionName?: string;
     category?: string;
   }) {
-    // Stop any existing bots first
-    this.stopBots();
+    this.validateBotConfig(params);
+    if (typeof params.marketId !== 'string' || !params.marketId.trim() ||
+        typeof params.midYesPts !== 'number' || !Number.isInteger(params.midYesPts) ||
+        params.midYesPts < 10_000 || params.midYesPts > 9_990_000) {
+      throw new Error('marketId and a valid midYesPts between 0.1% and 99.9% are required');
+    }
+
+    // Stop any existing bots only after the replacement configuration is valid.
+    await this.stopBots();
     
     // Reset stopping flag
     this.stopping = false;
@@ -118,6 +232,11 @@ export class LiquidityBotsService {
       refreshIntervalMs: params.refreshIntervalMs || 0,
       priceDriftPts: params.priceDriftPts || 0,
       volatility: params.volatility || 0,
+      pricePathMode: params.pricePathMode ?? 'random_walk',
+      trendPerTickPts: params.trendPerTickPts ?? 0,
+      sineAmplitudePts: params.sineAmplitudePts ?? 0,
+      sinePeriodTicks: params.sinePeriodTicks ?? 20,
+      meanReversion: params.meanReversion ?? 0.1,
     };
 
     this.logger.info(`Fetching ${params.userCount} existing bot users...`);
@@ -150,7 +269,7 @@ export class LiquidityBotsService {
         );
         if (fundResult.rows.length === 0) { this.logger.error(`Failed to fund wallet for bot user ${userId}`); continue; }
 
-        this.bots.push({ userId, liveOrders: [], currentMidPts: BigInt(params.midYesPts) });
+        this.bots.push({ userId, liveOrders: [], currentMidPts: BigInt(params.midYesPts), priceTick: 0 });
         this.logger.info(`Using bot user: ${row.email} (${userId}) with balance £${fundResult.rows[0].balance}`);
       }
 
@@ -167,6 +286,11 @@ export class LiquidityBotsService {
         levels: params.levels,
         botsCount: this.bots.length,
         ordersPlaced: 0,
+        pricePathMode: this.config.pricePathMode,
+        trendPerTickPts: this.config.trendPerTickPts,
+        sineAmplitudePts: this.config.sineAmplitudePts,
+        sinePeriodTicks: this.config.sinePeriodTicks,
+        meanReversion: this.config.meanReversion,
         startedAt: new Date().toISOString(),
         status: 'running',
       });
@@ -196,7 +320,7 @@ export class LiquidityBotsService {
     }
   }
 
-  stopBots() {
+  async stopBots() {
     this.logger.info('Stopping all bots...');
     
     this.stopping = true;
@@ -215,11 +339,25 @@ export class LiquidityBotsService {
       }
     }
     
+    const trackedBots = new Set<BotState>(this.bots);
+    for (const [, mb] of this.marketBots) {
+      for (const bot of mb.bots) trackedBots.add(bot);
+    }
+
+    await Promise.all(Array.from(trackedBots, bot => this.cancelBotOrders(bot)));
+    const remainingOrders = Array.from(trackedBots).reduce((sum, bot) => sum + bot.liveOrders.length, 0);
+    if (remainingOrders > 0) {
+      for (const session of this.sessions.values()) {
+        session.status = 'error';
+        session.errorMessage = `Failed to cancel ${remainingOrders} tracked bot order${remainingOrders === 1 ? '' : 's'}`;
+      }
+      throw new Error(`Failed to cancel ${remainingOrders} tracked bot order${remainingOrders === 1 ? '' : 's'}`);
+    }
+
     this.bots = [];
     this.config = null;
     this.sessions.clear();
     this.marketBots.clear();
-    
     this.logger.info('All bots stopped and timeouts cleared');
   }
 
@@ -242,11 +380,29 @@ export class LiquidityBotsService {
     refreshIntervalMs?: number;
     priceDriftPts?: number;
     volatility?: number;
+    pricePathMode?: PricePathMode;
+    trendPerTickPts?: number;
+    sineAmplitudePts?: number;
+    sinePeriodTicks?: number;
+    meanReversion?: number;
     /** Per-subcategory ladder curves: conditionName => midPercent[] (one per market, sorted by maturity) */
     subcategoryCurve: Record<string, number[]>;
   }) {
-    // Stop everything first
-    this.stopBots();
+    this.validateBotConfig(params);
+    if (typeof params.category !== 'string' || !params.category.trim()) {
+      throw new Error('category is required');
+    }
+    if (!params.subcategoryCurve || typeof params.subcategoryCurve !== 'object' || Array.isArray(params.subcategoryCurve)) {
+      throw new Error('subcategoryCurve must be an object');
+    }
+    for (const curve of Object.values(params.subcategoryCurve)) {
+      if (!Array.isArray(curve) || curve.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0.1 || value > 99.9)) {
+        throw new Error('subcategoryCurve prices must be finite numbers between 0.1 and 99.9');
+      }
+    }
+
+    // Stop everything only after the replacement configuration is valid.
+    await this.stopBots();
     this.stopping = false;
 
     const { category, userCount, subcategoryCurve, halfSpreadPts, levels, sizeContracts, takerChance } = params;
@@ -343,6 +499,11 @@ export class LiquidityBotsService {
           refreshIntervalMs: params.refreshIntervalMs || 0,
           priceDriftPts: params.priceDriftPts || 0,
           volatility: params.volatility || 0,
+          pricePathMode: params.pricePathMode ?? 'random_walk',
+          trendPerTickPts: params.trendPerTickPts ?? 0,
+          sineAmplitudePts: params.sineAmplitudePts ?? 0,
+          sinePeriodTicks: params.sinePeriodTicks ?? 20,
+          meanReversion: params.meanReversion ?? 0.1,
         };
 
         // Create bot states for this market (all bots work all markets)
@@ -350,6 +511,7 @@ export class LiquidityBotsService {
           userId: row.id,
           liveOrders: [],
           currentMidPts: midYesPts,
+          priceTick: 0,
         }));
 
         // Track session
@@ -363,6 +525,11 @@ export class LiquidityBotsService {
           levels,
           botsCount: marketBotStates.length,
           ordersPlaced: 0,
+          pricePathMode: config.pricePathMode,
+          trendPerTickPts: config.trendPerTickPts,
+          sineAmplitudePts: config.sineAmplitudePts,
+          sinePeriodTicks: config.sinePeriodTicks,
+          meanReversion: config.meanReversion,
           startedAt: new Date().toISOString(),
           status: 'running',
         });
@@ -407,7 +574,10 @@ export class LiquidityBotsService {
     bot.timeoutId = setTimeout(async () => {
       if (this.stopping) return;
       try {
-        await this.cancelBotOrders(bot);
+        const failedCancels = await this.cancelBotOrders(bot);
+        if (failedCancels > 0) {
+          throw new Error(`Unable to refresh while ${failedCancels} previous order${failedCancels === 1 ? '' : 's'} remain uncancelled`);
+        }
         this.driftPrice(bot, config);
         await this.quoteOnce(bot, config);
         this.scheduleRefreshForMarket(bot, marketId);
@@ -446,7 +616,10 @@ export class LiquidityBotsService {
       
       try {
         // Cancel existing orders
-        await this.cancelBotOrders(bot);
+        const failedCancels = await this.cancelBotOrders(bot);
+        if (failedCancels > 0) {
+          throw new Error(`Unable to refresh while ${failedCancels} previous order${failedCancels === 1 ? '' : 's'} remain uncancelled`);
+        }
         
         // Drift the mid price
         this.driftPrice(bot, config);
@@ -465,45 +638,60 @@ export class LiquidityBotsService {
   }
 
   private async cancelBotOrders(bot: BotState) {
-    const orderIds = bot.liveOrders.map(o => o.id);
-    bot.liveOrders = [];
+    const orders = [...bot.liveOrders];
     
-    if (orderIds.length === 0) {
-      return;
+    if (orders.length === 0) {
+      return 0;
     }
 
-    for (const orderId of orderIds) {
+    const failedOrderIds = new Set<string>();
+    for (const order of orders) {
       try {
-        await axios.delete(`${this.RUST_EXCHANGE_URL}/api/orders/${orderId}`, {
+        await axios.delete(`${this.RUST_EXCHANGE_URL}/api/orders/${order.id}`, {
           timeout: 5000,
           headers: {
             'X-User-Id': bot.userId,
           },
         });
       } catch (error) {
+        failedOrderIds.add(order.id);
         if (axios.isAxiosError(error) && error.response) {
-          this.logger.warn(`Failed to cancel bot order ${orderId} via Rust exchange`, {
+          this.logger.warn(`Failed to cancel bot order ${order.id} via Rust exchange`, {
             status: error.response.status,
             data: error.response.data,
           });
         } else {
-          this.logger.warn(`Failed to cancel bot order ${orderId}:`, error);
+          this.logger.warn(`Failed to cancel bot order ${order.id}:`, error);
         }
       }
     }
+    bot.liveOrders = orders.filter(order => failedOrderIds.has(order.id));
+    return bot.liveOrders.length;
   }
 
   private driftPrice(bot: BotState, config: BotConfig) {
-    if (config.priceDriftPts <= 0) return;
+    bot.priceTick += 1;
+
+    const base = Number(config.midYesPts);
+    const current = Number(bot.currentMidPts);
+    const includeTrend = config.pricePathMode === 'linear' || config.pricePathMode === 'trend_sine';
+    const includeSine = config.pricePathMode === 'sine' || config.pricePathMode === 'trend_sine';
+    const trend = includeTrend ? config.trendPerTickPts * bot.priceTick : 0;
+    const sine = includeSine
+      ? config.sineAmplitudePts * Math.sin((2 * Math.PI * bot.priceTick) / config.sinePeriodTicks)
+      : 0;
+    const noise = config.priceDriftPts > 0
+      ? config.priceDriftPts * (Math.random() * 2 - 1) * config.volatility
+      : 0;
+
+    const target = config.pricePathMode === 'random_walk' ? base : base + trend + sine;
+    const next = config.pricePathMode === 'random_walk'
+      ? current + noise + (base - current) * config.meanReversion
+      : current + (target - current) * config.meanReversion + noise;
+
+    bot.currentMidPts = this.clampYesPts(BigInt(Math.round(next)));
     
-    // Random walk with mean reversion
-    const drift = config.priceDriftPts * (Math.random() * 2 - 1) * (config.volatility + 0.1);
-    const meanReversion = (Number(config.midYesPts) - Number(bot.currentMidPts)) * 0.1; // 10% pull back to original mid
-    
-    const newMid = bot.currentMidPts + BigInt(Math.round(drift + meanReversion));
-    bot.currentMidPts = this.clampYesPts(newMid);
-    
-    this.logger.debug(`Bot ${bot.userId} mid price drifted to ${(Number(bot.currentMidPts) / 10_000_000 * 100).toFixed(2)}%`);
+    this.logger.debug(`Bot ${bot.userId} ${config.pricePathMode} tick ${bot.priceTick} moved mid to ${(Number(bot.currentMidPts) / 10_000_000 * 100).toFixed(2)}%`);
   }
 
   private async quoteOnce(bot: BotState, config: BotConfig, skipDelay = false) {
@@ -558,6 +746,8 @@ export class LiquidityBotsService {
         await this.sleep(orderDelay);
       }
     }
+
+    await this.maybeTaker(bot, config);
   }
 
   private async maybeTaker(bot: BotState, config: BotConfig) {

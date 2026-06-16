@@ -87,6 +87,11 @@ export class AdminController {
       refreshIntervalMs?: number;
       priceDriftPts?: number;
       volatility?: number;
+      pricePathMode?: 'random_walk' | 'linear' | 'sine' | 'trend_sine';
+      trendPerTickPts?: number;
+      sineAmplitudePts?: number;
+      sinePeriodTicks?: number;
+      meanReversion?: number;
     },
     @Req() req: FastifyRequest & { session: any },
   ) {
@@ -122,7 +127,7 @@ export class AdminController {
     await this.checkAdminAccess(userId);
     this.logger.info(`Admin ${userId} stopping liquidity bots`);
     try {
-      this.liquidityBotsService.stopBots();
+      await this.liquidityBotsService.stopBots();
       return { success: true, message: 'Stopped all liquidity bots' };
     } catch (error) {
       this.logger.error('Failed to stop liquidity bots', error);
@@ -157,6 +162,11 @@ export class AdminController {
       refreshIntervalMs?: number;
       priceDriftPts?: number;
       volatility?: number;
+      pricePathMode?: 'random_walk' | 'linear' | 'sine' | 'trend_sine';
+      trendPerTickPts?: number;
+      sineAmplitudePts?: number;
+      sinePeriodTicks?: number;
+      meanReversion?: number;
       subcategoryCurve: Record<string, number[]>;
     },
     @Req() req: FastifyRequest & { session: any },

@@ -82,12 +82,7 @@ pub async fn create_order(
     headers: HeaderMap,
     Json(req): Json<CreateOrderRequest>,
 ) -> Result<Json<CreateOrderResponse>, AppError> {
-    // Extract user_id from X-User-Id header or use default
-    let user_id = headers
-        .get("X-User-Id")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(|| Uuid::parse_str("97344faa-ff14-498e-af84-88639c24edf6").unwrap());
+    let user_id = require_user_id(&headers)?;
     
     tracing::info!(
         "Creating order for user_id: {}, market: {}, side: {:?}, risk: {} pence, price: {} pts, reduce_only: {}",
@@ -743,5 +738,44 @@ impl IntoResponse for AppError {
         };
 
         (status, message).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn require_user_id_rejects_missing_header() {
+        let headers = HeaderMap::new();
+
+        assert!(matches!(
+            require_user_id(&headers),
+            Err(AppError::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn require_user_id_rejects_invalid_uuid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-User-Id", HeaderValue::from_static("not-a-uuid"));
+
+        assert!(matches!(
+            require_user_id(&headers),
+            Err(AppError::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn require_user_id_accepts_valid_uuid() {
+        let expected = Uuid::new_v4();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-User-Id",
+            HeaderValue::from_str(&expected.to_string()).unwrap(),
+        );
+
+        assert_eq!(require_user_id(&headers).unwrap(), expected);
     }
 }

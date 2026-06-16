@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useId, useRef } from 'react';
+import { X } from 'lucide-react';
 
 interface ModalProps {
   open: boolean;
@@ -10,15 +11,86 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, children, footer, destructive }: ModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const dialog = dialogRef.current;
+    const focusable = dialog?.querySelector<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    (focusable ?? dialog)?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (event.key !== 'Tab' || !dialog) return;
+
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ));
+      if (items.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus();
+    };
+  }, [onClose, open]);
+
   if (!open) return null;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center modal-overlay bg-black/60" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center modal-overlay bg-black/60"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div
-        onClick={(e) => e.stopPropagation()}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className="bg-admin-surface border border-admin-border rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
       >
-        <div className={`px-5 py-4 border-b ${destructive ? 'border-red-500/30 bg-red-500/5' : 'border-admin-border'}`}>
-          <h3 className={`text-lg font-semibold ${destructive ? 'text-red-400' : 'text-admin-text'}`}>{title}</h3>
+        <div className={`px-5 py-4 border-b flex items-center justify-between gap-4 ${destructive ? 'border-red-500/30 bg-red-500/5' : 'border-admin-border'}`}>
+          <h3 id={titleId} className={`text-lg font-semibold ${destructive ? 'text-red-400' : 'text-admin-text'}`}>{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-admin-text-dim hover:bg-admin-surface-2 hover:text-admin-text focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+            aria-label="Close dialog"
+          >
+            <X className="w-4 h-4" aria-hidden="true" />
+          </button>
         </div>
         <div className="px-5 py-4">{children}</div>
         {footer && (

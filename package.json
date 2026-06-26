@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "pnpm --parallel --stream run dev",
+    "dev:all": "powershell -ExecutionPolicy Bypass -File ./start-dev.ps1",
     "dev:gateway": "pnpm --filter api-gateway dev",
     "dev:engine": "pnpm --filter matching-engine dev",
     "dev:wallet": "pnpm --filter wallet-service dev",

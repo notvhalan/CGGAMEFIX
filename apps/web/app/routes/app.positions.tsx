@@ -43,10 +43,10 @@ export default function Positions() {
       const contracts = Number(micros > 0n ? micros : -micros) / 1_000_000;
       const avgPrice  = (p.avgEntryYesPts || 0) / 100_000;
       const mark      = (p.markYesPts || 0) / 100_000;
-      const pnlPercent = isLong ? (mark - avgPrice) : (avgPrice - mark);
-      const pnlValue   = (pnlPercent / 100) * contracts;
       const cost        = contracts * (isLong ? avgPrice / 100 : (1 - avgPrice / 100));
       const marketValue = contracts * (isLong ? mark  / 100 : (1 - mark  / 100));
+      const pnlValue   = (p.unrealizedPnlPence || 0) / 100;
+      const pnlPercent = cost > 0 ? (pnlValue / cost) * 100 : 0;
       return { ...p, isLong, contracts, avgPrice, mark, pnlPercent, pnlValue, cost, marketValue };
     });
   }, [positions]);

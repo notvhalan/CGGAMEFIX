@@ -94,8 +94,7 @@ impl OrderBook {
                         if maker.user_id == taker_user_id {
                             let skipped_id = maker.order_id;
                             self_trade_skipped.push(skipped_id);
-                            makers.pop_front();
-                            continue;
+                            break 'outer_buy;
                         }
 
                         let mut fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
@@ -163,8 +162,7 @@ impl OrderBook {
                         if maker.user_id == taker_user_id {
                             let skipped_id = maker.order_id;
                             self_trade_skipped.push(skipped_id);
-                            makers.pop_front();
-                            continue;
+                            break 'outer_sell;
                         }
 
                         let mut fill_qty = qty_remaining_micros.min(maker.qty_remaining_micros);
@@ -313,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn test_self_trade_prevention_returns_skipped() {
+    fn test_self_trade_prevention_keeps_resting_order() {
         let mut book = OrderBook::new(Uuid::new_v4());
         let same_user = Uuid::new_v4();
         let other_user = Uuid::new_v4();
@@ -355,12 +353,15 @@ mod tests {
             None,
         );
 
-        assert_eq!(fills.len(), 1);
-        assert_eq!(fills[0].maker_order_id, other_ask);
-        assert_eq!(fills[0].qty_micros, 3_000_000);
-        assert_eq!(remaining, 0);
+        assert!(fills.is_empty());
+        assert_eq!(remaining, 3_000_000);
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0], own_ask);
+
+        let level = book.asks.get(&5_000_000).unwrap();
+        assert_eq!(level.len(), 2);
+        assert_eq!(level[0].order_id, own_ask);
+        assert_eq!(level[1].order_id, other_ask);
     }
 
     #[test]

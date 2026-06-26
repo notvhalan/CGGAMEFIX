@@ -457,30 +457,74 @@ pub async fn get_positions(
             COALESCE(p.avg_open_price_yes_pts, 0) as "avg_open_price_yes_pts!",
             COALESCE(p.realized_pnl_pence, 0) as "realized_pnl_pence!",
             COALESCE(p.fees_paid_pence, 0) as "fees_paid_pence!",
-            m.name as market_question
+            m.name as market_question,
+            COALESCE(ob.best_bid_yes, 0)::bigint as "best_bid_yes!",
+            COALESCE(ob.best_ask_yes, $2)::bigint as "best_ask_yes!"
         FROM positions p
         JOIN markets m ON p.market_id = m.id
+        LEFT JOIN (
+            SELECT
+                market_id,
+                MAX(limit_price_yes_pts) FILTER (WHERE side::text = 'BUY_YES') AS best_bid_yes,
+                MIN(limit_price_yes_pts) FILTER (WHERE side::text = 'SELL_YES') AS best_ask_yes
+            FROM orders
+            WHERE status IN ('OPEN', 'PARTIALLY_MATCHED')
+            GROUP BY market_id
+        ) ob ON ob.market_id = p.market_id
         WHERE p.user_id = $1
           AND COALESCE(p.net_qty_micros, 0) <> 0
         ORDER BY p.updated_at DESC
         "#,
-        user_id
+        user_id,
+        PRICE_SCALE
     )
     .fetch_all(&app.db)
     .await?;
 
     let positions = rows
         .into_iter()
-        .map(|r| PositionSummary {
-            market_id: r.market_id,
-            market_question: r.market_question,
-            net_yes_pence: 0,
-            net_contracts_micros: r.net_qty_micros.to_string(),
-            avg_entry_yes_pts: r.avg_open_price_yes_pts as i64,
-            mark_yes_pts: PRICE_SCALE / 2,
-            unrealized_pnl_pence: 0,
-            total_fees_pence: r.fees_paid_pence as i64,
-            can_cash_out: true,
+        .map(|r| {
+            let net_contracts_micros = r.net_qty_micros as i128;
+            let abs_contracts_micros = net_contracts_micros.abs();
+            let avg_entry_yes_pts = r.avg_open_price_yes_pts as i64;
+            let best_bid_yes = r.best_bid_yes;
+            let best_ask_yes = r.best_ask_yes;
+            let mark_yes_pts = if best_bid_yes > 0 && best_ask_yes < PRICE_SCALE {
+                (best_bid_yes + best_ask_yes) / 2
+            } else if avg_entry_yes_pts > 0 {
+                avg_entry_yes_pts
+            } else {
+                PRICE_SCALE / 2
+            };
+
+            let net_yes_pence = (abs_contracts_micros * PAYOUT_PENCE_PER_CONTRACT as i128)
+                / CONTRACT_SCALE_MICROS as i128;
+
+            let mut unrealized_pnl_pence: i128 = 0;
+            if avg_entry_yes_pts > 0 && abs_contracts_micros > 0 {
+                let pnl_per_contract_pence = if net_contracts_micros > 0 {
+                    ((mark_yes_pts - avg_entry_yes_pts) as i128 * PAYOUT_PENCE_PER_CONTRACT as i128)
+                        / PRICE_SCALE as i128
+                } else {
+                    ((avg_entry_yes_pts - mark_yes_pts) as i128 * PAYOUT_PENCE_PER_CONTRACT as i128)
+                        / PRICE_SCALE as i128
+                };
+
+                unrealized_pnl_pence = (pnl_per_contract_pence * abs_contracts_micros)
+                    / CONTRACT_SCALE_MICROS as i128;
+            }
+
+            PositionSummary {
+                market_id: r.market_id,
+                market_question: r.market_question,
+                net_yes_pence: net_yes_pence as i64,
+                net_contracts_micros: r.net_qty_micros.to_string(),
+                avg_entry_yes_pts,
+                mark_yes_pts,
+                unrealized_pnl_pence: (unrealized_pnl_pence as i64) - r.fees_paid_pence as i64,
+                total_fees_pence: r.fees_paid_pence as i64,
+                can_cash_out: net_contracts_micros != 0 && (best_bid_yes > 0 || best_ask_yes < PRICE_SCALE),
+            }
         })
         .collect();
 

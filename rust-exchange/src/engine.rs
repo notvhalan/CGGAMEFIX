@@ -278,18 +278,14 @@ impl MatchingEngine {
         // Track if orderbook changed
         let mut orderbook_changed = false;
 
-        // Cancel self-trade skipped orders in DB and release their funds
+        // Self-trade prevention leaves the skipped resting orders on the book.
+        // Do not cancel another open order as a side effect of submitting a
+        // crossing order from the same user.
         if !self_trade_skipped.is_empty() {
             tracing::warn!(
                 "Self-trade prevention: {} own orders skipped for user {}",
                 self_trade_skipped.len(), cmd.user_id
             );
-            for skipped_id in &self_trade_skipped {
-                if let Err(e) = self.cancel_self_trade_order(*skipped_id).await {
-                    tracing::error!("Failed to cancel self-trade order {}: {}", skipped_id, e);
-                }
-            }
-            orderbook_changed = true;
         }
 
         // Send fills to clearing
@@ -402,78 +398,6 @@ impl MatchingEngine {
             "IOC order {} cancelled unfilled and {}p released",
             order_id,
             release_pence
-        );
-        Ok(())
-    }
-
-    /// Cancel an order that was skipped due to self-trade prevention.
-    /// This updates the DB and releases locked funds so the order doesn't
-    /// ghost in DB while missing from in-memory book.
-    async fn cancel_self_trade_order(&mut self, order_id: Uuid) -> anyhow::Result<()> {
-        let order = sqlx::query!(
-            r#"
-            SELECT
-                user_id,
-                market_id,
-                qty_remaining_micros,
-                qty_original_micros,
-                COALESCE(liability_pence, 0)::bigint as "liability_pence!",
-                COALESCE(status::text, 'OPEN') as "status!"
-            FROM orders
-            WHERE id = $1
-            "#,
-            order_id
-        )
-        .fetch_optional(&self.db)
-        .await?;
-
-        let Some(order) = order else {
-            tracing::warn!("Self-trade cancel skipped: order not found ({})", order_id);
-            return Ok(());
-        };
-
-        if order.status != "OPEN" && order.status != "PARTIALLY_MATCHED" {
-            return Ok(()); // Already terminal
-        }
-
-        let mut tx = self.db.begin().await?;
-
-        let update_result = sqlx::query!(
-            r#"
-            UPDATE orders
-            SET status = 'CANCELLED',
-                qty_remaining_micros = 0,
-                updated_at = NOW()
-            WHERE id = $1
-              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-            "#,
-            order_id
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        if update_result.rows_affected() == 0 {
-            tx.rollback().await?;
-            return Ok(());
-        }
-
-        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
-            ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
-                / order.qty_original_micros as i128) as i64
-        } else {
-            0
-        };
-
-        if release_pence > 0 {
-            self.wallet
-                .release_order_lock(&mut tx, order.user_id, release_pence)
-                .await?;
-        }
-
-        tx.commit().await?;
-        tracing::info!(
-            "Self-trade order {} cancelled and {}p released for user {}",
-            order_id, release_pence, order.user_id
         );
         Ok(())
     }

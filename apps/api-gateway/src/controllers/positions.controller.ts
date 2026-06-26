@@ -2,6 +2,7 @@ import { Controller, Get, Post, Param, Req, Body } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { PRICE_SCALE, CONTRACT_SCALE, CONTRACT_PAYOUT_PENCE } from '@betting-exchange/shared-types';
 import { RustExchangeService } from '../services/rust-exchange.service';
+import { deriveRawYesPts } from '../modules/ladder/ladder.math';
 
 interface TradePosition {
   lotId: string;
@@ -70,7 +71,98 @@ export class PositionsController {
       throw new Error('User not authenticated');
     }
 
-    return this.rustExchange.getPositions({ userId });
+    const positions = await this.rustExchange.getPositions({ userId });
+    const marketIds = positions.map((p) => p.marketId).filter(Boolean);
+    if (marketIds.length === 0) {
+      return positions;
+    }
+
+    const marksResult = await this.databaseService.query<{
+      market_id: string;
+      best_bid_yes: string | null;
+      best_ask_yes: string | null;
+      last_trade_yes: string | null;
+      market_base_yes_pts: string | null;
+      category_base_yes_pts: string | null;
+    }>(
+      `SELECT
+         m.id AS market_id,
+         ob.best_bid_yes,
+         ob.best_ask_yes,
+         tr.last_trade_yes,
+         m.base_yes_pts AS market_base_yes_pts,
+         ic.base_yes_pts AS category_base_yes_pts
+       FROM markets m
+       LEFT JOIN insurance_categories ic
+         ON ic.slug = m.insurance_category
+       LEFT JOIN LATERAL (
+         SELECT
+           MAX(limit_price_yes_pts) FILTER (WHERE side::text = 'BUY_YES') AS best_bid_yes,
+           MIN(limit_price_yes_pts) FILTER (WHERE side::text = 'SELL_YES') AS best_ask_yes
+         FROM orders
+         WHERE market_id = m.id
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+       ) ob ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT price_yes_pts AS last_trade_yes
+         FROM trades
+         WHERE market_id = m.id
+         ORDER BY executed_at DESC
+         LIMIT 1
+       ) tr ON TRUE
+       WHERE m.id = ANY($1::uuid[])`,
+      [marketIds]
+    );
+
+    const toPriceScale = (value: string | null | undefined): number | null => {
+      if (value == null) {
+        return null;
+      }
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        return null;
+      }
+      return n <= 100 ? Math.round(n * 100_000) : Math.round(n);
+    };
+
+    const marksByMarket = new Map(
+      marksResult.rows.map((row) => {
+        const rawMark = deriveRawYesPts(
+          toPriceScale(row.best_bid_yes),
+          toPriceScale(row.best_ask_yes),
+          toPriceScale(row.last_trade_yes),
+        )
+          ?? toPriceScale(row.market_base_yes_pts)
+          ?? toPriceScale(row.category_base_yes_pts);
+
+        return [row.market_id, rawMark] as const;
+      })
+    );
+
+    return positions.map((position) => {
+      const markYesPts = marksByMarket.get(position.marketId)
+        ?? position.markYesPts
+        ?? position.avgEntryYesPts
+        ?? PRICE_SCALE / 2;
+      const avgEntryYesPts = position.avgEntryYesPts ?? 0;
+      const netContractsMicros = BigInt(position.netContractsMicros || '0');
+      const absContractsMicros = netContractsMicros < 0n ? -netContractsMicros : netContractsMicros;
+      const absContracts = Number(absContractsMicros) / Number(CONTRACT_SCALE);
+
+      let unrealizedPnlPence = 0;
+      if (avgEntryYesPts > 0 && absContracts > 0) {
+        const pnlPerContractPence = netContractsMicros > 0n
+          ? ((markYesPts - avgEntryYesPts) * CONTRACT_PAYOUT_PENCE) / PRICE_SCALE
+          : ((avgEntryYesPts - markYesPts) * CONTRACT_PAYOUT_PENCE) / PRICE_SCALE;
+        unrealizedPnlPence = Math.round(pnlPerContractPence * absContracts) - (position.totalFeesPence || 0);
+      }
+
+      return {
+        ...position,
+        markYesPts,
+        unrealizedPnlPence,
+      };
+    });
   }
 
   /**

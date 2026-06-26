@@ -934,7 +934,7 @@ export default function InsuranceCategoryPage() {
   const profit    = stakeNum > 0 ? ((parseFloat(payout) - stakeNum)).toFixed(2) : "—";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh", overflowX: "hidden" }}>
+    <div className="ins-category-shell">
 
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="ins-cat-header">

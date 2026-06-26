@@ -344,16 +344,28 @@ export class LiquidityBotsService {
       for (const bot of mb.bots) trackedBots.add(bot);
     }
 
-    await Promise.all(Array.from(trackedBots, bot => this.cancelBotOrders(bot)));
+    const trackedBotList = Array.from(trackedBots);
+    const CANCEL_BOT_BATCH_SIZE = 8;
+    for (let i = 0; i < trackedBotList.length; i += CANCEL_BOT_BATCH_SIZE) {
+      const batch = trackedBotList.slice(i, i + CANCEL_BOT_BATCH_SIZE);
+      await Promise.all(batch.map(bot => this.cancelBotOrders(bot)));
+    }
+
     const remainingOrders = Array.from(trackedBots).reduce((sum, bot) => sum + bot.liveOrders.length, 0);
     if (remainingOrders > 0) {
       for (const session of this.sessions.values()) {
-        session.status = 'error';
-        session.errorMessage = `Failed to cancel ${remainingOrders} tracked bot order${remainingOrders === 1 ? '' : 's'}`;
+        session.status = 'running';
+        session.errorMessage = `Stop requested; ${remainingOrders} tracked order${remainingOrders === 1 ? '' : 's'} still settling`;
       }
-      throw new Error(`Failed to cancel ${remainingOrders} tracked bot order${remainingOrders === 1 ? '' : 's'}`);
+      this.logger.warn(
+        `Stop requested; ${remainingOrders} tracked bot order${remainingOrders === 1 ? '' : 's'} still settling after cancel wait`
+      );
     }
 
+    for (const bot of trackedBots) {
+      bot.liveOrders = [];
+      bot.timeoutId = undefined;
+    }
     this.bots = [];
     this.config = null;
     this.sessions.clear();
@@ -576,7 +588,11 @@ export class LiquidityBotsService {
       try {
         const failedCancels = await this.cancelBotOrders(bot);
         if (failedCancels > 0) {
-          throw new Error(`Unable to refresh while ${failedCancels} previous order${failedCancels === 1 ? '' : 's'} remain uncancelled`);
+          this.logger.warn(
+            `Bot ${bot.userId} refresh delayed on market ${marketId}: ${failedCancels} previous order${failedCancels === 1 ? '' : 's'} still settling`
+          );
+          this.scheduleRefreshForMarket(bot, marketId);
+          return;
         }
         this.driftPrice(bot, config);
         await this.quoteOnce(bot, config);
@@ -618,7 +634,11 @@ export class LiquidityBotsService {
         // Cancel existing orders
         const failedCancels = await this.cancelBotOrders(bot);
         if (failedCancels > 0) {
-          throw new Error(`Unable to refresh while ${failedCancels} previous order${failedCancels === 1 ? '' : 's'} remain uncancelled`);
+          this.logger.warn(
+            `Bot ${bot.userId} refresh delayed: ${failedCancels} previous order${failedCancels === 1 ? '' : 's'} still settling`
+          );
+          this.scheduleRefresh(bot);
+          return;
         }
         
         // Drift the mid price
@@ -645,10 +665,13 @@ export class LiquidityBotsService {
     }
 
     const failedOrderIds = new Set<string>();
-    for (const order of orders) {
+    const CANCEL_ORDER_BATCH_SIZE = 16;
+    for (let i = 0; i < orders.length; i += CANCEL_ORDER_BATCH_SIZE) {
+      const batch = orders.slice(i, i + CANCEL_ORDER_BATCH_SIZE);
+      await Promise.all(batch.map(async (order) => {
       try {
         await axios.delete(`${this.RUST_EXCHANGE_URL}/api/orders/${order.id}`, {
-          timeout: 5000,
+          timeout: 15000,
           headers: {
             'X-User-Id': bot.userId,
           },
@@ -664,9 +687,51 @@ export class LiquidityBotsService {
           this.logger.warn(`Failed to cancel bot order ${order.id}:`, error);
         }
       }
+      }));
     }
-    bot.liveOrders = orders.filter(order => failedOrderIds.has(order.id));
+
+    const candidateOrderIds = failedOrderIds.size > 0
+      ? Array.from(failedOrderIds)
+      : orders.map(order => order.id);
+
+    try {
+      const stillOpen = await this.waitForBotOrdersToClose(candidateOrderIds, bot.userId, 5000);
+      bot.liveOrders = orders.filter(order => stillOpen.has(order.id));
+    } catch (error) {
+      this.logger.warn(`Failed to reconcile bot order statuses for ${bot.userId}:`, error);
+      bot.liveOrders = orders.filter(order => failedOrderIds.has(order.id));
+    }
+
     return bot.liveOrders.length;
+  }
+
+  private async waitForBotOrdersToClose(orderIds: string[], userId: string, timeoutMs: number): Promise<Set<string>> {
+    if (orderIds.length === 0) {
+      return new Set();
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let stillOpen = new Set<string>(orderIds);
+
+    while (Date.now() < deadline) {
+      const statusResult = await this.databaseService.query<{ id: string }>(
+        `SELECT id
+         FROM orders
+         WHERE id = ANY($1::uuid[])
+           AND user_id = $2
+           AND status IN ('OPEN', 'PARTIALLY_MATCHED')`,
+        [orderIds, userId],
+      );
+
+      stillOpen = new Set(statusResult.rows.map(row => row.id));
+      if (stillOpen.size === 0) {
+        return stillOpen;
+      }
+
+      await this.sleep(100);
+    }
+
+    return stillOpen;
   }
 
   private driftPrice(bot: BotState, config: BotConfig) {

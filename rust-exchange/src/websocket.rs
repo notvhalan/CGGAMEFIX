@@ -6,7 +6,8 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use uuid::Uuid;
 use crate::types::*;
 
@@ -54,6 +55,7 @@ struct Client {
 pub struct WsBroadcaster {
     clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     db: sqlx::PgPool,
+    last_snapshot_broadcast: Arc<Mutex<HashMap<Uuid, Instant>>>,
 }
 
 impl WsBroadcaster {
@@ -61,7 +63,33 @@ impl WsBroadcaster {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             db,
+            last_snapshot_broadcast: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    async fn has_market_subscribers(&self, market_id: Uuid) -> bool {
+        self.clients
+            .read()
+            .await
+            .values()
+            .any(|client| client.subscriptions.contains(&market_id))
+    }
+
+    async fn reserve_snapshot_slot(&self, market_id: Uuid) -> bool {
+        const MIN_INTERVAL: Duration = Duration::from_millis(100);
+
+        let now = Instant::now();
+        let mut last_by_market = self.last_snapshot_broadcast.lock().await;
+        let should_send = last_by_market
+            .get(&market_id)
+            .map(|last| now.duration_since(*last) >= MIN_INTERVAL)
+            .unwrap_or(true);
+
+        if should_send {
+            last_by_market.insert(market_id, now);
+        }
+
+        should_send
     }
 
     /// Register a new client
@@ -71,13 +99,13 @@ impl WsBroadcaster {
             subscriptions: Vec::new(),
         };
         self.clients.write().await.insert(client_id, client);
-        tracing::info!("WebSocket client registered: {}", client_id);
+        tracing::debug!("WebSocket client registered: {}", client_id);
     }
 
     /// Unregister a client
     async fn unregister(&self, client_id: &Uuid) {
         self.clients.write().await.remove(client_id);
-        tracing::info!("WebSocket client unregistered: {}", client_id);
+        tracing::debug!("WebSocket client unregistered: {}", client_id);
     }
 
     /// Subscribe client to a market
@@ -87,7 +115,7 @@ impl WsBroadcaster {
             if let Some(client) = clients.get_mut(client_id) {
                 if !client.subscriptions.contains(&market_id) {
                     client.subscriptions.push(market_id);
-                    tracing::info!("Client {} subscribed to market {}", client_id, market_id);
+                    tracing::debug!("Client {} subscribed to market {}", client_id, market_id);
                     true
                 } else {
                     false
@@ -108,15 +136,6 @@ impl WsBroadcaster {
     /// Send orderbook snapshot to a specific client
     async fn send_orderbook_snapshot_to_client(&self, client_id: &Uuid, market_id: Uuid) -> Result<(), Box<dyn std::error::Error>> {
         tracing::debug!("Querying orderbook for market_id: {}", market_id);
-        
-        // Debug: Check what orders exist
-        let all_orders: Vec<(Uuid, String, String)> = sqlx::query_as(
-            "SELECT id, side::text, status FROM orders WHERE market_id = $1 LIMIT 10"
-        )
-        .bind(market_id)
-        .fetch_all(&self.db)
-        .await?;
-        // tracing::debug!("Found {} orders for market {}: {:?}", all_orders.len(), market_id, all_orders);
         
         // Query database for open orders
         let bids_raw: Vec<(i64, i64)> = sqlx::query_as(
@@ -165,7 +184,7 @@ impl WsBroadcaster {
             asks: asks.clone(),
         };
         
-        tracing::info!("Sending orderbook snapshot to client {}: {} bids, {} asks", client_id, bids.len(), asks.len());
+        tracing::debug!("Sending orderbook snapshot to client {}: {} bids, {} asks", client_id, bids.len(), asks.len());
         
         let json = serde_json::to_string(&snapshot)?;
         // tracing::debug!("Snapshot JSON: {}", json);
@@ -178,7 +197,7 @@ impl WsBroadcaster {
                 tracing::error!("Failed to send message to client {}: {}", client_id, e);
                 return Err(Box::new(e));
             }
-            tracing::info!("Successfully sent orderbook snapshot to client {}", client_id);
+            tracing::trace!("Successfully sent orderbook snapshot to client {}", client_id);
         } else {
             tracing::warn!("Client {} not found when trying to send snapshot", client_id);
         }
@@ -190,7 +209,7 @@ impl WsBroadcaster {
     async fn unsubscribe(&self, client_id: &Uuid, market_id: &Uuid) {
         if let Some(client) = self.clients.write().await.get_mut(client_id) {
             client.subscriptions.retain(|id| id != market_id);
-            tracing::info!("Client {} unsubscribed from market {}", client_id, market_id);
+            tracing::debug!("Client {} unsubscribed from market {}", client_id, market_id);
         }
     }
 
@@ -229,6 +248,14 @@ impl WsBroadcaster {
     /// Send orderbook snapshot to all clients subscribed to a market
     /// Used after order fills to update all clients with new orderbook state
     pub async fn send_orderbook_snapshot(&self, market_id: Uuid) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.has_market_subscribers(market_id).await {
+            return Ok(());
+        }
+
+        if !self.reserve_snapshot_slot(market_id).await {
+            return Ok(());
+        }
+
         // Query orderbook from database
         let bids = sqlx::query!(
             r#"
@@ -295,6 +322,38 @@ impl WsBroadcaster {
         Ok(())
     }
 
+    pub async fn broadcast_orderbook_levels(
+        &self,
+        market_id: Uuid,
+        bids_raw: Vec<(i64, i64)>,
+        asks_raw: Vec<(i64, i64)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.has_market_subscribers(market_id).await {
+            return Ok(());
+        }
+
+        if !self.reserve_snapshot_slot(market_id).await {
+            return Ok(());
+        }
+
+        let bids = bids_raw
+            .into_iter()
+            .map(|(price_yes_pts, qty_micros)| Level { price_yes_pts, qty_micros })
+            .collect();
+        let asks = asks_raw
+            .into_iter()
+            .map(|(price_yes_pts, qty_micros)| Level { price_yes_pts, qty_micros })
+            .collect();
+
+        self.broadcast_to_market(
+            market_id,
+            WsMessage::OrderbookSnapshot { market_id, bids, asks },
+        )
+        .await;
+
+        Ok(())
+    }
+
     /// Broadcast orderbook update to all subscribed clients
     /// This is a convenience wrapper for send_orderbook_snapshot
     pub async fn broadcast_orderbook_update(&self, market_id: Uuid) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -334,9 +393,9 @@ async fn handle_socket(socket: WebSocket, broadcaster: WsBroadcaster) {
         while let Some(Ok(msg)) = receiver.next().await {
             match msg {
                 Message::Text(text) => {
-                    tracing::info!("Received WebSocket text message: {}", text);
+                    tracing::trace!("Received WebSocket text message: {}", text);
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                        tracing::info!("Parsed WebSocket message: {:?}", ws_msg);
+                        tracing::trace!("Parsed WebSocket message: {:?}", ws_msg);
                         match ws_msg {
                             WsMessage::Subscribe { market_id } => {
                                 broadcaster_clone.subscribe(&client_id, market_id).await;

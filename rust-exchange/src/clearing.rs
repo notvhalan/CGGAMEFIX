@@ -8,7 +8,7 @@ use crate::websocket::{WsBroadcaster, WsMessage};
 pub struct ClearingService {
     pool: PgPool,
     wallet: WalletService,
-    fill_rx: mpsc::UnboundedReceiver<Vec<Fill>>,
+    fill_rx: mpsc::UnboundedReceiver<FillBatch>,
     ws_broadcaster: WsBroadcaster,
 }
 
@@ -16,7 +16,7 @@ impl ClearingService {
     pub fn new(
         pool: PgPool,
         wallet: WalletService,
-        fill_rx: mpsc::UnboundedReceiver<Vec<Fill>>,
+        fill_rx: mpsc::UnboundedReceiver<FillBatch>,
         ws_broadcaster: WsBroadcaster,
     ) -> Self {
         Self {
@@ -28,108 +28,58 @@ impl ClearingService {
     }
 
     pub async fn run(mut self) {
-        while let Some(fills) = self.fill_rx.recv().await {
-            if let Err(e) = self.process_fills(fills).await {
+        while let Some(batch) = self.fill_rx.recv().await {
+            if let Err(e) = self.process_fill_batch(batch).await {
                 tracing::error!("Failed to process fills: {}", e);
             }
         }
     }
 
-    async fn process_fills(&self, fills: Vec<Fill>) -> anyhow::Result<()> {
+    async fn process_fill_batch(&self, batch: FillBatch) -> anyhow::Result<()> {
+        let FillBatch {
+            fills,
+            cancel_after_settlement,
+        } = batch;
+
         if fills.is_empty() {
+            for order_id in cancel_after_settlement {
+                self.cancel_unbooked_order(order_id).await?;
+            }
             return Ok(());
         }
 
-        // Track which markets need orderbook updates
-        let mut affected_markets = std::collections::HashSet::new();
         let taker_order_id = fills.first().map(|f| f.taker_order_id);
+        let mut trade_messages = Vec::with_capacity(fills.len());
         
         // Track taker's cumulative actual fill cost (for budget-aware IOC release)
         let mut taker_actual_cost_pence: i64 = 0;
+        let mut tx = self.pool.begin().await?;
         
-        // Process each fill in a transaction
+        // Process all fills from one taker order in one transaction.
         for fill in fills {
-            let mut tx = self.pool.begin().await?;
-
-            // 1. Update maker order quantity using the engine's 0.001-contract dust rule.
-            let maker_update = sqlx::query!(
+            let maker_order = sqlx::query!(
                 r#"
-                UPDATE orders
-                SET qty_remaining_micros = CASE
-                        WHEN qty_remaining_micros - $1 < 1000 THEN 0
-                        ELSE qty_remaining_micros - $1
-                    END,
-                    status = CASE
-                        WHEN qty_remaining_micros - $1 < 1000 THEN 'MATCHED'
-                        ELSE 'PARTIALLY_MATCHED'
-                    END,
-                    updated_at = NOW()
-                WHERE id = $2
+                SELECT user_id, side as "side: Side", limit_price_yes_pts, qty_remaining_micros
+                FROM orders
+                WHERE id = $1
                   AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-                  AND qty_remaining_micros >= $1
+                  AND qty_remaining_micros > 0
+                FOR UPDATE
                 "#,
-                fill.qty_micros,
                 fill.maker_order_id
             )
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
-            if maker_update.rows_affected() == 0 {
-                anyhow::bail!(
+
+            let Some(maker_order) = maker_order else {
+                tracing::debug!(
                     "Maker fill rejected for missing, terminal, or insufficient order: maker_order_id={}, taker_order_id={}, trade_id={}",
                     fill.maker_order_id,
                     fill.taker_order_id,
                     fill.trade_id
                 );
-            }
-
-            // 2. Update taker order quantity using the same terminal dust rule.
-            let taker_update = sqlx::query!(
-                r#"
-                UPDATE orders
-                SET qty_remaining_micros = CASE
-                        WHEN qty_remaining_micros - $1 < 1000 THEN 0
-                        ELSE qty_remaining_micros - $1
-                    END,
-                    status = CASE
-                        WHEN qty_remaining_micros - $1 < 1000 THEN 'MATCHED'
-                        ELSE 'PARTIALLY_MATCHED'
-                    END,
-                    updated_at = NOW()
-                WHERE id = $2
-                  AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-                  AND qty_remaining_micros >= $1
-                "#,
-                fill.qty_micros,
-                fill.taker_order_id
-            )
-            .execute(&mut *tx)
-            .await?;
-            if taker_update.rows_affected() == 0 {
-                anyhow::bail!(
-                    "Taker fill rejected for missing, terminal, or insufficient order: taker_order_id={}, maker_order_id={}, trade_id={}",
-                    fill.taker_order_id,
-                    fill.maker_order_id,
-                    fill.trade_id
-                );
-            }
-
-            // 3. Get order details for wallet settlement
-            let maker_order = sqlx::query!(
-                r#"
-                SELECT user_id, side as "side: Side", limit_price_yes_pts
-                FROM orders
-                WHERE id = $1
-                "#,
-                fill.maker_order_id
-            )
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!(
-                "Maker order row missing after update: maker_order_id={}, taker_order_id={}, trade_id={}",
-                fill.maker_order_id,
-                fill.taker_order_id,
-                fill.trade_id
-            ))?;
+                continue;
+            };
 
             let taker_order = sqlx::query!(
                 r#"
@@ -138,24 +88,98 @@ impl ClearingService {
                     market_id,
                     side as "side: Side",
                     limit_price_yes_pts,
+                    qty_remaining_micros,
                     COALESCE(liability_pence, 0)::bigint as "liability_pence!",
                     COALESCE(time_in_force::text, 'GTC') as "time_in_force!"
                 FROM orders
                 WHERE id = $1
+                  AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+                  AND qty_remaining_micros > 0
+                FOR UPDATE
                 "#,
                 fill.taker_order_id
             )
             .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!(
-                "Taker order row missing after update: taker_order_id={}, maker_order_id={}, trade_id={}",
-                fill.taker_order_id,
-                fill.maker_order_id,
-                fill.trade_id
-            ))?;
-            
-            affected_markets.insert(taker_order.market_id);
+            .await?;
 
+            let Some(taker_order) = taker_order else {
+                tracing::debug!(
+                    "Taker fill rejected for missing, terminal, or insufficient order: taker_order_id={}, maker_order_id={}, trade_id={}",
+                    fill.taker_order_id,
+                    fill.maker_order_id,
+                    fill.trade_id
+                );
+                continue;
+            };
+
+            let settle_qty = fill
+                .qty_micros
+                .min(maker_order.qty_remaining_micros)
+                .min(taker_order.qty_remaining_micros);
+
+            if settle_qty <= 0 {
+                tracing::debug!(
+                    "Fill skipped because no settleable quantity remains: taker_order_id={}, maker_order_id={}, trade_id={}",
+                    fill.taker_order_id,
+                    fill.maker_order_id,
+                    fill.trade_id
+                );
+                continue;
+            }
+
+            if settle_qty < fill.qty_micros {
+                tracing::warn!(
+                    "Fill clamped from {} to {} micros due to DB remaining quantity: taker_order_id={}, maker_order_id={}, trade_id={}",
+                    fill.qty_micros,
+                    settle_qty,
+                    fill.taker_order_id,
+                    fill.maker_order_id,
+                    fill.trade_id
+                );
+            }
+
+            // 1. Update maker order quantity using the engine's 0.001-contract dust rule.
+            sqlx::query!(
+                r#"
+                UPDATE orders
+                SET qty_remaining_micros = CASE
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 0
+                        ELSE qty_remaining_micros - $1
+                    END,
+                    status = CASE
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 'MATCHED'
+                        ELSE 'PARTIALLY_MATCHED'
+                    END,
+                    updated_at = NOW()
+                WHERE id = $2
+                "#,
+                settle_qty,
+                fill.maker_order_id
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            // 2. Update taker order quantity using the same terminal dust rule.
+            sqlx::query!(
+                r#"
+                UPDATE orders
+                SET qty_remaining_micros = CASE
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 0
+                        ELSE qty_remaining_micros - $1
+                    END,
+                    status = CASE
+                        WHEN qty_remaining_micros - $1 < 1000 THEN 'MATCHED'
+                        ELSE 'PARTIALLY_MATCHED'
+                    END,
+                    updated_at = NOW()
+                WHERE id = $2
+                "#,
+                settle_qty,
+                fill.taker_order_id
+            )
+            .execute(&mut *tx)
+            .await?;
+            
             // 4. Settle maker wallet (move from open lock to position lock, handle price improvement)
             self.wallet.settle_fill(
                 &mut tx,
@@ -163,7 +187,7 @@ impl ClearingService {
                 maker_order.side,
                 maker_order.limit_price_yes_pts,
                 fill.exec_yes_pts,
-                fill.qty_micros,
+                settle_qty,
             ).await?;
 
             // 5. Settle taker wallet
@@ -183,12 +207,12 @@ impl ClearingService {
                         taker_order.user_id,
                         taker_order.side,
                         fill.exec_yes_pts,
-                        fill.qty_micros,
+                        settle_qty,
                     )
                     .await?;
 
                 // Write position close to wallet ledger_entries
-                let yes_notional_pence = calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts);
+                let yes_notional_pence = calculate_risk_buyyes(settle_qty, fill.exec_yes_pts);
                 let cashflow_pence: i64 = match taker_order.side {
                     Side::SellYes => yes_notional_pence,
                     Side::BuyYes => -(yes_notional_pence as i64),
@@ -229,7 +253,7 @@ impl ClearingService {
                     )
                     .execute(&mut *tx)
                     .await?;
-                    tracing::info!(
+                    tracing::debug!(
                         "Ledger: POSITION_CLOSE trade={} user={} cashflow={}p",
                         fill.trade_id, taker_order.user_id, cashflow_pence
                     );
@@ -251,7 +275,7 @@ impl ClearingService {
                         taker_order.side,
                         effective_limit,
                         fill.exec_yes_pts,
-                        fill.qty_micros,
+                        settle_qty,
                     )
                     .await?;
             }
@@ -259,8 +283,8 @@ impl ClearingService {
             // Track actual cost for budget-aware IOC release
             if taker_is_ioc_budget {
                 let fill_cost = match taker_order.side {
-                    Side::BuyYes => calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts),
-                    Side::SellYes => calculate_risk_sellyes(fill.qty_micros, fill.exec_yes_pts),
+                    Side::BuyYes => calculate_risk_buyyes(settle_qty, fill.exec_yes_pts),
+                    Side::SellYes => calculate_risk_sellyes(settle_qty, fill.exec_yes_pts),
                 };
                 taker_actual_cost_pence += fill_cost;
             }
@@ -268,18 +292,18 @@ impl ClearingService {
             // 6. Charge taker fee
             let taker_risk_for_fill = if taker_reduce_only {
                 // Reduce-only close fees track YES notional (same basis as quote endpoint).
-                calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts)
+                calculate_risk_buyyes(settle_qty, fill.exec_yes_pts)
             } else {
                 match taker_order.side {
-                    Side::BuyYes => calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts),
-                    Side::SellYes => calculate_risk_sellyes(fill.qty_micros, fill.exec_yes_pts),
+                    Side::BuyYes => calculate_risk_buyyes(settle_qty, fill.exec_yes_pts),
+                    Side::SellYes => calculate_risk_sellyes(settle_qty, fill.exec_yes_pts),
                 }
             };
             let fee = calculate_fee(taker_risk_for_fill);
             self.wallet.charge_fee(&mut tx, taker_order.user_id, fee).await?;
 
             // 7. Insert trade record
-            let cost_pence = calculate_risk_buyyes(fill.qty_micros, fill.exec_yes_pts);
+            let cost_pence = calculate_risk_buyyes(settle_qty, fill.exec_yes_pts);
             let side_str = match taker_order.side {
                 Side::BuyYes => "BUY_YES",
                 Side::SellYes => "SELL_YES",
@@ -293,22 +317,22 @@ impl ClearingService {
                     side, price_yes_pts, qty_micros, notional_pence,
                     taker_fee_pence, executed_at
                 )
-                SELECT
+                VALUES (
                     $1, $2, $3,
-                    $4, $5, o.market_id,
-                    $6::order_side_new, $7, $8, $9,
-                    $10, NOW()
-                FROM orders o
-                WHERE o.id = $2
+                    $4, $5, $6,
+                    $7::order_side_new, $8, $9, $10,
+                    $11, NOW()
+                )
                 "#,
                 fill.trade_id,
                 fill.maker_order_id,
                 fill.taker_order_id,
                 fill.maker_user_id,
                 fill.taker_user_id,
+                taker_order.market_id,
                 side_str as &str,
                 fill.exec_yes_pts as i32,
-                fill.qty_micros,
+                settle_qty,
                 cost_pence,
                 fee as i32
             )
@@ -350,22 +374,20 @@ impl ClearingService {
             )
             .bind(taker_order.market_id)
             .bind(fill.exec_yes_pts)
-            .bind(fill.qty_micros)
+            .bind(settle_qty)
             .execute(&mut *tx)
             .await?;
 
             // 8. Update positions
             // Maker is always opening a new independent lot (never reduce_only).
             // Taker is reduce_only when this is a cashout/close order.
-            self.update_position(&mut tx, taker_order.market_id, fill.maker_user_id, fill.maker_side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id, false).await?;
-            self.update_position(&mut tx, taker_order.market_id, fill.taker_user_id, taker_order.side, fill.exec_yes_pts, fill.qty_micros, fill.trade_id, taker_reduce_only).await?;
+            self.update_position(&mut tx, taker_order.market_id, fill.maker_user_id, fill.maker_side, fill.exec_yes_pts, settle_qty, fill.trade_id, false).await?;
+            self.update_position(&mut tx, taker_order.market_id, fill.taker_user_id, taker_order.side, fill.exec_yes_pts, settle_qty, fill.trade_id, taker_reduce_only).await?;
 
-            tx.commit().await?;
-
-            tracing::info!(
+            tracing::debug!(
                 "Settled fill: trade_id={}, qty={}, price={}",
                 fill.trade_id,
-                fill.qty_micros,
+                settle_qty,
                 fill.exec_yes_pts
             );
 
@@ -378,29 +400,99 @@ impl ClearingService {
                 maker_user_id: fill.maker_user_id,
                 taker_user_id: fill.taker_user_id,
                 price_yes_pts: fill.exec_yes_pts,
-                qty_micros: fill.qty_micros,
+                qty_micros: settle_qty,
                 notional_pence: cost_pence,
                 taker_side: taker_order.side,
                 maker_fee_pence: 0, // TODO: maker fees
                 taker_fee_pence: fee as i32,
             };
-            self.ws_broadcaster.broadcast_to_market(taker_order.market_id, trade_msg).await;
+            trade_messages.push((taker_order.market_id, trade_msg));
+        }
+
+        tx.commit().await?;
+
+        for (market_id, trade_msg) in trade_messages {
+            self.ws_broadcaster.broadcast_to_market(market_id, trade_msg).await;
         }
 
         if let Some(taker_order_id) = taker_order_id {
-            if let Some(market_id) = self.finalize_ioc_remainder(taker_order_id, taker_actual_cost_pence).await? {
-                affected_markets.insert(market_id);
-            }
+            self.finalize_ioc_remainder(taker_order_id, taker_actual_cost_pence).await?;
         }
 
-        // 10. Broadcast orderbook updates for all affected markets
-        for market_id in affected_markets {
-            tracing::info!("Broadcasting orderbook update for market {}", market_id);
-            if let Err(e) = self.ws_broadcaster.send_orderbook_snapshot(market_id).await {
-                tracing::error!("Failed to send orderbook snapshot after fills: {}", e);
-            }
+        for order_id in cancel_after_settlement {
+            self.cancel_unbooked_order(order_id).await?;
         }
 
+        Ok(())
+    }
+
+    async fn cancel_unbooked_order(&self, order_id: uuid::Uuid) -> anyhow::Result<()> {
+        let order = sqlx::query!(
+            r#"
+            SELECT
+                user_id,
+                qty_remaining_micros,
+                qty_original_micros,
+                COALESCE(liability_pence, 0)::bigint as "liability_pence!",
+                COALESCE(status::text, 'OPEN') as "status!"
+            FROM orders
+            WHERE id = $1
+            "#,
+            order_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(order) = order else {
+            return Ok(());
+        };
+
+        if (order.status != "OPEN" && order.status != "PARTIALLY_MATCHED")
+            || order.qty_remaining_micros <= 0
+        {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query!(
+            r#"
+            UPDATE orders
+            SET status = 'CANCELLED',
+                qty_remaining_micros = 0,
+                updated_at = NOW()
+            WHERE id = $1
+              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+              AND qty_remaining_micros > 0
+            "#,
+            order_id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if updated.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
+
+        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
+            ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
+                / order.qty_original_micros as i128) as i64
+        } else {
+            0
+        };
+
+        if release_pence > 0 {
+            self.wallet
+                .release_order_lock(&mut tx, order.user_id, release_pence)
+                .await?;
+        }
+
+        tx.commit().await?;
+        tracing::debug!(
+            "Cancelled deferred self-trade-blocked order {} and released {}p",
+            order_id,
+            release_pence
+        );
         Ok(())
     }
 
@@ -497,7 +589,7 @@ impl ClearingService {
         }
 
         tx.commit().await?;
-        tracing::info!(
+        tracing::debug!(
             "IOC taker order {} finalized: released {}p (actual_cost={}p, liability={}p, status={})",
             taker_order_id,
             release_pence,
@@ -579,7 +671,7 @@ impl ClearingService {
                     .await {
                         tracing::warn!("Failed to write dust fee to fee_revenue: {}", e);
                     } else {
-                        tracing::info!(
+                        tracing::debug!(
                             "Dust fee: {} micros snapped → {} pence in fee_revenue (trade={})",
                             would_remain, dust_fee_pence, trade_id
                         );
@@ -623,9 +715,46 @@ impl ClearingService {
             .bind(incoming_side)
             .execute(&mut **tx)
             .await?;
+
+            let signed_qty_micros = match side {
+                Side::BuyYes => remaining_to_open,
+                Side::SellYes => -remaining_to_open,
+            };
+            let exec_yes_pts_i32 = exec_yes_pts as i32;
+
+            sqlx::query!(
+                r#"
+                INSERT INTO positions (user_id, market_id, net_qty_micros, avg_open_price_yes_pts, updated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (user_id, market_id) DO UPDATE
+                SET net_qty_micros = positions.net_qty_micros + $3,
+                    avg_open_price_yes_pts = CASE
+                        WHEN ABS(positions.net_qty_micros) + $5 > 0 THEN
+                            (
+                                (
+                                    ABS(positions.net_qty_micros)::bigint
+                                    * positions.avg_open_price_yes_pts::bigint
+                                )
+                                + ($5::bigint * $4::bigint)
+                            )
+                            / (ABS(positions.net_qty_micros) + $5)
+                        ELSE 0
+                    END,
+                    updated_at = NOW()
+                "#,
+                user_id,
+                market_id,
+                signed_qty_micros,
+                exec_yes_pts_i32,
+                remaining_to_open
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            return Ok(());
         }
 
-        // 3) Recompute snapshot from open lots (authoritative).
+        // Reduce-only closes mutate existing lots; recompute that path from lots.
         let open_lots = sqlx::query!(
             r#"
             SELECT side::text as "side!", entry_price_yes_pts, qty_remaining_micros

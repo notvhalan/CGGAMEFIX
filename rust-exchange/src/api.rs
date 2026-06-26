@@ -84,7 +84,7 @@ pub async fn create_order(
 ) -> Result<Json<CreateOrderResponse>, AppError> {
     let user_id = require_user_id(&headers)?;
     
-    tracing::info!(
+    tracing::debug!(
         "Creating order for user_id: {}, market: {}, side: {:?}, risk: {} pence, price: {} pts, reduce_only: {}",
         user_id,
         req.market_id,
@@ -462,15 +462,27 @@ pub async fn get_positions(
             COALESCE(ob.best_ask_yes, $2)::bigint as "best_ask_yes!"
         FROM positions p
         JOIN markets m ON p.market_id = m.id
-        LEFT JOIN (
+        LEFT JOIN LATERAL (
             SELECT
-                market_id,
-                MAX(limit_price_yes_pts) FILTER (WHERE side::text = 'BUY_YES') AS best_bid_yes,
-                MIN(limit_price_yes_pts) FILTER (WHERE side::text = 'SELL_YES') AS best_ask_yes
-            FROM orders
-            WHERE status IN ('OPEN', 'PARTIALLY_MATCHED')
-            GROUP BY market_id
-        ) ob ON ob.market_id = p.market_id
+                (
+                    SELECT limit_price_yes_pts
+                    FROM orders
+                    WHERE market_id = p.market_id
+                      AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+                      AND side::text = 'BUY_YES'
+                    ORDER BY limit_price_yes_pts DESC
+                    LIMIT 1
+                ) AS best_bid_yes,
+                (
+                    SELECT limit_price_yes_pts
+                    FROM orders
+                    WHERE market_id = p.market_id
+                      AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+                      AND side::text = 'SELL_YES'
+                    ORDER BY limit_price_yes_pts ASC
+                    LIMIT 1
+                ) AS best_ask_yes
+        ) ob ON TRUE
         WHERE p.user_id = $1
           AND COALESCE(p.net_qty_micros, 0) <> 0
         ORDER BY p.updated_at DESC

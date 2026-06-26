@@ -5,6 +5,12 @@ import { formatProbability } from '~/lib/format';
 const PRICE_SCALE = 10_000_000;
 const CONTRACT_SCALE = 1_000_000;
 
+const orderBookDebug = (...args: unknown[]) => {
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('GF_WS_DEBUG') === '1') {
+    console.debug(...args);
+  }
+};
+
 // Format contracts from microcontracts
 function formatContracts(contractsMicros: bigint | string | number): string {
   const contracts = typeof contractsMicros === 'bigint' 
@@ -45,8 +51,8 @@ export function OrderBook({ orderBook: initialOrderBook, marketId, onPriceClick,
     ws.subscribe(`book:${marketId}`);
 
     const handler = (data: any) => {
-      console.log('[OrderBook] 📖 Received book_update:', data);
-      console.log('[OrderBook] Bids:', data?.bids?.length, 'Asks:', data?.asks?.length);
+      orderBookDebug('[OrderBook] 📖 Received book_update:', data);
+      orderBookDebug('[OrderBook] Bids:', data?.bids?.length, 'Asks:', data?.asks?.length);
       setOrderBook(data);
     };
 

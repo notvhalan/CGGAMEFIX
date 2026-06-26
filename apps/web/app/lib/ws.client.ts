@@ -1,4 +1,10 @@
 // Native WebSocket client for Rust exchange
+const wsDebug = (...args: unknown[]) => {
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('GF_WS_DEBUG') === '1') {
+    console.debug(...args);
+  }
+};
+
 const getWSUrl = () => {
   if (typeof window === 'undefined') return 'ws://localhost:3001/ws';
   
@@ -52,22 +58,22 @@ export class WSClient {
 
   connect(): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      console.log('[Rust WS] ℹ️ Already connected');
+      wsDebug('[Rust WS] ℹ️ Already connected');
       return;
     }
     
     if (this.ws?.readyState === WebSocket.CONNECTING) {
-      console.log('[Rust WS] ℹ️ Connection already in progress');
+      wsDebug('[Rust WS] ℹ️ Connection already in progress');
       return;
     }
 
     try {
       const wsUrl = getWSUrl();
-      console.log('[Rust WS] 🔌 Creating new WebSocket connection to', wsUrl);
+      wsDebug('[Rust WS] 🔌 Creating new WebSocket connection to', wsUrl);
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[Rust WS] ✅ Connected to', wsUrl, 'ReadyState:', this.ws?.readyState);
+        wsDebug('[Rust WS] ✅ Connected to', wsUrl, 'ReadyState:', this.ws?.readyState);
         this.reconnectAttempts = 0;
         this.emit('connected', { url: wsUrl });
         
@@ -75,15 +81,15 @@ export class WSClient {
         requestAnimationFrame(() => {
           // Resubscribe to all markets
           this.subscribedMarkets.forEach(marketId => {
-            console.log('[Rust WS] 📡 Resubscribing to market:', marketId);
+            wsDebug('[Rust WS] 📡 Resubscribing to market:', marketId);
             const message = { type: 'subscribe', market_id: marketId };
             const payload = JSON.stringify(message);
-            console.log('[Rust WS] 📤 Attempting to send from onopen:', payload, 'ReadyState:', this.ws?.readyState);
+            wsDebug('[Rust WS] 📤 Attempting to send from onopen:', payload, 'ReadyState:', this.ws?.readyState);
             
             try {
               if (this.ws?.readyState === WebSocket.OPEN) {
                 this.ws.send(payload);
-                console.log('[Rust WS] ✅ Message sent successfully');
+                wsDebug('[Rust WS] ✅ Message sent successfully');
               } else {
                 console.error('[Rust WS] ❌ WebSocket not ready in onopen callback, state:', this.ws?.readyState);
               }
@@ -100,7 +106,7 @@ export class WSClient {
       this.ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data) as RustWSEvent;
-          console.log('[Rust WS] 📨 Message received:', message.type, message);
+          wsDebug('[Rust WS] 📨 Message received:', message.type, message);
 
           if (message.type === 'trade') {
             // Convert Rust format to frontend format
@@ -121,7 +127,7 @@ export class WSClient {
             };
             this.emit('trade', trade);
           } else if (message.type === 'orderbook_snapshot' || message.type === 'orderbook_delta') {
-            console.log('[Rust WS] 📖 Orderbook update:', message.type, 'bids:', message.bids?.length, 'asks:', message.asks?.length);
+            wsDebug('[Rust WS] 📖 Orderbook update:', message.type, 'bids:', message.bids?.length, 'asks:', message.asks?.length);
             // Convert Rust orderbook format to frontend format
             const orderBook = {
               bids: message.bids?.map((bid: any) => ({
@@ -139,12 +145,12 @@ export class WSClient {
                 orders: ask.num_orders || 1
               })) || []
             };
-            console.log('[Rust WS] 📊 Emitting book_update with', orderBook.bids.length, 'bids,', orderBook.asks.length, 'asks');
+            wsDebug('[Rust WS] 📊 Emitting book_update with', orderBook.bids.length, 'bids,', orderBook.asks.length, 'asks');
             this.emit('book_update', orderBook);
           } else if (message.type === 'pong') {
             // Heartbeat response
           } else {
-            console.log('[Rust WS] ⚠️ Unknown message type:', message.type);
+            wsDebug('[Rust WS] ⚠️ Unknown message type:', message.type);
           }
         } catch (error) {
           console.error('[Rust WS] Failed to parse message:', error);
@@ -158,7 +164,7 @@ export class WSClient {
       };
 
       this.ws.onclose = () => {
-        console.log('[Rust WS] Disconnected');
+        wsDebug('[Rust WS] Disconnected');
         this.stopPingInterval();
         this.attemptReconnect();
       };
@@ -176,7 +182,7 @@ export class WSClient {
 
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * this.reconnectAttempts;
-    console.log(`[Rust WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    wsDebug(`[Rust WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
     this.reconnectTimeout = setTimeout(() => {
       this.connect();
@@ -205,7 +211,7 @@ export class WSClient {
         type: message.type.toLowerCase(),
         ...('market_id' in message && { market_id: message.market_id })
       });
-      console.log('[Rust WS] 📤 Sending:', payload);
+      wsDebug('[Rust WS] 📤 Sending:', payload);
       this.ws.send(payload);
     } else {
       console.warn('[Rust WS] ⚠️ Cannot send message, WebSocket not open. State:', this.ws?.readyState);
@@ -234,14 +240,14 @@ export class WSClient {
       return;
     }
 
-    console.log('[Rust WS] 📡 Subscribe request for topic:', topic, '→ market:', marketId);
+    wsDebug('[Rust WS] 📡 Subscribe request for topic:', topic, '→ market:', marketId);
     
     if (!this.subscribedMarkets.has(marketId)) {
       this.subscribedMarkets.add(marketId);
-      console.log('[Rust WS] ✉️ Sending Subscribe message to Rust for market:', marketId);
+      wsDebug('[Rust WS] ✉️ Sending Subscribe message to Rust for market:', marketId);
       this.sendMessage({ type: 'Subscribe', market_id: marketId });
     } else {
-      console.log('[Rust WS] ℹ️ Already subscribed to market:', marketId);
+      wsDebug('[Rust WS] ℹ️ Already subscribed to market:', marketId);
     }
   }
 
@@ -251,7 +257,7 @@ export class WSClient {
 
     if (this.subscribedMarkets.has(marketId)) {
       this.subscribedMarkets.delete(marketId);
-      console.log('[Rust WS] Unsubscribing from market:', marketId);
+      wsDebug('[Rust WS] Unsubscribing from market:', marketId);
       this.sendMessage({ type: 'Unsubscribe', market_id: marketId });
     }
   }

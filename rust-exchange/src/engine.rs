@@ -12,7 +12,7 @@ use crate::websocket::WsBroadcaster;
 pub struct MatchingEngine {
     books: HashMap<Uuid, OrderBook>,
     command_rx: mpsc::UnboundedReceiver<EngineCommand>,
-    fill_tx: mpsc::UnboundedSender<Vec<Fill>>,
+    fill_tx: mpsc::UnboundedSender<FillBatch>,
     db: PgPool,
     wallet: WalletService,
     ws_broadcaster: WsBroadcaster,
@@ -22,7 +22,7 @@ pub struct MatchingEngine {
 impl MatchingEngine {
     pub fn new(
         command_rx: mpsc::UnboundedReceiver<EngineCommand>,
-        fill_tx: mpsc::UnboundedSender<Vec<Fill>>,
+        fill_tx: mpsc::UnboundedSender<FillBatch>,
         db: PgPool,
         wallet: WalletService,
         ws_broadcaster: WsBroadcaster,
@@ -122,6 +122,8 @@ impl MatchingEngine {
         };
 
         let mut total_uncross_fills: Vec<Fill> = Vec::new();
+        let mut expired_orders: Vec<Uuid> = Vec::new();
+        let mut cancel_after_settlement: Vec<Uuid> = Vec::new();
 
         // Keep matching while the book is crossed
         loop {
@@ -130,7 +132,7 @@ impl MatchingEngine {
                 None => break, // Book is healthy
             };
 
-            tracing::warn!(
+            tracing::debug!(
                 "Market {} is crossed: best_bid={} >= best_ask={}. Running uncross.",
                 market_id, best_bid, best_ask
             );
@@ -145,7 +147,7 @@ impl MatchingEngine {
             // Remove taker from bids before matching
             book.cancel_order(taker.order_id, Side::BuyYes, best_bid);
 
-            let (fills, remaining, _skipped) = book.match_order(
+            let (fills, remaining, skipped) = book.match_order(
                 taker.order_id,
                 taker.user_id,
                 Side::BuyYes,
@@ -155,7 +157,7 @@ impl MatchingEngine {
             );
 
             // Re-rest any unfilled portion
-            if remaining > 0 {
+            if remaining > 0 && skipped.is_empty() {
                 book.add_order(
                     crate::orderbook::BookOrder {
                         order_id: taker.order_id,
@@ -166,10 +168,24 @@ impl MatchingEngine {
                     Side::BuyYes,
                     best_bid,
                 );
+            } else if remaining > 0 {
+                tracing::debug!(
+                    "Uncross expired {} micros for order {} because it was blocked by self-trade prevention",
+                    remaining,
+                    taker.order_id
+                );
+                if fills.is_empty() {
+                    expired_orders.push(taker.order_id);
+                } else {
+                    cancel_after_settlement.push(taker.order_id);
+                }
             }
 
             if fills.is_empty() {
-                break; // No more matches possible (self-trade or empty book)
+                if remaining > 0 && !skipped.is_empty() {
+                    continue;
+                }
+                break; // No more matches possible (empty book or budget exhausted)
             }
 
             total_uncross_fills.extend(fills);
@@ -180,10 +196,89 @@ impl MatchingEngine {
                 "Market {} uncrossed: generated {} fills",
                 market_id, total_uncross_fills.len()
             );
-            let _ = self.fill_tx.send(total_uncross_fills);
+            let _ = self.fill_tx.send(FillBatch {
+                fills: total_uncross_fills,
+                cancel_after_settlement,
+            });
             self.request_orderbook_broadcast(market_id);
+        } else {
+            expired_orders.extend(cancel_after_settlement);
         }
 
+        for order_id in expired_orders {
+            self.cancel_unbooked_order(order_id).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn cancel_unbooked_order(&self, order_id: Uuid) -> anyhow::Result<()> {
+        let order = sqlx::query!(
+            r#"
+            SELECT
+                user_id,
+                qty_remaining_micros,
+                qty_original_micros,
+                COALESCE(liability_pence, 0)::bigint as "liability_pence!",
+                COALESCE(status::text, 'OPEN') as "status!"
+            FROM orders
+            WHERE id = $1
+            "#,
+            order_id
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let Some(order) = order else {
+            return Ok(());
+        };
+
+        if (order.status != "OPEN" && order.status != "PARTIALLY_MATCHED")
+            || order.qty_remaining_micros <= 0
+        {
+            return Ok(());
+        }
+
+        let mut tx = self.db.begin().await?;
+        let updated = sqlx::query!(
+            r#"
+            UPDATE orders
+            SET status = 'CANCELLED',
+                qty_remaining_micros = 0,
+                updated_at = NOW()
+            WHERE id = $1
+              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
+              AND qty_remaining_micros > 0
+            "#,
+            order_id
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if updated.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
+
+        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
+            ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
+                / order.qty_original_micros as i128) as i64
+        } else {
+            0
+        };
+
+        if release_pence > 0 {
+            self.wallet
+                .release_order_lock(&mut tx, order.user_id, release_pence)
+                .await?;
+        }
+
+        tx.commit().await?;
+        tracing::debug!(
+            "Cancelled unbooked self-trade-blocked order {} and released {}p",
+            order_id,
+            release_pence
+        );
         Ok(())
     }
 
@@ -199,9 +294,14 @@ impl MatchingEngine {
         
         if should_broadcast {
             self.last_broadcast.insert(market_id, now);
+            let Some(book) = self.books.get(&market_id) else {
+                return;
+            };
+            let bids = book.levels(Side::BuyYes, 50);
+            let asks = book.levels(Side::SellYes, 50);
             let ws = self.ws_broadcaster.clone();
             tokio::spawn(async move {
-                if let Err(e) = ws.broadcast_orderbook_update(market_id).await {
+                if let Err(e) = ws.broadcast_orderbook_levels(market_id, bids, asks).await {
                     tracing::error!("Failed to broadcast orderbook update: {}", e);
                 }
             });
@@ -230,7 +330,7 @@ impl MatchingEngine {
     }
 
     async fn process_submit(&mut self, cmd: MatchCommand) -> anyhow::Result<()> {
-        tracing::info!("Processing order: order_id={}, market_id={}, side={:?}, limit_yes_pts={}, qty_micros={}", 
+        tracing::debug!("Processing order: order_id={}, market_id={}, side={:?}, limit_yes_pts={}, qty_micros={}", 
             cmd.order_id, cmd.market_id, cmd.side, cmd.limit_yes_pts, cmd.qty_micros);
         
         let market_id = cmd.market_id;
@@ -241,7 +341,7 @@ impl MatchingEngine {
                 .entry(market_id)
                 .or_insert_with(|| OrderBook::new(market_id));
 
-            tracing::info!("Book state before match: bids={}, asks={}", book.bids_count(), book.asks_count());
+            tracing::trace!("Book state before match: bids={}, asks={}", book.bids_count(), book.asks_count());
             
             let (fills, remaining, self_trade_skipped) = book.match_order(
                 cmd.order_id,
@@ -255,8 +355,11 @@ impl MatchingEngine {
             // Add remaining to book (if GTC and above minimum size)
             // Dust (< 0.001 contracts) is treated as trading fee, not added to book
             const MIN_CONTRACT_MICROS: i64 = 1_000;
-            if remaining >= MIN_CONTRACT_MICROS && cmd.time_in_force == TimeInForce::Gtc {
-                tracing::info!("Adding remaining qty {} to book at price {}", remaining, cmd.limit_yes_pts);
+            if remaining >= MIN_CONTRACT_MICROS
+                && cmd.time_in_force == TimeInForce::Gtc
+                && self_trade_skipped.is_empty()
+            {
+                tracing::debug!("Adding remaining qty {} to book at price {}", remaining, cmd.limit_yes_pts);
                 book.add_order(
                     crate::orderbook::BookOrder {
                         order_id: cmd.order_id,
@@ -267,9 +370,18 @@ impl MatchingEngine {
                     cmd.side,
                     cmd.limit_yes_pts,
                 );
-                tracing::info!("Book state after add: bids={}, asks={}", book.bids_count(), book.asks_count());
+                tracing::trace!("Book state after add: bids={}, asks={}", book.bids_count(), book.asks_count());
+            } else if remaining >= MIN_CONTRACT_MICROS
+                && cmd.time_in_force == TimeInForce::Gtc
+                && !self_trade_skipped.is_empty()
+            {
+                tracing::debug!(
+                    "Self-trade prevention expired {} micros instead of resting crossed remainder for order {}",
+                    remaining,
+                    cmd.order_id
+                );
             } else if remaining > 0 && remaining < MIN_CONTRACT_MICROS {
-                tracing::info!("Dust remaining {} micros treated as trading fee", remaining);
+                tracing::debug!("Dust remaining {} micros treated as trading fee", remaining);
             }
 
             (fills, remaining, self_trade_skipped)
@@ -282,29 +394,40 @@ impl MatchingEngine {
         // Do not cancel another open order as a side effect of submitting a
         // crossing order from the same user.
         if !self_trade_skipped.is_empty() {
-            tracing::warn!(
+            tracing::debug!(
                 "Self-trade prevention: {} own orders skipped for user {}",
                 self_trade_skipped.len(), cmd.user_id
             );
         }
 
+        let had_fills = !fills.is_empty();
+
         // Send fills to clearing
-        if !fills.is_empty() {
-            tracing::info!("Order matched! Generated {} fills", fills.len());
-            let _ = self.fill_tx.send(fills);
+        if had_fills {
+            tracing::debug!("Order matched: generated {} fills", fills.len());
+            let _ = self.fill_tx.send(FillBatch {
+                fills,
+                cancel_after_settlement: Vec::new(),
+            });
             orderbook_changed = true;
         } else {
-            tracing::info!("No matches found for order");
+            tracing::trace!("No matches found for order");
         }
 
         // Handle remaining qty
         const MIN_CONTRACT_MICROS_OUTER: i64 = 1_000;
-        if remaining >= MIN_CONTRACT_MICROS_OUTER && cmd.time_in_force == TimeInForce::Gtc {
+        if remaining >= MIN_CONTRACT_MICROS_OUTER
+            && cmd.time_in_force == TimeInForce::Gtc
+            && self_trade_skipped.is_empty()
+        {
             orderbook_changed = true;
         }
 
-        // IOC orders must never rest on book; if nothing filled they should become terminal immediately.
-        if cmd.time_in_force == TimeInForce::Ioc && remaining == cmd.qty_micros {
+        // IOC orders and fully self-trade-blocked GTC orders do not rest on book.
+        if (cmd.time_in_force == TimeInForce::Ioc || !self_trade_skipped.is_empty())
+            && !had_fills
+            && remaining == cmd.qty_micros
+        {
             self.finalize_unfilled_ioc(cmd.order_id).await?;
         }
 
@@ -394,7 +517,7 @@ impl MatchingEngine {
         }
 
         tx.commit().await?;
-        tracing::info!(
+        tracing::debug!(
             "IOC order {} cancelled unfilled and {}p released",
             order_id,
             release_pence
@@ -403,7 +526,7 @@ impl MatchingEngine {
     }
 
     async fn handle_cancel(&mut self, cmd: CancelCommand) -> anyhow::Result<()> {
-        tracing::info!(
+        tracing::debug!(
             "Processing cancel: order_id={}, user_id={}",
             cmd.order_id,
             cmd.user_id
@@ -443,78 +566,43 @@ impl MatchingEngine {
             return Ok(());
         }
 
-        let mut should_broadcast = false;
+        let mut removed_from_book = false;
         if let Some(book) = self.books.get_mut(&order.market_id) {
             if book
                 .cancel_order(cmd.order_id, order.side, order.limit_price_yes_pts)
                 .is_some()
             {
-                should_broadcast = true;
-                tracing::info!("Removed order {} from in-memory book", cmd.order_id);
+                removed_from_book = true;
+                tracing::debug!("Removed order {} from in-memory book", cmd.order_id);
             }
         }
 
         if order.status != "OPEN" && order.status != "PARTIALLY_MATCHED" {
-            tracing::info!(
+            tracing::debug!(
                 "Cancel skipped for order {} because status is {}",
                 cmd.order_id,
                 order.status
             );
-            if should_broadcast {
+            if removed_from_book {
                 self.request_orderbook_broadcast(order.market_id);
             }
             return Ok(());
         }
 
-        let mut tx = self.db.begin().await?;
-
-        let update_result = sqlx::query!(
-            r#"
-            UPDATE orders
-            SET status = 'CANCELLED',
-                qty_remaining_micros = 0,
-                updated_at = NOW()
-            WHERE id = $1
-              AND status IN ('OPEN', 'PARTIALLY_MATCHED')
-            "#,
+        // DB cancellation goes through the same FIFO channel as fills. That prevents
+        // a cancel from terminaling an order before earlier engine fills settle.
+        let _ = self.fill_tx.send(FillBatch {
+            fills: Vec::new(),
+            cancel_after_settlement: vec![cmd.order_id],
+        });
+        tracing::debug!(
+            "Order {} queued for DB cancel after pending settlements",
             cmd.order_id
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        if update_result.rows_affected() == 0 {
-            tx.rollback().await?;
-            tracing::info!(
-                "Cancel became no-op for order {} (already terminal in DB)",
-                cmd.order_id
-            );
-            if should_broadcast {
-                self.request_orderbook_broadcast(order.market_id);
-            }
-            return Ok(());
-        }
-
-        let release_pence = if order.liability_pence > 0 && order.qty_original_micros > 0 {
-            ((order.liability_pence as i128 * order.qty_remaining_micros as i128)
-                / order.qty_original_micros as i128) as i64
-        } else {
-            0
-        };
-
-        if release_pence > 0 {
-            self.wallet
-                .release_order_lock(&mut tx, order.user_id, release_pence)
-                .await?;
-        }
-
-        tx.commit().await?;
-        tracing::info!(
-            "Order {} cancelled and {}p released",
-            cmd.order_id,
-            release_pence
         );
 
-        self.request_orderbook_broadcast(order.market_id);
+        if removed_from_book {
+            self.request_orderbook_broadcast(order.market_id);
+        }
         Ok(())
     }
 }

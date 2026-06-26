@@ -121,6 +121,12 @@ pub struct Fill {
     pub maker_side: Side,
 }
 
+#[derive(Debug, Clone)]
+pub struct FillBatch {
+    pub fills: Vec<Fill>,
+    pub cancel_after_settlement: Vec<Uuid>,
+}
+
 /// Quote response for UI
 #[derive(Debug, Serialize)]
 pub struct QuoteResponse {

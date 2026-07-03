@@ -10,6 +10,7 @@ import {
 export default function AdminOverview() {
   const parentData = useRouteLoaderData<any>("routes/admin");
   const markets: any[] = parentData?.markets || [];
+  const analytics = parentData?.adminSnapshot?.analytics;
   const botStatus = parentData?.botStatus;
   const sessions: any[] = botStatus?.sessions || [];
 
@@ -113,22 +114,24 @@ export default function AdminOverview() {
         )}
       </Card>
 
-      <div className="flex items-center gap-3 pt-2">
-        <div className="h-px flex-1 bg-admin-border" />
-        <Badge variant="amber">Demo analytics</Badge>
-        <div className="h-px flex-1 bg-admin-border" />
-      </div>
-
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-        The analytics below contain sample data and must not be used for operational decisions.
-      </div>
-
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Card title="Trades Over Time" subtitle="Demo data">
-          <MiniChart data={tradesOverTimeData} color="#10b981" height={140} label="trades/hr" lastUpdated="Sample series" />
+        <Card title="Trades Over Time" subtitle={analytics ? "Live admin snapshot" : "Sample fallback"}>
+          <MiniChart
+            data={(analytics?.tradesOverTime || tradesOverTimeData.map((d) => d.count)).map((count: number, index: number) => ({ time: `${index}:00`, count }))}
+            color="#10b981"
+            height={140}
+            label="trades/hr"
+            lastUpdated={analytics ? "Live series" : "Sample series"}
+          />
         </Card>
-        <Card title="Concurrent Users" subtitle={`Demo value: ${kpiData.concurrentUsers}`}>
-          <MiniChart data={concurrentUsersData} color="#3b82f6" height={140} label="users" lastUpdated="Sample series" />
+        <Card title="User Activity" subtitle={analytics ? `${analytics.totalUsers || 0} known accounts` : `Sample value: ${kpiData.concurrentUsers}`}>
+          <MiniChart
+            data={(parentData?.adminSnapshot?.users?.length ? parentData.adminSnapshot.users.slice(0, 24).map((u: any) => Number(u.ordersLast10m || 0) + Number(u.tradesLast10m || 0)) : concurrentUsersData.map((d) => d.count)).map((count: number, index: number) => ({ time: `${index}:00`, count }))}
+            color="#3b82f6"
+            height={140}
+            label="activity"
+            lastUpdated={analytics ? "Live series" : "Sample series"}
+          />
         </Card>
       </div>
     </div>

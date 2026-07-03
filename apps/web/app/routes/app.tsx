@@ -69,6 +69,17 @@ export default function AppLayout() {
 
   // Always use compact/terminal styling for consistent padding
   const headerHeight = 48;
+  const isMarketsIndex = location.pathname === '/app/markets';
+
+  if (isMarketsIndex) {
+    return (
+      <div className="layout-container layout-container-markets-index">
+        <main className="main-content main-content-terminal">
+          <Outlet />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="layout-container">

@@ -34,6 +34,31 @@ export async function getMarkets() {
   return fetchApi<{ markets: any[] }>('/v1/markets');
 }
 
+export async function getAdminSnapshot(request: Request) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{
+    markets: any[];
+    users: any[];
+    orders: any[];
+    trades: any[];
+    auditLogs: any[];
+    riskSettings: any[];
+    analytics: any;
+    botStatus: any;
+  }>('/v1/admin/snapshot', {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+}
+
+export async function saveAdminRiskControls(request: Request, riskSettings: any[]) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<{ success: boolean; riskSettings: any[] }>('/v1/admin/risk-controls', {
+    method: 'POST',
+    headers: cookie ? { Cookie: cookie } : {},
+    body: JSON.stringify({ riskSettings }),
+  });
+}
+
 export async function getMarket(marketId: string) {
   return fetchApi<any>(`/v1/markets/${marketId}`);
 }

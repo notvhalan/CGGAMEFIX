@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "@remix-run/react";
+import { useNavigate, useParams, useRouteLoaderData } from "@remix-run/react";
 import { Card, Badge, StatusBadge, Tabs, DataTable } from "~/components/admin/ui";
 import {
   markets,
@@ -13,9 +13,25 @@ import {
 export default function AdminMarketDetail() {
   const { marketId } = useParams();
   const navigate = useNavigate();
+  const parentData = useRouteLoaderData<any>("routes/admin");
   const [activeTab, setActiveTab] = useState('overview');
 
-  const market = markets.find(m => m.id === marketId);
+  const liveMarket = parentData?.adminSnapshot?.markets?.find((m: any) => m.id === marketId);
+  const mockMarket = markets.find(m => m.id === marketId);
+  const market = liveMarket
+    ? {
+        ...mockMarket,
+        ...liveMarket,
+        name: liveMarket.name || liveMarket.question || liveMarket.id,
+        category: liveMarket.category || mockMarket?.category || 'General',
+        subcategory: liveMarket.subcategory || mockMarket?.subcategory || 'Unclassified',
+        maturityDate: liveMarket.maturityDate ? new Date(liveMarket.maturityDate).toLocaleDateString('en-GB') : mockMarket?.maturityDate || '-',
+        openInterest: liveMarket.openInterest || mockMarket?.openInterest || 0,
+        uniqueTraders: liveMarket.uniqueTraders || mockMarket?.uniqueTraders || 0,
+        forLiquidity: liveMarket.forLiquidity || mockMarket?.forLiquidity || 0,
+        layLiquidity: liveMarket.layLiquidity || mockMarket?.layLiquidity || 0,
+      }
+    : mockMarket;
 
   if (!market) {
     return (
@@ -31,10 +47,14 @@ export default function AdminMarketDetail() {
     );
   }
 
-  const marketOrders = orders.filter(o => o.marketId === marketId);
-  const marketTrades = trades.filter(t => t.marketId === marketId);
-  const marketBots = botSessions.filter(b => b.marketId === marketId);
-  const marketAudit = auditLogs.filter(a => a.target.includes(market.name.slice(0, 15)));
+  const snapshotOrders = parentData?.adminSnapshot?.orders || [];
+  const snapshotTrades = parentData?.adminSnapshot?.trades || [];
+  const snapshotAudit = parentData?.adminSnapshot?.auditLogs || [];
+  const snapshotSessions = parentData?.adminSnapshot?.botStatus?.sessions || parentData?.botStatus?.sessions || [];
+  const marketOrders: any[] = (snapshotOrders.length ? snapshotOrders : orders).filter((o: any) => o.marketId === marketId);
+  const marketTrades: any[] = (snapshotTrades.length ? snapshotTrades : trades).filter((t: any) => t.marketId === marketId);
+  const marketBots: any[] = (snapshotSessions.length ? snapshotSessions : botSessions).filter((b: any) => b.marketId === marketId);
+  const marketAudit: any[] = (snapshotAudit.length ? snapshotAudit : auditLogs).filter((a: any) => String(a.target || '').includes(market.id) || String(a.target || '').includes(market.name.slice(0, 15)));
 
   const tabs = [
     { id: 'overview', label: 'Overview' },
@@ -158,15 +178,15 @@ export default function AdminMarketDetail() {
               </div>
               <div className="flex justify-between">
                 <span className="text-sm text-admin-text-dim">Active Bot Sessions</span>
-                <span className="text-sm font-mono text-admin-text">{marketBots.filter(b => b.status === 'running').length}</span>
+                <span className="text-sm font-mono text-admin-text">{marketBots.filter((b: any) => b.status === 'running').length}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm text-admin-text-dim">Total Bot Orders</span>
-                <span className="text-sm font-mono text-admin-text">{marketBots.reduce((s, b) => s + b.ordersPlaced, 0).toLocaleString()}</span>
+                <span className="text-sm font-mono text-admin-text">{marketBots.reduce((s: number, b: any) => s + Number(b.ordersPlaced || 0), 0).toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-sm text-admin-text-dim">Bot Taker Trades</span>
-                <span className="text-sm font-mono text-admin-text">{marketBots.reduce((s, b) => s + b.takerTrades, 0)}</span>
+                <span className="text-sm font-mono text-admin-text">{marketBots.reduce((s: number, b: any) => s + Number(b.takerTrades || 0), 0)}</span>
               </div>
             </div>
           </Card>
@@ -234,18 +254,18 @@ export default function AdminMarketDetail() {
           <DataTable
             data={marketOrders}
             columns={[
-              { key: 'id', header: 'ID', render: o => <span className="font-mono text-xs text-admin-text-dim">{o.id}</span>, width: '60px' },
-              { key: 'userEmail', header: 'User', render: o => (
+              { key: 'id', header: 'ID', render: (o: any) => <span className="font-mono text-xs text-admin-text-dim">{String(o.id)}</span>, width: '60px' },
+              { key: 'userEmail', header: 'User', render: (o: any) => (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-admin-text truncate">{o.userEmail}</span>
                   {o.isBot && <Badge variant="cyan">Bot</Badge>}
                 </div>
               ), width: '200px' },
-              { key: 'side', header: 'Side', render: o => <Badge variant={o.side === 'BUY_YES' ? 'green' : 'red'}>{o.side}</Badge>, width: '100px' },
-              { key: 'price', header: 'Price', render: o => <span className="font-mono">{(o.price * 100).toFixed(0)}p</span>, align: 'right', width: '70px' },
-              { key: 'quantity', header: 'Qty', render: o => <span className="font-mono">{o.quantity}</span>, align: 'right', width: '60px' },
-              { key: 'filled', header: 'Filled', render: o => <span className="font-mono">{o.filled}/{o.quantity}</span>, align: 'right', width: '80px' },
-              { key: 'status', header: 'Status', render: o => <StatusBadge status={o.status} />, width: '90px' },
+              { key: 'side', header: 'Side', render: (o: any) => <Badge variant={o.side === 'BUY_YES' || o.side === 'FOR' ? 'green' : 'red'}>{o.side}</Badge>, width: '100px' },
+              { key: 'price', header: 'Price', render: (o: any) => <span className="font-mono">{(Number(o.price || 0) * 100).toFixed(0)}p</span>, align: 'right', width: '70px' },
+              { key: 'quantity', header: 'Qty', render: (o: any) => <span className="font-mono">{o.quantity}</span>, align: 'right', width: '60px' },
+              { key: 'filled', header: 'Filled', render: (o: any) => <span className="font-mono">{o.filled}/{o.quantity}</span>, align: 'right', width: '80px' },
+              { key: 'status', header: 'Status', render: (o: any) => <StatusBadge status={o.status} />, width: '90px' },
             ]}
             emptyMessage="No orders for this market"
             compact
@@ -258,13 +278,13 @@ export default function AdminMarketDetail() {
           <DataTable
             data={marketTrades}
             columns={[
-              { key: 'id', header: 'ID', render: t => <span className="font-mono text-xs text-admin-text-dim">{t.id}</span>, width: '60px' },
-              { key: 'price', header: 'Price', render: t => <span className="font-mono">{(t.price * 100).toFixed(0)}p</span>, align: 'right', width: '70px' },
-              { key: 'quantity', header: 'Qty', render: t => <span className="font-mono">{t.quantity}</span>, align: 'right', width: '70px' },
-              { key: 'buyerEmail', header: 'Buyer', render: t => <span className="text-sm text-emerald-400 truncate">{t.buyerEmail}</span>, width: '180px' },
-              { key: 'sellerEmail', header: 'Seller', render: t => <span className="text-sm text-red-400 truncate">{t.sellerEmail}</span>, width: '180px' },
-              { key: 'timestamp', header: 'Time', render: t => <span className="text-xs text-admin-text-dim">{t.timestamp.split('T')[1]?.slice(0, 8)}</span>, width: '80px' },
-              { key: 'isBot', header: '', render: t => t.isBot ? <Badge variant="cyan">Bot</Badge> : null, width: '60px' },
+              { key: 'id', header: 'ID', render: (t: any) => <span className="font-mono text-xs text-admin-text-dim">{String(t.id)}</span>, width: '60px' },
+              { key: 'price', header: 'Price', render: (t: any) => <span className="font-mono">{(Number(t.price || 0) * 100).toFixed(0)}p</span>, align: 'right', width: '70px' },
+              { key: 'quantity', header: 'Qty', render: (t: any) => <span className="font-mono">{t.quantity}</span>, align: 'right', width: '70px' },
+              { key: 'buyerEmail', header: 'Buyer', render: (t: any) => <span className="text-sm text-emerald-400 truncate">{t.buyerEmail}</span>, width: '180px' },
+              { key: 'sellerEmail', header: 'Seller', render: (t: any) => <span className="text-sm text-red-400 truncate">{t.sellerEmail}</span>, width: '180px' },
+              { key: 'timestamp', header: 'Time', render: (t: any) => <span className="text-xs text-admin-text-dim">{t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : '-'}</span>, width: '80px' },
+              { key: 'isBot', header: '', render: (t: any) => t.isBot ? <Badge variant="cyan">Bot</Badge> : null, width: '60px' },
             ]}
             emptyMessage="No trades for this market"
             compact
@@ -278,7 +298,7 @@ export default function AdminMarketDetail() {
             <div className="p-8 text-center text-admin-text-dim">No bot sessions for this market</div>
           ) : (
             <div className="divide-y divide-admin-border">
-              {marketBots.map(bot => (
+              {marketBots.map((bot: any) => (
                 <div key={bot.id} className="p-4 flex items-center justify-between hover:bg-admin-surface-2 transition-colors">
                   <div>
                     <div className="text-sm font-medium text-admin-text">{bot.botEmail}</div>
@@ -307,11 +327,11 @@ export default function AdminMarketDetail() {
           <DataTable
             data={marketAudit}
             columns={[
-              { key: 'timestamp', header: 'Time', render: a => <span className="text-xs text-admin-text-dim">{a.timestamp.split('T')[1]?.slice(0, 5)}</span>, width: '60px' },
-              { key: 'adminUser', header: 'Admin', render: a => <span className="text-sm text-admin-text">{a.adminUser}</span>, width: '180px' },
-              { key: 'actionType', header: 'Action', render: a => <Badge variant="blue">{a.actionType.replace(/_/g, ' ')}</Badge>, width: '130px' },
-              { key: 'summary', header: 'Summary', render: a => <span className="text-sm text-admin-text-dim">{a.summary}</span> },
-              { key: 'result', header: 'Result', render: a => <StatusBadge status={a.result} />, width: '90px' },
+              { key: 'timestamp', header: 'Time', render: (a: any) => <span className="text-xs text-admin-text-dim">{a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : '-'}</span>, width: '60px' },
+              { key: 'adminUser', header: 'Admin', render: (a: any) => <span className="text-sm text-admin-text">{a.adminUser}</span>, width: '180px' },
+              { key: 'actionType', header: 'Action', render: (a: any) => <Badge variant="blue">{String(a.actionType || '').replace(/_/g, ' ')}</Badge>, width: '130px' },
+              { key: 'summary', header: 'Summary', render: (a: any) => <span className="text-sm text-admin-text-dim">{a.summary}</span> },
+              { key: 'result', header: 'Result', render: (a: any) => <StatusBadge status={a.result} />, width: '90px' },
             ]}
             emptyMessage="No audit events for this market"
             compact

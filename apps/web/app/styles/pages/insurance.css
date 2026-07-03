@@ -156,6 +156,350 @@
   font-family: var(--font-mono, monospace);
 }
 
+/* Life category static hazard-market mockup */
+.layout-container:has(.hazard-market-page) {
+  --header-height: 0px;
+  background: #0d0f16;
+}
+
+.layout-container:has(.hazard-market-page) > .header,
+.layout-container:has(.hazard-market-page) .sidebar,
+.layout-container:has(.hazard-market-page) .mobile-bottom-nav {
+  display: none !important;
+}
+
+.layout-container:has(.hazard-market-page) .main-content {
+  padding: 0;
+  background: #0d0f16;
+  overflow: hidden;
+}
+
+.hazard-market-page {
+  min-height: 100vh;
+  background: #0d0f16;
+  color: #e8ebf2;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.hazard-market-page * {
+  box-sizing: border-box;
+}
+
+.hazard-top-nav {
+  height: 52px;
+  background: #080b12;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 20px;
+}
+
+.hazard-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #5b8dff;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.hazard-logo {
+  width: 15px;
+  height: 15px;
+  background: #5b8dff;
+  border-radius: 3px;
+  transform: rotate(45deg);
+  box-shadow: 0 0 16px rgba(91, 141, 255, 0.35);
+}
+
+.hazard-nav-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.hazard-nav-pill {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 7px;
+  color: #8a93a5;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.hazard-nav-pill.active {
+  color: #dce7ff;
+  background: rgba(91, 141, 255, 0.22);
+}
+
+.hazard-nav-pill.trade {
+  color: #5ff0a8;
+  background: rgba(33, 193, 122, 0.16);
+}
+
+.hazard-search {
+  height: 36px;
+  max-width: 400px;
+  flex: 1 1 360px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: #10151f;
+  color: #5b6474;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hazard-readouts {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: #8a93a5;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.hazard-readouts strong {
+  color: #e8ebf2;
+  font-weight: 700;
+}
+
+.hazard-market-panel {
+  width: min(1280px, calc(100vw - 8px));
+  margin: 0 auto;
+  background: #0a0e17;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  min-height: calc(100vh - 52px);
+}
+
+.hazard-market-header {
+  height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.hazard-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hazard-market-header h1 {
+  margin: 0;
+  color: #e8ebf2;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 750;
+}
+
+.hazard-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #21c17a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.hazard-market-meta {
+  color: #8a93a5;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+}
+
+.hazard-category-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.hazard-category-row {
+  min-height: 103px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 18px 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.hazard-category-row:first-child {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.hazard-monogram {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  color: #0a0e17;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.hazard-name-block {
+  width: 230px;
+  min-width: 230px;
+}
+
+.hazard-category-name {
+  color: #e8ebf2;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hazard-category-question {
+  margin-top: 4px;
+  color: #6b7486;
+  font-size: 12px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hazard-price-block {
+  width: 104px;
+  min-width: 104px;
+}
+
+.hazard-prob,
+.hazard-change,
+.hazard-stats-block,
+.hazard-market-meta {
+  font-family: ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.hazard-prob {
+  color: #e8ebf2;
+  font-size: 24px;
+  line-height: 1.05;
+  font-weight: 700;
+}
+
+.hazard-change {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.hazard-change.up {
+  color: #21c17a;
+}
+
+.hazard-change.down {
+  color: #f0616d;
+}
+
+.hazard-chart-block {
+  flex: 1 1 auto;
+  height: 66px;
+  min-width: 240px;
+}
+
+.hazard-sparkline {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hazard-stats-block {
+  width: 150px;
+  min-width: 150px;
+  text-align: right;
+  color: #8a93a5;
+  font-size: 11px;
+  line-height: 1.9;
+}
+
+.hazard-bid {
+  color: #21c17a;
+  font-weight: 800;
+}
+
+.hazard-ask {
+  color: #f0616d;
+  font-weight: 800;
+}
+
+.hazard-stat-sep {
+  color: #5b6474;
+}
+
+.hazard-resolve {
+  color: #6b7486;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.hazard-trade-btn {
+  height: 34px;
+  min-width: 69px;
+  padding: 0 15px;
+  border-radius: 7px;
+  border: 1px solid rgba(91, 141, 255, 0.35);
+  background: rgba(91, 141, 255, 0.14);
+  color: #a8c0ff;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: default;
+  white-space: nowrap;
+}
+
+@media (max-width: 920px) {
+  .hazard-top-nav {
+    gap: 10px;
+  }
+
+  .hazard-readouts {
+    display: none;
+  }
+
+  .hazard-category-row {
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .hazard-name-block {
+    width: 190px;
+    min-width: 190px;
+  }
+
+  .hazard-chart-block {
+    min-width: 180px;
+  }
+}
+
+@media (max-width: 720px) {
+  .hazard-market-page {
+    min-width: 720px;
+  }
+}
+
 /* ── Category page ───────────────────────────────────────── */
 .ins-category-shell {
   display: flex;

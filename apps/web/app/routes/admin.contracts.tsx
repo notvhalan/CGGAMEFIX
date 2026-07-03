@@ -108,7 +108,8 @@ export default function AdminContracts() {
         <Card title="2. Configure Series" subtitle="Set parameters and subcategory">
           <Form method="post" className="space-y-4">
             <input type="hidden" name="action" value="bulk-create-insurance" />
-            <input type="hidden" name="insCategory" value={insSubcategory || insCategory} />
+            <input type="hidden" name="insCategory" value={insCategory} />
+            <input type="hidden" name="insConditionName" value={SUBCATEGORIES[insCategory]?.find(s => s.slug === insSubcategory)?.label || ''} />
             <input type="hidden" name="insCustomName" value={insCustomName} />
 
             {/* Subcategory */}

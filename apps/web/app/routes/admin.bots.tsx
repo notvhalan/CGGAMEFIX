@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { Form, useRouteLoaderData, useNavigation, useActionData } from "@remix-run/react";
 import { Card, Badge, StatusBadge, Button } from "~/components/admin/ui";
 import { BOT_PRESETS, SUBCATEGORIES, INS_SERIES } from "./admin";
@@ -72,6 +72,7 @@ export default function AdminBots() {
 
   // ─── Category state ────────────────────────────────────────────────────────
   const [selectedCategory, setSelectedCategory] = useState('life');
+  const [selectedSubcatsByCategory, setSelectedSubcatsByCategory] = useState<Record<string, string[]>>({});
 
   // ─── Shared bot parameters ─────────────────────────────────────────────────
   const [midPrice, setMidPrice] = useState(50);
@@ -136,6 +137,44 @@ export default function AdminBots() {
     }
     return result;
   }, [subcatMarkets, hardcodedSubcats]);
+
+  const selectedSubcategoryLabels = useMemo(() => {
+    const stored = selectedSubcatsByCategory[selectedCategory];
+    if (stored !== undefined) return stored.filter(label => subcats.some(s => s.label === label));
+    return subcats.map(s => s.label);
+  }, [selectedSubcatsByCategory, selectedCategory, subcats]);
+
+  useEffect(() => {
+    setSelectedSubcatsByCategory(prev => {
+      const validLabels = subcats.map(s => s.label);
+      const existing = prev[selectedCategory];
+      if (existing !== undefined) {
+        const filtered = existing.filter(label => validLabels.includes(label));
+        if (filtered.length === existing.length) return prev;
+        return { ...prev, [selectedCategory]: filtered };
+      }
+      if (validLabels.length === 0) return prev;
+      return { ...prev, [selectedCategory]: validLabels };
+    });
+  }, [selectedCategory, subcats]);
+
+  const toggleSelectedSubcategory = useCallback((label: string) => {
+    setSelectedSubcatsByCategory(prev => {
+      const current = prev[selectedCategory] || subcats.map(s => s.label);
+      const next = current.includes(label)
+        ? current.filter(item => item !== label)
+        : [...current, label];
+      return { ...prev, [selectedCategory]: next };
+    });
+  }, [selectedCategory, subcats]);
+
+  const selectAllSubcategories = useCallback(() => {
+    setSelectedSubcatsByCategory(prev => ({ ...prev, [selectedCategory]: subcats.map(s => s.label) }));
+  }, [selectedCategory, subcats]);
+
+  const clearSelectedSubcategories = useCallback(() => {
+    setSelectedSubcatsByCategory(prev => ({ ...prev, [selectedCategory]: [] }));
+  }, [selectedCategory]);
 
   // Curve values: category → conditionName → number[] (one value per market)
   // Initialized lazily — defaults are created on-demand by getCurve() when
@@ -235,11 +274,15 @@ export default function AdminBots() {
   // Build subcategoryCurve JSON for the form: conditionName => midPercent[] per market
   const subcategoryCurveJson = useMemo(() => {
     const curve: Record<string, number[]> = {};
-    for (const s of subcats) {
+    for (const s of subcats.filter(s => selectedSubcategoryLabels.includes(s.label))) {
       curve[s.label] = getCurve(s.label);
     }
     return JSON.stringify(curve);
-  }, [subcats, getCurve]);
+  }, [subcats, selectedSubcategoryLabels, getCurve]);
+
+  const selectedSubcategoriesJson = useMemo(() => {
+    return JSON.stringify(selectedSubcategoryLabels);
+  }, [selectedSubcategoryLabels]);
 
   // Category market counts
   const catMarketCounts = useMemo(() => {
@@ -249,6 +292,10 @@ export default function AdminBots() {
     }
     return counts;
   }, [insuranceMarkets]);
+
+  const selectedMarketCount = useMemo(() => {
+    return selectedSubcategoryLabels.reduce((sum, label) => sum + (subcatMarkets[label]?.length || 0), 0);
+  }, [selectedSubcategoryLabels, subcatMarkets]);
 
   // ─── Input class helpers ───────────────────────────────────────────────────
   const inputCls = "w-full bg-admin-surface-2 border border-admin-border rounded-lg px-3 py-1.5 text-sm text-admin-text font-mono focus:outline-none focus:border-blue-500/50";
@@ -395,6 +442,7 @@ export default function AdminBots() {
                 <input type="hidden" name="sinePeriodTicks" value={sinePeriodTicks} />
                 <input type="hidden" name="meanReversion" value={meanReversion} />
                 <input type="hidden" name="subcategoryCurve" value={subcategoryCurveJson} />
+                <input type="hidden" name="selectedSubcategories" value={selectedSubcategoriesJson} />
 
                 <div>
                   <label className={labelCls}>Insurance Category</label>
@@ -408,6 +456,56 @@ export default function AdminBots() {
                   </select>
                 </div>
 
+                <div className="rounded-lg border border-admin-border bg-admin-surface-2 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <label className={labelCls}>Subcategories to Start</label>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={selectAllSubcategories}
+                        className="rounded border border-admin-border bg-admin-surface px-2 py-1 text-[10px] text-admin-text-dim hover:text-admin-text"
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearSelectedSubcategories}
+                        className="rounded border border-admin-border bg-admin-surface px-2 py-1 text-[10px] text-admin-text-dim hover:text-admin-text"
+                      >
+                        None
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-48 space-y-1 overflow-y-auto pr-1 admin-scrollbar">
+                    {subcats.map((s) => {
+                      const mktCount = subcatMarkets[s.label]?.length || 0;
+                      const checked = selectedSubcategoryLabels.includes(s.label);
+                      return (
+                        <label
+                          key={s.slug}
+                          className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+                            checked
+                              ? 'border-blue-500/30 bg-blue-500/10 text-admin-text'
+                              : 'border-admin-border bg-admin-surface text-admin-text-dim hover:text-admin-text'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelectedSubcategory(s.label)}
+                            className="accent-blue-500"
+                          />
+                          <span className="min-w-0 flex-1 truncate">{s.label}</span>
+                          <span className="font-mono text-[10px] text-admin-text-dim">{mktCount} mkts</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 text-[10px] text-admin-text-dim">
+                    Only selected market types in this category will receive bot sessions.
+                  </div>
+                </div>
+
                 <div>
                   <label className={labelCls}>
                     Bot Users: <span className="text-blue-400">{userCount}</span> / {botUsers.length || 20}
@@ -418,12 +516,16 @@ export default function AdminBots() {
 
                 <div className="p-3 bg-admin-surface-2 rounded-lg border border-admin-border text-xs text-admin-text-dim">
                   <div className="flex justify-between mb-1">
-                    <span>Total markets:</span>
+                    <span>Selected markets:</span>
+                    <span className="text-admin-text font-mono">{selectedMarketCount}</span>
+                  </div>
+                  <div className="flex justify-between mb-1">
+                    <span>Total category markets:</span>
                     <span className="text-admin-text font-mono">{catMarketCounts[selectedCategory] || 0}</span>
                   </div>
                   <div className="flex justify-between mb-1">
-                    <span>Subcategories:</span>
-                    <span className="text-admin-text font-mono">{subcats.length}</span>
+                    <span>Selected subcategories:</span>
+                    <span className="text-admin-text font-mono">{selectedSubcategoryLabels.length}/{subcats.length}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Bots per market:</span>
@@ -431,8 +533,8 @@ export default function AdminBots() {
                   </div>
                 </div>
 
-                <Button type="submit" variant="primary" className="w-full" disabled={isStarting || (catMarketCounts[selectedCategory] || 0) === 0 || botUsers.length === 0}>
-                  {isStarting ? '⏳ Starting...' : `🚀 Start Bots on All ${catMarketCounts[selectedCategory] || 0} Markets`}
+                <Button type="submit" variant="primary" className="w-full" disabled={isStarting || selectedMarketCount === 0 || botUsers.length === 0}>
+                  {isStarting ? 'Starting...' : `Start Bots on ${selectedMarketCount} Selected Markets`}
                 </Button>
               </Form>
             </Card>

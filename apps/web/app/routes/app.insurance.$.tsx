@@ -863,9 +863,200 @@ function IntervalTradeModal({
 }
 
 // ── Main component ─────────────────────────────────────────────────────────
+type HazardCategory = {
+  mono: string;
+  tint: string;
+  name: string;
+  question: string;
+  prob: number;
+  chg24h: number;
+  contracts: number;
+  bid: string;
+  ask: string;
+  vol: string;
+  resolveDate: string;
+};
+
+const HAZARD_CATEGORIES: HazardCategory[] = [
+  {
+    mono: "PC",
+    tint: "#5b8dff",
+    name: "Paralysis Cure",
+    question: "Will a cure for paralysis be discovered before 23 Mar 2026?",
+    prob: 80.1,
+    chg24h: 4.2,
+    contracts: 36,
+    bid: "79.6",
+    ask: "81.1",
+    vol: "48.2k",
+    resolveDate: "23 Mar 2026",
+  },
+  {
+    mono: "LE",
+    tint: "#b98bff",
+    name: "Life Expectancy Milestone",
+    question: "Will average UK life expectancy exceed 85 by 2030?",
+    prob: 62.4,
+    chg24h: -1.8,
+    contracts: 24,
+    bid: "61.9",
+    ask: "63.1",
+    vol: "31.7k",
+    resolveDate: "31 Dec 2030",
+  },
+  {
+    mono: "AB",
+    tint: "#ff8ba7",
+    name: "Alzheimer's Breakthrough",
+    question: "Will an approved disease-modifying drug launch before 2027?",
+    prob: 44.3,
+    chg24h: 2.6,
+    contracts: 18,
+    bid: "43.8",
+    ask: "45.0",
+    vol: "22.9k",
+    resolveDate: "30 Jun 2027",
+  },
+  {
+    mono: "CM",
+    tint: "#59c3d6",
+    name: "Cancer Mortality Rate",
+    question: "Will UK cancer mortality fall below 200 / 100k by 2028?",
+    prob: 51.7,
+    chg24h: 0.9,
+    contracts: 30,
+    bid: "51.1",
+    ask: "52.4",
+    vol: "39.1k",
+    resolveDate: "31 Dec 2028",
+  },
+  {
+    mono: "GT",
+    tint: "#f0b45b",
+    name: "Gene Therapy Approval",
+    question: "Will >=5 new gene therapies gain approval in 2026?",
+    prob: 37.9,
+    chg24h: -3.1,
+    contracts: 21,
+    bid: "37.2",
+    ask: "38.5",
+    vol: "18.4k",
+    resolveDate: "31 Dec 2026",
+  },
+  {
+    mono: "AR",
+    tint: "#f0616d",
+    name: "Antibiotic Resistance Crisis",
+    question: "Will a WHO-declared AMR emergency occur before 2027?",
+    prob: 28.5,
+    chg24h: 5.4,
+    contracts: 15,
+    bid: "27.9",
+    ask: "29.2",
+    vol: "14.6k",
+    resolveDate: "31 Dec 2026",
+  },
+];
+
+function hazardPoints(prob: number) {
+  return Array.from({ length: 24 }, (_, i) => {
+    const t = i / 23;
+    const logistic = 1 / (1 + Math.exp(-9 * (t - 0.42)));
+    const seed = Math.sin((i + 1) * 12.9898 + prob * 78.233) * 43758.5453;
+    const noise = (seed - Math.floor(seed) - 0.5) * 0.09 * prob;
+    const value = Math.max(2, Math.min(98, prob * logistic + noise));
+    return [t * 100, 37 - (value / 100) * 34] as const;
+  });
+}
+
+function HazardSparkline({ category }: { category: HazardCategory }) {
+  const points = hazardPoints(category.prob);
+  const line = points.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");
+  const area = `${line} L100 40 L0 40 Z`;
+  const color = category.chg24h >= 0 ? "#21c17a" : "#f0616d";
+
+  return (
+    <svg className="hazard-sparkline" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+      <path d={area} fill={color} opacity="0.14" />
+      <path d={line} fill="none" stroke={color} strokeWidth="1.75" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+function LifeHazardMarketMockup() {
+  return (
+    <div className="hazard-market-page">
+      <nav className="hazard-top-nav">
+        <Link to="/app" className="hazard-brand" aria-label="GameFix home">
+          <span className="hazard-logo" />
+          <span>GameFix</span>
+        </Link>
+        <div className="hazard-nav-pills">
+          <Link to="/app/markets" className="hazard-nav-pill active">Markets</Link>
+          <Link to="/app/positions" className="hazard-nav-pill">Portfolio</Link>
+          <Link to="/app/orders" className="hazard-nav-pill">Orders</Link>
+          <Link to="/app/markets" className="hazard-nav-pill trade">Trade</Link>
+        </div>
+        <div className="hazard-search">Search markets... (press / to focus)</div>
+        <div className="hazard-readouts">
+          <span>Available <strong>{"\u00a3"}30,922.94</strong></span>
+          <span>Equity <strong>{"\u00a3"}30,952.08</strong></span>
+        </div>
+      </nav>
+
+      <main className="hazard-market-panel">
+        <header className="hazard-market-header">
+          <div className="hazard-title-wrap">
+            <h1>Markets</h1>
+            <span className="hazard-live-pill"><span aria-hidden="true">●</span> Live</span>
+          </div>
+          <div className="hazard-market-meta">6 categories · 144 contracts</div>
+        </header>
+
+        <section className="hazard-category-list" aria-label="Prediction market categories">
+          {HAZARD_CATEGORIES.map((category) => {
+            const direction = category.chg24h >= 0 ? "up" : "down";
+            return (
+              <article className="hazard-category-row" key={category.mono}>
+                <div className="hazard-monogram" style={{ backgroundColor: category.tint }}>
+                  {category.mono}
+                </div>
+                <div className="hazard-name-block">
+                  <div className="hazard-category-name">{category.name}</div>
+                  <div className="hazard-category-question">{category.question}</div>
+                </div>
+                <div className="hazard-price-block">
+                  <div className="hazard-prob">{category.prob.toFixed(1)}%</div>
+                  <div className={`hazard-change ${direction}`}>
+                    {category.chg24h >= 0 ? "+" : ""}{category.chg24h.toFixed(1)}%
+                  </div>
+                </div>
+                <div className="hazard-chart-block">
+                  <HazardSparkline category={category} />
+                </div>
+                <div className="hazard-stats-block">
+                  <div>
+                    <span className="hazard-bid">{category.bid}&cent;</span>
+                    <span className="hazard-stat-sep"> / </span>
+                    <span className="hazard-ask">{category.ask}&cent;</span>
+                  </div>
+                  <div>{"\u00a3"}{category.vol} vol · {category.contracts}c</div>
+                  <div className="hazard-resolve">{category.resolveDate}</div>
+                </div>
+                <button className="hazard-trade-btn" type="button">Trade ›</button>
+              </article>
+            );
+          })}
+        </section>
+      </main>
+    </div>
+  );
+}
+
 export default function InsuranceCategoryPage() {
   const { slug, contracts, source, ladder, initialCondition, allConditionSummary } = useLoaderData<typeof loader>();
   const cfg = CATEGORY_CONFIG[slug] ?? CATEGORY_CONFIG.life;
+  if (slug === "life") return <LifeHazardMarketMockup />;
 
   const [selectedId,        setSelectedId]        = useState<string | null>(contracts[0]?.id ?? null);
   const [hoveredId,         setHoveredId]         = useState<string | null>(null);

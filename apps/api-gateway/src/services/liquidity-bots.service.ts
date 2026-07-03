@@ -399,6 +399,8 @@ export class LiquidityBotsService {
     meanReversion?: number;
     /** Per-subcategory ladder curves: conditionName => midPercent[] (one per market, sorted by maturity) */
     subcategoryCurve: Record<string, number[]>;
+    /** Optional condition_name allow-list inside the category. Empty/omitted means the whole category. */
+    selectedSubcategories?: string[];
   }) {
     this.validateBotConfig(params);
     if (typeof params.category !== 'string' || !params.category.trim()) {
@@ -406,6 +408,12 @@ export class LiquidityBotsService {
     }
     if (!params.subcategoryCurve || typeof params.subcategoryCurve !== 'object' || Array.isArray(params.subcategoryCurve)) {
       throw new Error('subcategoryCurve must be an object');
+    }
+    if (
+      params.selectedSubcategories !== undefined &&
+      (!Array.isArray(params.selectedSubcategories) || params.selectedSubcategories.some(value => typeof value !== 'string'))
+    ) {
+      throw new Error('selectedSubcategories must be an array of strings');
     }
     for (const curve of Object.values(params.subcategoryCurve)) {
       if (!Array.isArray(curve) || curve.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < 0.1 || value > 99.9)) {
@@ -418,6 +426,7 @@ export class LiquidityBotsService {
     this.stopping = false;
 
     const { category, userCount, subcategoryCurve, halfSpreadPts, levels, sizeContracts, takerChance } = params;
+    const selectedSubcategories = new Set((params.selectedSubcategories || []).map(value => value.trim()).filter(Boolean));
 
     // 1. Fetch all markets in this insurance category
     const marketsResult = await this.databaseService.query(
@@ -430,11 +439,21 @@ export class LiquidityBotsService {
       [category],
     );
 
-    if (marketsResult.rows.length === 0) {
-      throw new Error(`No active markets found for category '${category}'`);
+    const selectedMarkets = selectedSubcategories.size > 0
+      ? marketsResult.rows.filter((market: any) => selectedSubcategories.has(market.condition_name || 'default'))
+      : marketsResult.rows;
+
+    if (selectedMarkets.length === 0) {
+      const suffix = selectedSubcategories.size > 0
+        ? ` and subcategories: ${Array.from(selectedSubcategories).join(', ')}`
+        : '';
+      throw new Error(`No active markets found for category '${category}'${suffix}`);
     }
 
-    this.logger.info(`Found ${marketsResult.rows.length} markets in category '${category}'`);
+    this.logger.info(
+      `Found ${selectedMarkets.length}/${marketsResult.rows.length} markets in category '${category}'` +
+      (selectedSubcategories.size > 0 ? ` for subcategories: ${Array.from(selectedSubcategories).join(', ')}` : '')
+    );
 
     // 2. Fetch ALL bot users once
     this.logger.info(`Fetching up to ${userCount} bot users...`);
@@ -462,7 +481,7 @@ export class LiquidityBotsService {
 
     // 3. Group markets by condition_name and sort by maturity
     const grouped: Record<string, typeof marketsResult.rows> = {};
-    for (const market of marketsResult.rows) {
+    for (const market of selectedMarkets) {
       const condName = market.condition_name || 'default';
       if (!grouped[condName]) grouped[condName] = [];
       grouped[condName].push(market);
@@ -575,7 +594,7 @@ export class LiquidityBotsService {
     }
 
     this.logger.info(`✓ Category bot launch complete: ${marketCount} markets, ${totalBotsStarted} bot sessions`);
-    return { marketCount, totalBotsStarted, totalMarkets: marketsResult.rows.length };
+    return { marketCount, totalBotsStarted, totalMarkets: selectedMarkets.length };
   }
 
   private scheduleRefreshForMarket(bot: BotState, marketId: string) {

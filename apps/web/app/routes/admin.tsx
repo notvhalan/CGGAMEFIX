@@ -1,7 +1,7 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { Outlet, useActionData, useLoaderData, useLocation, useNavigate } from "@remix-run/react";
 import { getAuthenticatedUser } from "~/lib/auth.server";
-import { getMarkets } from "~/lib/api.server";
+import { getAdminSnapshot, getMarkets, saveAdminRiskControls } from "~/lib/api.server";
 import { AdminLayout } from "~/components/admin/layout/AdminLayout";
 import "~/styles/admin.css";
 
@@ -82,7 +82,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const isAdmin = user?.email ? ADMIN_EMAILS.includes(user.email) : false;
   
   try {
-    const data = await getMarkets();
+    let adminSnapshot: any = null;
+    let data = { markets: [] as any[] };
+    if (isAdmin) {
+      try {
+        adminSnapshot = await getAdminSnapshot(request);
+        data = { markets: adminSnapshot.markets || [] };
+      } catch (error) {
+        console.error('Failed to load admin snapshot:', error);
+        data = await getMarkets();
+      }
+    } else {
+      data = await getMarkets();
+    }
     
     let botUsers: any[] = [];
     let botStatus: any = null;
@@ -144,8 +156,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
       user,
       isAdmin,
       botUsers,
-      botStatus,
+      botStatus: adminSnapshot?.botStatus || botStatus,
       insuranceMarkets,
+      adminSnapshot,
     });
   } catch (error) {
     console.error('Failed to load markets:', error);
@@ -156,6 +169,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       botUsers: [],
       botStatus: null,
       insuranceMarkets: {},
+      adminSnapshot: null,
     });
   }
 }
@@ -286,6 +300,12 @@ export async function action({ request }: ActionFunctionArgs) {
     try {
       subcategoryCurve = JSON.parse(formData.get('subcategoryCurve') as string || '{}');
     } catch { /* fallback empty */ }
+    let selectedSubcategories: string[] = [];
+    try {
+      selectedSubcategories = JSON.parse(formData.get('selectedSubcategories') as string || '[]');
+      if (!Array.isArray(selectedSubcategories)) selectedSubcategories = [];
+      selectedSubcategories = selectedSubcategories.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    } catch { /* fallback all */ }
 
     if (!category) return json({ success: false, error: 'Category is required' }, { status: 400 });
 
@@ -300,6 +320,7 @@ export async function action({ request }: ActionFunctionArgs) {
           orderDelayMs, orderDelayVarianceMs, refreshIntervalMs, priceDriftPts, volatility,
           pricePathMode, trendPerTickPts, sineAmplitudePts, sinePeriodTicks, meanReversion,
           subcategoryCurve,
+          selectedSubcategories,
         }),
       });
       if (!response.ok) {
@@ -325,17 +346,24 @@ export async function action({ request }: ActionFunctionArgs) {
     if (!user?.id) return json({ success: false, error: 'User ID not found' }, { status: 401 });
 
     try {
-      const priceStep = (batchPriceTo - batchPriceFrom) / (batchCount - 1);
+      const priceStep = batchCount <= 1 ? 0 : (batchPriceTo - batchPriceFrom) / (batchCount - 1);
       const orderPromises = [];
       for (let i = 0; i < batchCount; i++) {
         const pricePercent = batchPriceFrom + (priceStep * i);
         const yesPts = Math.round((pricePercent / 100) * 10_000_000);
+        const riskPence = Math.max(1, Math.round(batchQuantity * 100 * (batchSide === 'FOR' ? yesPts : 10_000_000 - yesPts) / 10_000_000));
         orderPromises.push(
           fetch(`${API_BASE_URL}/v1/orders`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Cookie: cookieHeader || '' },
             credentials: 'include',
-            body: JSON.stringify({ marketId: batchMarketId, side: batchSide, yesPts, sizeContracts: batchQuantity, timeInForce: 'GTC' }),
+            body: JSON.stringify({
+              marketId: batchMarketId,
+              side: batchSide === 'FOR' ? 'BUY_YES' : 'SELL_YES',
+              pPts: yesPts,
+              liabilityPence: riskPence,
+              timeInForce: 'GTC',
+            }),
           })
         );
       }
@@ -443,6 +471,16 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({ success: true, message: result.message });
     } catch (error) {
       return json({ success: false, error: error instanceof Error ? error.message : 'Failed to delete insurance contracts' }, { status: 500 });
+    }
+  }
+
+  if (actionType === 'save-risk-controls') {
+    try {
+      const riskSettings = JSON.parse(String(formData.get('riskSettings') || '[]'));
+      const result = await saveAdminRiskControls(request, riskSettings);
+      return json({ success: true, message: `Saved ${result.riskSettings.length} risk control settings`, riskSettings: result.riskSettings });
+    } catch (error) {
+      return json({ success: false, error: error instanceof Error ? error.message : 'Failed to save risk controls' }, { status: 500 });
     }
   }
 

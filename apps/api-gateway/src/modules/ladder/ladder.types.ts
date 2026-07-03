@@ -58,13 +58,18 @@ export interface IntervalOrderRequest {
   executionMode: 'quote_only' | 'submit';
 }
 
+/** Hazard order request body */
+export interface HazardOrderRequest extends IntervalOrderRequest {}
+
 /** Interval order quote response */
 export interface IntervalQuoteResponse {
   synthetic: true;
+  syntheticType: 'interval' | 'hazard';
   intervalLabel: string;
   netPricePercent: number;      // interval price in %
   direction: 'BUY' | 'SELL';
   contracts: number;
+  underlyingContracts: number;
   netDebitPence: number;
   legs: {
     marketId: string;

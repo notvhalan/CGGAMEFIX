@@ -2,7 +2,7 @@ import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-r
 import { useLoaderData, Link, useFetcher } from "@remix-run/react";
 import { useState, useRef, useMemo, memo, useEffect, useCallback } from "react";
 import type { MetaFunction } from "@remix-run/node";
-import { getInsuranceCategoryWithContracts, getLadder, submitIntervalOrder } from "~/lib/api.server";
+import { createOrder, getInsuranceCategoryWithContracts, getLadder, submitHazardOrder, submitIntervalOrder } from "~/lib/api.server";
 import type { LadderPoint, LadderInterval, LadderData } from "~/lib/api.server";
 import "~/styles/pages/insurance.css";
 
@@ -176,6 +176,7 @@ export async function loader({ params }: LoaderFunctionArgs) {
     lastTradeYes: number | null;
     question: string | null;
     conditionName: string | null;
+    maturityDate: string | null;
   })[];
   let source: "live" | "generated" = "generated";
 
@@ -209,6 +210,7 @@ export async function loader({ params }: LoaderFunctionArgs) {
         lastTradeYes: c.lastTradeYes ?? null,
         question: c.question,
         conditionName: c.conditionName,
+        maturityDate: c.maturityDate,
       };
     });
   } else {
@@ -220,6 +222,7 @@ export async function loader({ params }: LoaderFunctionArgs) {
       lastTradeYes: null,
       question: null,
       conditionName: null,
+      maturityDate: null,
     }));
   }
 
@@ -277,17 +280,56 @@ export async function action({ request, params }: ActionFunctionArgs) {
   const formData = await request.formData();
   const splat = (params as any)["*"] ?? "";
   const groupSlug = splat.split("/")[0] || "";
+  const contractType = (formData.get("contractType") as string) || "interval";
   const startMaturity = formData.get("startMaturity") as string | null;
   const endMaturity = formData.get("endMaturity") as string;
+  const startMarketId = formData.get("startMarketId") as string | null;
+  const endMarketId = formData.get("endMarketId") as string | null;
   const direction = formData.get("direction") as "BUY" | "SELL";
   const contracts = Number(formData.get("contracts") || 1);
   const executionMode = (formData.get("executionMode") as string) || "submit";
 
   try {
+    if (contractType === "cumulative") {
+      const marketId = String(formData.get("marketId") || "");
+      const side = formData.get("side") as "BUY_YES" | "SELL_YES";
+      const pPts = Number(formData.get("pPts") || 0);
+      const liabilityPence = Number(formData.get("liabilityPence") || 0);
+
+      if (!marketId || !side || !pPts || !liabilityPence) {
+        throw new Error("Missing required cumulative order fields");
+      }
+
+      const result = await createOrder(request, {
+        marketId,
+        side,
+        pPts,
+        liabilityPence,
+        timeInForce: "GTC",
+      });
+      return json({ success: true, result });
+    }
+
+    if (contractType === "hazard") {
+      const result = await submitHazardOrder(request, {
+        groupSlug,
+        startMaturity: startMaturity || null,
+        endMaturity,
+        startMarketId: startMarketId || null,
+        endMarketId: endMarketId || null,
+        direction,
+        contracts,
+        executionMode: executionMode as "quote_only" | "submit",
+      });
+      return json({ success: true, result });
+    }
+
     const result = await submitIntervalOrder(request, {
       groupSlug,
       startMaturity: startMaturity || null,
       endMaturity,
+      startMarketId: startMarketId || null,
+      endMarketId: endMarketId || null,
       direction,
       contracts,
       executionMode: executionMode as "quote_only" | "submit",
@@ -986,25 +1028,7 @@ function HazardSparkline({ category }: { category: HazardCategory }) {
 function LifeHazardMarketMockup() {
   return (
     <div className="hazard-market-page">
-      <nav className="hazard-top-nav">
-        <Link to="/app" className="hazard-brand" aria-label="GameFix home">
-          <span className="hazard-logo" />
-          <span>GameFix</span>
-        </Link>
-        <div className="hazard-nav-pills">
-          <Link to="/app/markets" className="hazard-nav-pill active">Markets</Link>
-          <Link to="/app/positions" className="hazard-nav-pill">Portfolio</Link>
-          <Link to="/app/orders" className="hazard-nav-pill">Orders</Link>
-          <Link to="/app/markets" className="hazard-nav-pill trade">Trade</Link>
-        </div>
-        <div className="hazard-search">Search markets... (press / to focus)</div>
-        <div className="hazard-readouts">
-          <span>Available <strong>{"\u00a3"}30,922.94</strong></span>
-          <span>Equity <strong>{"\u00a3"}30,952.08</strong></span>
-        </div>
-      </nav>
-
-      <main className="hazard-market-panel">
+<main className="hazard-market-panel">
         <header className="hazard-market-header">
           <div className="hazard-title-wrap">
             <h1>Markets</h1>
@@ -1053,10 +1077,748 @@ function LifeHazardMarketMockup() {
   );
 }
 
+type RealHazardCard = {
+  mono: string;
+  tint: string;
+  name: string;
+  question: string;
+  prob: number;
+  chg24h: number;
+  contracts: number;
+  bid: number | null;
+  ask: number | null;
+  vol: string;
+  resolveDate: string;
+  href: string;
+  points: number[];
+  closingSoon: boolean;
+};
+
+const HAZARD_TINTS = ["#5b8dff", "#59c3d6", "#b98bff", "#ff8ba7", "#f0b45b", "#f0616d"];
+
+function conditionSlug(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function conditionMono(value: string) {
+  const words = value.replace(/[^a-zA-Z0-9 ]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "IN";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+function moneyValue(value: string | null | undefined) {
+  if (!value) return 0;
+  const cleaned = value.replace(/[^0-9.]/g, "");
+  return Number(cleaned || 0);
+}
+
+function compactMoney(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toFixed(0);
+}
+
+function buildRealHazardCards(slug: string, cfg: typeof CATEGORY_CONFIG[string], contracts: any[]): RealHazardCard[] {
+  const grouped = new Map<string, any[]>();
+  for (const contract of contracts) {
+    const key = contract.conditionName ?? cfg.condition ?? "Market";
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(contract);
+  }
+
+  return Array.from(grouped.entries()).map(([name, rows], index) => {
+    const sorted = [...rows].sort((a, b) => Number(a.daysOut ?? 0) - Number(b.daysOut ?? 0));
+    const priced = sorted.find(row => row.bestBidYes != null || row.bestAskYes != null) ?? sorted[0];
+    const anchor = sorted[sorted.length - 1] ?? priced;
+    const prob = anchor?.yesPts ?? priced?.yesPts ?? cfg.baseProb;
+    const prior = priced?.lastTradeYes ?? sorted[0]?.yesPts ?? prob;
+    const chg24h = Math.max(-12, Math.min(12, prob - prior));
+    const nearestDays = Number(sorted[0]?.daysOut ?? 999);
+
+    return {
+      mono: conditionMono(name),
+      tint: HAZARD_TINTS[index % HAZARD_TINTS.length],
+      name,
+      question: anchor?.question ?? cfg.question(anchor?.label ?? "the selected maturity"),
+      prob,
+      chg24h,
+      contracts: sorted.length,
+      bid: priced?.bestBidYes ?? null,
+      ask: priced?.bestAskYes ?? null,
+      vol: compactMoney(sorted.reduce((sum, row) => sum + moneyValue(row.volume), 0)),
+      resolveDate: anchor?.label ?? "Open",
+      href: `/app/insurance/${slug}/${conditionSlug(name)}`,
+      points: sorted.map(row => row.yesPts ?? prob),
+      closingSoon: nearestDays >= 0 && nearestDays <= 14,
+    };
+  });
+}
+
+function RealHazardSparkline({ card }: { card: RealHazardCard }) {
+  const values = card.points.length > 1 ? card.points : hazardPoints(card.prob).map(([, y]) => Math.max(1, 100 - y * 2.5));
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? 100 : (index / (values.length - 1)) * 100;
+    const y = 37 - (Math.max(1, Math.min(99, value)) / 100) * 34;
+    return [x, y] as const;
+  });
+  const line = points.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");
+  const area = `${line} L100 40 L0 40 Z`;
+  const color = card.chg24h >= 0 ? "#21c17a" : "#f0616d";
+
+  return (
+    <svg className="hazard-sparkline" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+      <path d={area} fill={color} opacity="0.14" />
+      <path d="M0 20 L100 20" fill="none" stroke="rgba(255,255,255,0.08)" strokeDasharray="1 3" vectorEffect="non-scaling-stroke" />
+      <path d={line} fill="none" stroke={color} strokeWidth="1.75" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+type TerminalRow = {
+  contract: any;
+  maturity: string;
+  maturityIso: string | null;
+  rawYes: number;
+  fittedYes: number;
+  survival: number;
+  windowProb: number;
+  rawWindow: number;
+  condHazard: number;
+  rawHazard: number;
+  lambdaDay: number;
+  bid: number | null;
+  ask: number | null;
+  oi: string;
+  flagged: boolean;
+};
+
+type TerminalState = {
+  chartMode: "cumulative" | "hazard" | "survival";
+  tableTab: "byDate" | "intervals";
+  selectedRow: number;
+  tradeMode: "cumulative" | "interval" | "hazard";
+  sideIdx: 0 | 1;
+  stake: string;
+  annualize: boolean;
+  warnDismissed: boolean;
+};
+
+function pava(values: number[]) {
+  const blocks = values.map(value => ({ sum: value, count: 1 }));
+  for (let i = 0; i < blocks.length - 1; i++) {
+    if (blocks[i].sum / blocks[i].count <= blocks[i + 1].sum / blocks[i + 1].count) continue;
+    blocks[i] = { sum: blocks[i].sum + blocks[i + 1].sum, count: blocks[i].count + blocks[i + 1].count };
+    blocks.splice(i + 1, 1);
+    i = Math.max(-1, i - 2);
+  }
+  return blocks.flatMap(block => Array.from({ length: block.count }, () => block.sum / block.count));
+}
+
+function clampProb(value: number) {
+  return Math.max(0.001, Math.min(0.999, value));
+}
+
+function marketMid(contract: any) {
+  if (contract.bestBidYes != null && contract.bestAskYes != null) return (contract.bestBidYes + contract.bestAskYes) / 200;
+  if (contract.lastTradeYes != null) return contract.lastTradeYes / 100;
+  return (contract.yesPts ?? 50) / 100;
+}
+
+function deriveTerminalRows(contracts: any[]): TerminalRow[] {
+  const sorted = [...contracts].sort((a, b) => Number(a.daysOut ?? 0) - Number(b.daysOut ?? 0));
+  const raw = sorted.map(contract => clampProb(marketMid(contract)));
+  const fitted = pava(raw).map(clampProb);
+  return sorted.map((contract, index) => {
+    const prevFit = index === 0 ? 0 : fitted[index - 1];
+    const prevRaw = index === 0 ? 0 : raw[index - 1];
+    const windowProb = Math.max(0, fitted[index] - prevFit);
+    const rawWindow = Math.max(0, raw[index] - prevRaw);
+    const condHazard = prevFit >= 0.999 ? 0 : windowProb / Math.max(0.001, 1 - prevFit);
+    const rawHazard = prevRaw >= 0.999 ? 0 : rawWindow / Math.max(0.001, 1 - prevRaw);
+    const deltaDays = Math.max(1, index === 0
+      ? Number(contract.daysOut ?? 1)
+      : Number(contract.daysOut ?? 1) - Number(sorted[index - 1]?.daysOut ?? 0));
+    const lambdaDay = prevFit >= 0.999
+      ? 0
+      : -Math.log(Math.max(0.001, 1 - fitted[index]) / Math.max(0.001, 1 - prevFit)) / deltaDays;
+
+    return {
+      contract,
+      maturity: contract.label ?? "Open",
+      maturityIso: contract.maturityDate ?? null,
+      rawYes: raw[index],
+      fittedYes: fitted[index],
+      survival: 1 - fitted[index],
+      windowProb,
+      rawWindow,
+      condHazard,
+      rawHazard,
+      lambdaDay,
+      bid: contract.bestBidYes ?? contract.yesPts ?? null,
+      ask: contract.bestAskYes ?? contract.yesPts ?? null,
+      oi: contract.oi ?? "--",
+      flagged: Math.abs(rawWindow - windowProb) > 0.05,
+    };
+  });
+}
+
+function percent(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function cents(value: number | null) {
+  return value == null ? "--" : `${Math.round(value)}c`;
+}
+
+function TerminalChart({
+  rows,
+  state,
+  setState,
+}: {
+  rows: TerminalRow[];
+  state: TerminalState;
+  setState: (updater: (prev: TerminalState) => TerminalState) => void;
+}) {
+  const [ApexChart, setApexChart] = useState<any>(null);
+
+  useEffect(() => {
+    import("react-apexcharts").then(m => setApexChart(() => m.default));
+  }, []);
+
+  const isHazard = state.chartMode === "hazard";
+  const selectedIdx = Math.min(state.selectedRow, Math.max(0, rows.length - 1));
+  const selectedMaturity = rows[selectedIdx]?.maturity ?? null;
+
+  const fittedValues = rows.map(r =>
+    parseFloat(((isHazard ? r.condHazard : state.chartMode === "survival" ? r.survival : r.fittedYes) * 100).toFixed(2))
+  );
+  const rawValues = rows.map(r =>
+    parseFloat(((isHazard ? r.rawHazard : state.chartMode === "survival" ? 1 - r.rawYes : r.rawYes) * 100).toFixed(2))
+  );
+
+  const series = [
+    {
+      name: isHazard ? "Cond. Hazard" : state.chartMode === "survival" ? "Survival" : "Fitted YES",
+      type: isHazard ? "bar" : "area",
+      data: fittedValues,
+    },
+    {
+      name: isHazard ? "Raw Hazard" : "Raw",
+      type: "line",
+      data: rawValues,
+    },
+  ];
+
+  const options = {
+    chart: {
+      background: "transparent",
+      toolbar: { show: false },
+      animations: { enabled: false },
+      fontFamily: "inherit",
+      events: {
+        dataPointSelection(_: any, __: any, config: any) {
+          setState(prev => ({ ...prev, selectedRow: config.dataPointIndex }));
+        },
+      },
+    },
+    theme: { mode: "dark" as const },
+    colors: isHazard ? ["#8b5cf6", "#8b5cf6"] : ["#21c17a", "#6bd4b1"],
+    stroke: {
+      width: isHazard ? [0, 2] : [2, 2],
+      curve: "smooth" as const,
+      dashArray: [0, 5],
+    },
+    fill: {
+      type: isHazard ? ["solid", "solid"] : ["gradient", "solid"],
+      gradient: {
+        shade: "dark" as const,
+        type: "vertical" as const,
+        opacityFrom: 0.28,
+        opacityTo: 0.02,
+      },
+      opacity: [isHazard ? 0.65 : 1, 0],
+    },
+    plotOptions: {
+      bar: {
+        borderRadius: 2,
+        columnWidth: "60%",
+      },
+    },
+    dataLabels: { enabled: false },
+    xaxis: {
+      categories: rows.map(r => r.maturity),
+      labels: {
+        rotate: -45,
+        rotateAlways: false,
+        style: { colors: "#64748b", fontSize: "10px", fontFamily: "inherit" },
+        maxHeight: 60,
+      },
+      axisBorder: { color: "#1f2937" },
+      axisTicks: { color: "#1f2937" },
+    },
+    yaxis: {
+      labels: {
+        style: { colors: "#64748b", fontSize: "10px", fontFamily: "inherit" },
+        formatter: (val: number) => `${val.toFixed(1)}%`,
+      },
+      min: 0,
+    },
+    grid: {
+      borderColor: "rgba(31,41,55,0.8)",
+      xaxis: { lines: { show: false } },
+    },
+    tooltip: {
+      theme: "dark" as const,
+      y: { formatter: (val: number) => `${val.toFixed(2)}%` },
+    },
+    markers: {
+      size: [3, 2],
+      hover: { sizeOffset: 2 },
+    },
+    legend: {
+      position: "top" as const,
+      horizontalAlign: "left" as const,
+      offsetY: 0,
+      labels: { colors: "#94a3b8" },
+      fontSize: "11px",
+    },
+    annotations: {
+      xaxis: selectedMaturity
+        ? [{
+            x: selectedMaturity,
+            borderColor: "rgba(88,166,255,0.5)",
+            strokeDashArray: 3,
+          }]
+        : [],
+    },
+  };
+
+  if (!ApexChart) {
+    return (
+      <div className="term-chart" style={{ display: "grid", placeItems: "center", color: "#64748b", fontSize: "0.8125rem" }}>
+        Loading chart…
+      </div>
+    );
+  }
+
+  return (
+    <div className="term-chart">
+      <div className="term-chart-canvas">
+        <ApexChart type="line" series={series} options={options} height="100%" width="100%" />
+      </div>
+      <div className="term-axis-caption">
+        y-axis: {isHazard
+          ? "conditional probability this interval"
+          : state.chartMode === "survival"
+          ? "probability event has not happened by this date"
+          : "probability event has happened by this date"}
+      </div>
+    </div>
+  );
+}
+
+function InsuranceTerminalPage({
+  slug,
+  contracts,
+  source,
+  allConditionSummary,
+  initialCondition,
+}: {
+  slug: string;
+  contracts: any[];
+  source: "live" | "generated";
+  allConditionSummary: { name: string; count: number; nearYes: number | null; farYes: number | null }[];
+  initialCondition: string | null;
+}) {
+  const cfg = CATEGORY_CONFIG[slug] ?? CATEGORY_CONFIG.life;
+  const rows = useMemo(() => deriveTerminalRows(contracts), [contracts]);
+  const [state, setState] = useState<TerminalState>({
+    chartMode: "cumulative",
+    tableTab: "byDate",
+    selectedRow: Math.min(1, Math.max(0, rows.length - 1)),
+    tradeMode: "cumulative",
+    sideIdx: 0,
+    stake: "50",
+    annualize: false,
+    warnDismissed: false,
+  });
+  const selectedIndex = Math.min(state.selectedRow, Math.max(0, rows.length - 1));
+  const selected = rows[selectedIndex] ?? rows[0];
+  const flaggedRows = rows.filter(row => row.flagged);
+  const tradePrice = selected
+    ? state.tradeMode === "hazard" ? selected.condHazard : state.tradeMode === "interval" ? selected.windowProb : selected.fittedYes
+    : 0.5;
+  const sidePrice = state.sideIdx === 0 ? tradePrice : 1 - tradePrice;
+  const stake = Number(state.stake || 0);
+  const payout = sidePrice > 0 ? stake / sidePrice : 0;
+  const selectedQuestion = selected?.contract.question ?? cfg.question(selected?.maturity ?? "the selected maturity");
+  const tradeFetcher = useFetcher();
+  const tradeResult = tradeFetcher.data as { success?: boolean; error?: string; result?: any } | undefined;
+  const isSubmittingTrade = tradeFetcher.state !== "idle";
+  const selectedStartIso = selectedIndex > 0 ? rows[selectedIndex - 1]?.maturityIso ?? null : null;
+  const selectedStartLabel = selectedIndex > 0 ? rows[selectedIndex - 1]?.maturity ?? "Now" : "Now";
+  const canSubmitTrade = Boolean(selected && (state.tradeMode === "cumulative" || selected.maturityIso));
+  const ticketModeLabel = state.tradeMode === "hazard"
+    ? "Conditional hazard"
+    : state.tradeMode === "interval"
+    ? "Interval window"
+    : "Cumulative";
+  const ticketQuestion = state.tradeMode === "hazard"
+    ? `Conditional on no event by ${selectedStartLabel}, will it happen by ${selected?.maturity ?? "the selected maturity"}?`
+    : state.tradeMode === "interval"
+    ? `Will it happen between ${selectedStartLabel} and ${selected?.maturity ?? "the selected maturity"}?`
+    : selectedQuestion;
+  const ticketDetail = state.tradeMode === "hazard"
+    ? "Voids/refunds if the event has already happened before the window starts."
+    : state.tradeMode === "interval"
+    ? "Executed as a synthetic spread: long later cumulative, short earlier cumulative."
+    : `Maturity ${selected?.maturity ?? "--"} - fitted YES ${percent(selected?.fittedYes ?? 0)}`;
+  const ticketPriceLabel = state.tradeMode === "hazard"
+    ? "Hazard price"
+    : state.tradeMode === "interval"
+    ? "Window price"
+    : "Price";
+
+  const handleTicketSubmit = useCallback(() => {
+    if (!selected || !canSubmitTrade || sidePrice <= 0 || stake <= 0) return;
+
+    const formData = new FormData();
+    formData.set("contractType", state.tradeMode);
+    formData.set("executionMode", "submit");
+
+    if (state.tradeMode === "cumulative") {
+      formData.set("marketId", selected.contract.id);
+      formData.set("side", state.sideIdx === 0 ? "BUY_YES" : "SELL_YES");
+      formData.set("pPts", String(Math.round(tradePrice * 10_000_000)));
+      formData.set("liabilityPence", String(Math.round(stake * 100)));
+    } else {
+      formData.set("startMaturity", selectedStartIso ?? "");
+      formData.set("endMaturity", selected.maturityIso ?? "");
+      formData.set("startMarketId", selectedIndex > 0 ? rows[selectedIndex - 1]?.contract.id ?? "" : "");
+      formData.set("endMarketId", selected.contract.id);
+      formData.set("direction", state.sideIdx === 0 ? "BUY" : "SELL");
+      formData.set("contracts", String(Math.max(0.0001, payout)));
+    }
+
+    tradeFetcher.submit(formData, { method: "POST" });
+  }, [
+    canSubmitTrade,
+    payout,
+    selected,
+    selectedStartIso,
+    sidePrice,
+    stake,
+    state.sideIdx,
+    state.tradeMode,
+    tradeFetcher,
+    tradePrice,
+  ]);
+
+  return (
+    <div className="term-page">
+      <main className="term-center">
+        <div className="term-scroll">
+          <header className="term-header">
+            <div>
+              <Link to="/app/markets" className="term-back">← Markets</Link>
+              <h1>{cfg.title} Insurance Markets</h1>
+            </div>
+            <div className="term-readouts">
+              <span><small>Contracts</small>{rows.length}</span>
+              <span><small>Near-term YES</small>{cents(rows[0]?.bid ?? rows[0]?.contract.yesPts ?? null)}</span>
+              <span><small>Long-dated YES</small>{cents(rows[rows.length - 1]?.bid ?? rows[rows.length - 1]?.contract.yesPts ?? null)}</span>
+              <span><small>Selected maturity</small>{selected?.maturity ?? "--"}</span>
+            </div>
+          </header>
+
+          <section className="term-question">
+            <div className="term-question-mark">?</div>
+            <div>
+              <div className="term-kicker">{cfg.title} · {initialCondition ?? cfg.condition}</div>
+              <h2>{selectedQuestion}</h2>
+              {source === "live" && <p>Live prices sourced from the live orderbook for each contract.</p>}
+            </div>
+            <span className="term-yes-pill">YES {cents(selected?.bid ?? selected?.contract.yesPts ?? null)}</span>
+          </section>
+
+          {allConditionSummary.length > 1 && (
+            <div className="term-pills">
+              <Link to={`/app/insurance/${slug}`}>← All</Link>
+              {allConditionSummary.map(group => (
+                <Link
+                  key={group.name}
+                  className={group.name === initialCondition ? "active" : ""}
+                  to={`/app/insurance/${slug}/${conditionSlug(group.name)}`}
+                >
+                  {group.name} <span>{group.nearYes ?? "--"}c → {group.farYes ?? "--"}c</span>
+                </Link>
+              ))}
+              <small>{allConditionSummary.length} subcategories</small>
+            </div>
+          )}
+
+          {flaggedRows.length > 0 && !state.warnDismissed && (
+            <div className="term-warning">
+              <strong>Monotonic-fit artifact detected</strong>
+              <span>
+                The fitted curve diverges from raw orderbook windows near {flaggedRows[0].maturity}. Trade off the raw column or narrower windows until the fit is re-run.
+              </span>
+              <button onClick={() => setState(prev => ({ ...prev, warnDismissed: true }))}>Dismiss</button>
+            </div>
+          )}
+
+          <section className="term-card">
+            <div className="term-card-head">
+              <div>
+                <h3>
+                  {state.chartMode === "hazard" ? "Forward hazard" : state.chartMode === "survival" ? "Survival curve" : "PAVA-fitted cumulative probability"}
+                </h3>
+                <span><i /> Raw <b /> Fitted</span>
+              </div>
+              <div className="term-segment">
+                {(["cumulative", "hazard", "survival"] as const).map(mode => (
+                  <button key={mode} className={state.chartMode === mode ? "active" : ""} onClick={() => setState(prev => ({ ...prev, chartMode: mode }))}>
+                    {mode === "hazard" ? "Forward hazard" : mode[0].toUpperCase() + mode.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <TerminalChart rows={rows} state={state} setState={setState} />
+          </section>
+
+          <section className="term-card term-table-card">
+            <div className="term-card-head">
+              <div className="term-tabs">
+                <button className={state.tableTab === "byDate" ? "active" : ""} onClick={() => setState(prev => ({ ...prev, tableTab: "byDate" }))}>By Date</button>
+                <button className={state.tableTab === "intervals" ? "active" : ""} onClick={() => setState(prev => ({ ...prev, tableTab: "intervals" }))}>Intervals ({rows.length})</button>
+              </div>
+              <div className="term-lambda">
+                Continuous λ:
+                <button className={!state.annualize ? "active" : ""} onClick={() => setState(prev => ({ ...prev, annualize: false }))}>per day</button>
+                <button className={state.annualize ? "active" : ""} onClick={() => setState(prev => ({ ...prev, annualize: true }))}>annualized</button>
+              </div>
+            </div>
+            <table className="term-table">
+              <thead>
+                <tr>
+                  <th>{state.tableTab === "byDate" ? "Maturity" : "Interval"}</th>
+                  <th>Fitted YES</th>
+                  <th>Survival</th>
+                  <th>Window prob</th>
+                  <th>Cond. hazard</th>
+                  <th>Bid</th>
+                  <th>Ask</th>
+                  <th>OI</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => (
+                  <tr
+                    key={row.contract.id}
+                    className={`${selectedIndex === index ? "selected" : ""} ${row.flagged ? "flagged" : ""}`}
+                    onClick={() => setState(prev => ({ ...prev, selectedRow: index }))}
+                  >
+                    <td>{state.tableTab === "byDate" ? row.maturity : `${index === 0 ? "Now" : rows[index - 1].maturity} → ${row.maturity}`} {row.flagged && <em>CHECK FIT</em>}</td>
+                    <td>{percent(row.fittedYes)}</td>
+                    <td>{percent(row.survival)}</td>
+                    <td>{percent(row.windowProb)}</td>
+                    <td><strong>{percent(row.condHazard)}</strong><small>λ {(row.lambdaDay * (state.annualize ? 365 : 1)).toFixed(4)} / {state.annualize ? "yr" : "day"}</small></td>
+                    <td className="bid">{cents(row.bid)}</td>
+                    <td className="ask">{cents(row.ask)}</td>
+                    <td>{row.oi}</td>
+                    <td><Link to={`/app/markets/${row.contract.id}`} onClick={event => event.stopPropagation()}>Trade →</Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </main>
+
+      <aside className={`term-ticket mode-${state.tradeMode}`}>
+        <div className="term-ticket-head">
+          <h3>Contract Details</h3>
+          <span>•••</span>
+        </div>
+        <label>Contract type</label>
+        <div className="term-segment term-ticket-segment">
+          {(["cumulative", "interval", "hazard"] as const).map(mode => (
+            <button key={mode} className={state.tradeMode === mode ? "active" : ""} onClick={() => setState(prev => ({ ...prev, tradeMode: mode }))}>{mode[0].toUpperCase() + mode.slice(1)}</button>
+          ))}
+        </div>
+        <div className="term-ticket-contract">
+          <small>{ticketModeLabel} - selected contract</small>
+          <strong>{ticketQuestion}</strong>
+          <span>{ticketDetail}</span>
+        </div>
+        {state.tradeMode !== "cumulative" && (
+          <div className="term-ticket-structure">
+            <div>
+              <span>Window</span>
+              <strong>{selectedStartLabel} - {selected?.maturity ?? "--"}</strong>
+            </div>
+            <div>
+              <span>{state.tradeMode === "hazard" ? "Conditional hazard" : "Window probability"}</span>
+              <strong>{percent(tradePrice)}</strong>
+            </div>
+            <p>
+              {state.tradeMode === "hazard"
+                ? "Underlying interval legs are scaled by survival at the start of the window."
+                : "This is a linked two-leg interval order with partial fill risk."}
+            </p>
+          </div>
+        )}
+        {selected?.flagged && (
+          <div className="term-ticket-warning">Fit warning: consider raw prices or a narrower interval.</div>
+        )}
+        <div className="term-side">
+          <button className={state.sideIdx === 0 ? "active yes" : ""} onClick={() => setState(prev => ({ ...prev, sideIdx: 0 }))}>Buy YES <strong>{Math.round(tradePrice * 100)}c</strong></button>
+          <button className={state.sideIdx === 1 ? "active no" : ""} onClick={() => setState(prev => ({ ...prev, sideIdx: 1 }))}>Buy NO <strong>{Math.round((1 - tradePrice) * 100)}c</strong></button>
+        </div>
+        <label>Stake (£)</label>
+        <input value={state.stake} onChange={event => setState(prev => ({ ...prev, stake: event.target.value }))} />
+        <dl>
+          <div><dt>{ticketPriceLabel}</dt><dd>{Math.round(sidePrice * 100)}c</dd></div>
+          <div><dt>Stake</dt><dd>£{stake.toFixed(2)}</dd></div>
+          <div><dt>Potential payout</dt><dd>£{payout.toFixed(2)}</dd></div>
+          <div><dt>Potential profit</dt><dd>+£{Math.max(0, payout - stake).toFixed(2)}</dd></div>
+          <div><dt>Contracts</dt><dd>{payout.toFixed(2)}</dd></div>
+        </dl>
+        {tradeResult?.error && <div className="term-ticket-warning">{tradeResult.error}</div>}
+        {tradeResult?.success && (
+          <div className="term-ticket-success">
+            {state.tradeMode === "hazard" ? "Hazard contract submitted" : state.tradeMode === "interval" ? "Interval contract submitted" : "Order submitted"}
+          </div>
+        )}
+        <button
+          type="button"
+          className="term-buy"
+          disabled={!canSubmitTrade || isSubmittingTrade || sidePrice <= 0 || stake <= 0}
+          onClick={handleTicketSubmit}
+        >
+          {isSubmittingTrade ? "Submitting..." : `Buy ${state.sideIdx === 0 ? "YES" : "NO"} - ${Math.round(sidePrice * 100)}c`}
+        </button>
+      </aside>
+    </div>
+  );
+}
+
+function RealHazardCategoryPage({
+  slug,
+  contracts,
+  source,
+  initialCondition,
+}: {
+  slug: string;
+  contracts: any[];
+  source: "live" | "generated";
+  initialCondition: string | null;
+}) {
+  const cfg = CATEGORY_CONFIG[slug] ?? CATEGORY_CONFIG.life;
+  const cards = buildRealHazardCards(slug, cfg, contracts);
+  const totalContracts = cards.reduce((sum, card) => sum + card.contracts, 0);
+  const sortedCards = [...cards].sort((a, b) => {
+    if (a.closingSoon !== b.closingSoon) return a.closingSoon ? -1 : 1;
+    return b.contracts - a.contracts;
+  });
+
+  return (
+    <div className="hazard-market-page">
+      <main className="hazard-market-panel">
+        <header className="hazard-category-header">
+          <div className="hazard-title-wrap">
+            <span className="hazard-category-badge">{cfg.title.slice(0, 2).toUpperCase()}</span>
+            <h1>{cfg.title} Insurance Markets</h1>
+            {source === "live" && <span className="hazard-live-pill"><span aria-hidden="true">o</span> Live</span>}
+          </div>
+        </header>
+
+        <div className="hazard-control-bar">
+          <div className="hazard-control-group">
+            <span className="hazard-control-label">Sort</span>
+            <button className="hazard-control active" type="button">Volume</button>
+            <button className="hazard-control" type="button">Probability</button>
+            <button className="hazard-control" type="button">Closing soon</button>
+          </div>
+          <div className="hazard-control-divider" />
+          <div className="hazard-control-group">
+            <span className="hazard-control-label">Lean</span>
+            <button className="hazard-control active" type="button">All</button>
+            <button className="hazard-control yes" type="button">YES-leaning</button>
+            <button className="hazard-control no" type="button">NO-leaning</button>
+          </div>
+          <div className="hazard-market-meta">
+            {cards.length} markets / {totalContracts} contracts{initialCondition ? ` / ${initialCondition}` : ""}
+          </div>
+        </div>
+
+        <section className="hazard-card-grid" aria-label={`${cfg.title} insurance market types`}>
+          {sortedCards.map((card) => {
+            const direction = card.chg24h >= 0 ? "up" : "down";
+            return (
+              <article className={`hazard-market-card${card.closingSoon ? " closing" : ""}`} key={card.name}>
+                <div className="hazard-card-top">
+                  <div className="hazard-monogram" style={{ backgroundColor: card.tint }}>{card.mono}</div>
+                  <div className="hazard-name-block">
+                    <div className="hazard-category-name">{card.name}</div>
+                    <div className="hazard-category-question">{card.question}</div>
+                  </div>
+                  {card.closingSoon && <span className="hazard-closing-pill">Closing soon</span>}
+                </div>
+
+                <div className="hazard-card-mid">
+                  <div className="hazard-price-block">
+                    <div className="hazard-prob">{card.prob.toFixed(1)}%</div>
+                    <div className={`hazard-change ${direction}`}>
+                      {card.chg24h >= 0 ? "+" : ""}{card.chg24h.toFixed(1)}% <span>24H</span>
+                    </div>
+                  </div>
+                  <div className="hazard-chart-block">
+                    <RealHazardSparkline card={card} />
+                  </div>
+                </div>
+
+                <div className="hazard-card-bottom">
+                  <div className="hazard-stats-inline">
+                    <span className="hazard-bid">{card.bid != null ? `${card.bid.toFixed(1)}c` : "--"}</span>
+                    <span className="hazard-stat-sep"> / </span>
+                    <span className="hazard-ask">{card.ask != null ? `${card.ask.toFixed(1)}c` : "--"}</span>
+                    <span className="hazard-stat-sep"> / </span>
+                    <span>{"\u00a3"}{card.vol} vol</span>
+                    <span className="hazard-stat-sep"> / </span>
+                    <span>{card.contracts} contracts</span>
+                  </div>
+                  <div className="hazard-card-actions">
+                    <span className="hazard-resolve">Resolves {card.resolveDate}</span>
+                    <Link to={card.href} className="hazard-trade-link">Trade</Link>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      </main>
+    </div>
+  );
+}
+
 export default function InsuranceCategoryPage() {
   const { slug, contracts, source, ladder, initialCondition, allConditionSummary } = useLoaderData<typeof loader>();
   const cfg = CATEGORY_CONFIG[slug] ?? CATEGORY_CONFIG.life;
-  if (slug === "life") return <LifeHazardMarketMockup />;
+  if (initialCondition) {
+    return (
+      <InsuranceTerminalPage
+        slug={slug}
+        contracts={contracts}
+        source={source}
+        initialCondition={initialCondition}
+        allConditionSummary={allConditionSummary}
+      />
+    );
+  }
+  return <RealHazardCategoryPage slug={slug} contracts={contracts} source={source} initialCondition={initialCondition} />;
 
   const [selectedId,        setSelectedId]        = useState<string | null>(contracts[0]?.id ?? null);
   const [hoveredId,         setHoveredId]         = useState<string | null>(null);
@@ -1683,3 +2445,5 @@ export default function InsuranceCategoryPage() {
     </div>
   );
 }
+
+

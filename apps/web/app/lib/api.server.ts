@@ -437,6 +437,8 @@ export async function submitIntervalOrder(request: Request, data: {
   groupSlug: string;
   startMaturity: string | null;
   endMaturity: string;
+  startMarketId?: string | null;
+  endMarketId?: string | null;
   direction: 'BUY' | 'SELL';
   contracts: number;
   executionMode: 'quote_only' | 'submit';
@@ -448,6 +450,34 @@ export async function submitIntervalOrder(request: Request, data: {
     body: JSON.stringify({
       startMaturity: data.startMaturity,
       endMaturity: data.endMaturity,
+      startMarketId: data.startMarketId,
+      endMarketId: data.endMarketId,
+      direction: data.direction,
+      contracts: data.contracts,
+      executionMode: data.executionMode,
+    }),
+  });
+}
+
+export async function submitHazardOrder(request: Request, data: {
+  groupSlug: string;
+  startMaturity: string | null;
+  endMaturity: string;
+  startMarketId?: string | null;
+  endMarketId?: string | null;
+  direction: 'BUY' | 'SELL';
+  contracts: number;
+  executionMode: 'quote_only' | 'submit';
+}) {
+  const cookie = request.headers.get('Cookie');
+  return fetchApi<any>(`/v1/ladder/${data.groupSlug}/hazard-orders`, {
+    method: 'POST',
+    headers: cookie ? { Cookie: cookie } : {},
+    body: JSON.stringify({
+      startMaturity: data.startMaturity,
+      endMaturity: data.endMaturity,
+      startMarketId: data.startMarketId,
+      endMarketId: data.endMarketId,
       direction: data.direction,
       contracts: data.contracts,
       executionMode: data.executionMode,

@@ -25,9 +25,13 @@ interface IntervalOrderParams {
   userId: string;
   startMaturity: string | null;
   endMaturity: string;
+  startMarketId?: string | null;
+  endMarketId?: string | null;
   direction: 'BUY' | 'SELL';
   contracts: number;
 }
+
+type SyntheticType = 'interval' | 'hazard';
 
 @Injectable()
 export class SyntheticOrdersService {
@@ -41,13 +45,31 @@ export class SyntheticOrdersService {
 
   // ── Quote an interval order (no execution) ────────────────────
   async quoteIntervalOrder(params: IntervalOrderParams): Promise<IntervalQuoteResponse> {
+    return this.quoteSyntheticOrder(params, 'interval');
+  }
+
+  async quoteHazardOrder(params: IntervalOrderParams): Promise<IntervalQuoteResponse> {
+    return this.quoteSyntheticOrder(params, 'hazard');
+  }
+
+  private async quoteSyntheticOrder(
+    params: IntervalOrderParams,
+    syntheticType: SyntheticType,
+  ): Promise<IntervalQuoteResponse> {
     const ladder = await this.ladderService.getLadder(params.groupSlug);
 
-    // Find the matching interval
-    const interval = this.findInterval(ladder, params.startMaturity, params.endMaturity);
+    // Find the matching interval. Prefer explicit market IDs so subcategory
+    // terminals do not accidentally trade another condition with the same dates.
+    const interval = this.resolveInterval(ladder, params);
     const legs = params.direction === 'BUY' ? interval.buyLegs : interval.sellLegs;
 
-    const qtyMicros = params.contracts * CONTRACT_SCALE_MICROS;
+    const survivalAtStart = this.getSurvivalAtStart(ladder, interval.startMaturity, params.startMarketId);
+    const exposureScale = syntheticType === 'hazard' ? 1 / survivalAtStart : 1;
+    const underlyingContracts = params.contracts * exposureScale;
+    const qtyMicros = Math.ceil(underlyingContracts * CONTRACT_SCALE_MICROS);
+    const netPricePercent = syntheticType === 'hazard'
+      ? Math.min(100, interval.price / survivalAtStart)
+      : interval.price;
 
     // Build leg details with price info from ladder points
     const legDetails = legs.map(leg => {
@@ -69,20 +91,37 @@ export class SyntheticOrdersService {
 
     return {
       synthetic: true,
+      syntheticType,
       intervalLabel: interval.label,
-      netPricePercent: interval.price,
+      netPricePercent: round2(netPricePercent),
       direction: params.direction,
       contracts: params.contracts,
+      underlyingContracts: round4(underlyingContracts),
       netDebitPence: netDebit,
       legs: legDetails,
-      warning: 'This trade is executed as two linked orders and may experience partial fill risk.',
+      warning: syntheticType === 'hazard'
+        ? 'This hazard contract is executed as a survival-adjusted interval spread and may experience partial fill risk.'
+        : 'This trade is executed as two linked orders and may experience partial fill risk.',
     };
   }
 
   // ── Execute an interval order (sequential 2-leg) ──────────────
   async executeIntervalOrder(params: IntervalOrderParams): Promise<IntervalExecutionResponse> {
+    return this.executeSyntheticOrder(params, 'interval');
+  }
+
+  async executeHazardOrder(params: IntervalOrderParams): Promise<IntervalExecutionResponse> {
+    return this.executeSyntheticOrder(params, 'hazard');
+  }
+
+  private async executeSyntheticOrder(
+    params: IntervalOrderParams,
+    syntheticType: SyntheticType,
+  ): Promise<IntervalExecutionResponse> {
     // 1. Get the quote first
-    const quote = await this.quoteIntervalOrder(params);
+    const quote = syntheticType === 'hazard'
+      ? await this.quoteHazardOrder(params)
+      : await this.quoteIntervalOrder(params);
 
     // 2. Validate interval price is positive
     if (quote.netPricePercent <= 0) {
@@ -93,7 +132,7 @@ export class SyntheticOrdersService {
     }
 
     // 3. Create synthetic order record
-    const syntheticOrderId = await this.createSyntheticOrder(params, quote);
+    const syntheticOrderId = await this.createSyntheticOrder(params, quote, syntheticType);
 
     // 4. Execute legs sequentially
     const executedLegs: IntervalExecutionResponse['legs'] = [];
@@ -157,6 +196,59 @@ export class SyntheticOrdersService {
 
   // ── private helpers ───────────────────────────────────────────
 
+  private resolveInterval(ladder: any, params: IntervalOrderParams) {
+    if (!params.endMarketId) {
+      return this.findInterval(ladder, params.startMaturity, params.endMaturity);
+    }
+
+    const endPoint = ladder.points.find((p: any) => p.marketId === params.endMarketId);
+    if (!endPoint) {
+      throw new HttpException(
+        `No matching end market found for ${params.endMarketId}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const startPoint = params.startMarketId
+      ? ladder.points.find((p: any) => p.marketId === params.startMarketId)
+      : null;
+
+    if (params.startMarketId && !startPoint) {
+      throw new HttpException(
+        `No matching start market found for ${params.startMarketId}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const startMaturity = startPoint?.maturity ?? null;
+    const endMaturity = endPoint.maturity;
+    const fittedStart = startPoint ? Number(startPoint.fittedYes || 0) : 0;
+    const fittedEnd = Number(endPoint.fittedYes || 0);
+    const price = Math.max(0, fittedEnd - fittedStart);
+
+    const buyLegs = startPoint
+      ? [
+          { marketId: endPoint.marketId, side: 'BUY_YES' as const, ratio: 1 },
+          { marketId: startPoint.marketId, side: 'SELL_YES' as const, ratio: 1 },
+        ]
+      : [{ marketId: endPoint.marketId, side: 'BUY_YES' as const, ratio: 1 }];
+    const sellLegs = startPoint
+      ? [
+          { marketId: endPoint.marketId, side: 'SELL_YES' as const, ratio: 1 },
+          { marketId: startPoint.marketId, side: 'BUY_YES' as const, ratio: 1 },
+        ]
+      : [{ marketId: endPoint.marketId, side: 'SELL_YES' as const, ratio: 1 }];
+
+    return {
+      startMaturity,
+      endMaturity,
+      label: `${startMaturity || 'Start'} -> ${endMaturity}`,
+      price,
+      buyLegs,
+      sellLegs,
+    };
+  }
+
   private findInterval(ladder: any, startMaturity: string | null, endMaturity: string) {
     const endDate = new Date(endMaturity).getTime();
 
@@ -205,9 +297,52 @@ export class SyntheticOrdersService {
     }
   }
 
+  private getSurvivalAtStart(ladder: any, startMaturity: string | null, startMarketId?: string | null): number {
+    if (!startMaturity) return 1;
+
+    if (startMarketId) {
+      const point = ladder.points.find((p: any) => p.marketId === startMarketId);
+      if (!point) {
+        throw new HttpException(
+          `No start market found for hazard contract: ${startMarketId}`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.requirePositiveSurvival(point.fittedYes);
+    }
+
+    const startDate = new Date(startMaturity).getTime();
+    const point = ladder.points.find((p: any) => {
+      const maturityDate = new Date(p.maturity).getTime();
+      return Math.abs(maturityDate - startDate) < 86_400_000;
+    });
+
+    if (!point) {
+      throw new HttpException(
+        `No start maturity found for hazard contract: ${startMaturity}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return this.requirePositiveSurvival(point.fittedYes);
+  }
+
+  private requirePositiveSurvival(fittedYes: number): number {
+    const survival = (100 - Number(fittedYes || 0)) / 100;
+    if (survival <= 0.0001) {
+      throw new HttpException(
+        'Hazard contract is not valid because survival at the interval start is zero',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return survival;
+  }
+
   private async createSyntheticOrder(
     params: IntervalOrderParams,
     quote: IntervalQuoteResponse,
+    syntheticType: SyntheticType,
   ): Promise<string> {
     const result = await this.db.query(
       `INSERT INTO synthetic_orders
@@ -215,7 +350,7 @@ export class SyntheticOrdersService {
           start_maturity, end_maturity, requested_qty_micros,
           net_price_pts, status)
        SELECT
-         $1::uuid, g.id, 'interval', $3,
+         $1::uuid, g.id, $8, $3,
          $4::timestamptz, $5::timestamptz,
          $6::bigint, $7::integer, 'PENDING'
        FROM market_groups g WHERE g.slug = $2
@@ -226,8 +361,9 @@ export class SyntheticOrdersService {
         params.direction,
         params.startMaturity,
         params.endMaturity,
-        params.contracts * CONTRACT_SCALE_MICROS,
+        Math.ceil((quote.underlyingContracts || params.contracts) * CONTRACT_SCALE_MICROS),
         Math.round(quote.netPricePercent * 100_000),
+        syntheticType,
       ],
     );
     const syntheticId = result.rows[0].id;
@@ -269,4 +405,12 @@ export class SyntheticOrdersService {
       [syntheticOrderId, status],
     );
   }
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function round4(n: number): number {
+  return Math.round(n * 10_000) / 10_000;
 }
